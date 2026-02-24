@@ -23,9 +23,9 @@ src/arb_scanner/
 ├── ingestion/       # Async API clients: PolymarketClient, KalshiClient
 ├── matching/        # Pre-filter (BM25 + pgvector), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
-├── storage/         # PostgreSQL + pgvector repository, migrations
+├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), stdout reporter
-├── cli/             # Typer app: scan, watch, report, match-audit commands
+├── cli/             # Typer app: scan, watch, report, match-audit, history, stats commands
 └── utils/           # Retry logic, rate limiter, async helpers
 ```
 
@@ -61,6 +61,9 @@ uv run arb-scanner scan          # Run one scan cycle
 uv run arb-scanner watch         # Continuous polling loop
 uv run arb-scanner report        # Generate latest arb report
 uv run arb-scanner match-audit   # Dump cached contract matches for review
+uv run arb-scanner history --pair POLY/KALSHI  # Spread history for a pair
+uv run arb-scanner stats         # Aggregated analytics and scanner health
+uv run arb-scanner migrate       # Apply pending SQL migrations
 uv run pytest                    # Run test suite
 uv run mypy src/ --strict        # Type check
 uv run ruff check src/ tests/    # Lint
@@ -97,4 +100,5 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 - PostgreSQL 15+ with pgvector extension (via asyncpg) (001-arb-scanner-core)
 
 ## Recent Changes
+- 002-arb-history-analytics: Added `history` and `stats` CLI commands, analytics models (SpreadSnapshot, PairStats, ScannerHealth), analytics_repository with time-windowed queries, date-range filtering on `report`/`match-audit`, and V002 migration for spread_snapshots + scan_log tables
 - 001-arb-scanner-core: Added Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml

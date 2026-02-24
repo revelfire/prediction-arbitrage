@@ -65,6 +65,7 @@ async def run_scan(
 
     if not dry_run:
         await _persist_results(config, scan_log, opps, tickets)
+        await _record_snapshots(config, poly_markets, kalshi_markets)
 
     output = build_output(scan_id, started_at, n_poly, n_kalshi, n_cand, opps)
     output["_raw_opps"] = opps
@@ -239,3 +240,32 @@ async def _persist_results(
                 await repo.insert_ticket(ticket)
     except Exception:
         logger.exception("persist_results_failed")
+
+
+async def _record_snapshots(
+    config: Settings,
+    poly_markets: list[Market],
+    kalshi_markets: list[Market],
+) -> None:
+    """Record price snapshots for all fetched markets.
+
+    Args:
+        config: Application settings.
+        poly_markets: Markets fetched from Polymarket.
+        kalshi_markets: Markets fetched from Kalshi.
+    """
+    from arb_scanner.storage.analytics_repository import AnalyticsRepository
+    from arb_scanner.storage.db import Database
+
+    all_markets = [*poly_markets, *kalshi_markets]
+    if not all_markets:
+        return
+
+    try:
+        async with Database(config.storage.database_url) as db:
+            repo = AnalyticsRepository(db.pool)
+            for market in all_markets:
+                await repo.insert_market_snapshot(market)
+        logger.info("snapshots.recorded", count=len(all_markets))
+    except Exception:
+        logger.exception("snapshots_record_failed")

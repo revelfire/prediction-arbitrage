@@ -1,5 +1,11 @@
 """Pydantic data models for the arb scanner application."""
 
+from arb_scanner.models.analytics import (
+    HourlyBucket,
+    PairSummary,
+    ScanHealthSummary,
+    SpreadSnapshot,
+)
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.config import (
     ArbThresholds,
@@ -26,15 +32,19 @@ __all__ = [
     "ExecutionTicket",
     "FeesConfig",
     "FeeSchedule",
+    "HourlyBucket",
     "KalshiVenueConfig",
     "LoggingConfig",
     "Market",
     "MatchResult",
     "NotificationConfig",
+    "PairSummary",
     "PolymarketVenueConfig",
     "ScanConfig",
+    "ScanHealthSummary",
     "ScanLog",
     "Settings",
+    "SpreadSnapshot",
     "StorageConfig",
     "Venue",
     "VenuesConfig",

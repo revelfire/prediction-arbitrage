@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from arb_scanner.models.analytics import PairSummary, ScanHealthSummary, SpreadSnapshot
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.market import Venue
 
@@ -44,14 +45,7 @@ def format_markdown_report(
 def _build_ticket_map(
     tickets: list[ExecutionTicket] | None,
 ) -> dict[str, ExecutionTicket]:
-    """Build a lookup from arb_id to ExecutionTicket.
-
-    Args:
-        tickets: Optional list of execution tickets.
-
-    Returns:
-        Dict mapping arb_id to ticket.
-    """
+    """Build a lookup from arb_id to ExecutionTicket."""
     if not tickets:
         return {}
     return {t.arb_id: t for t in tickets}
@@ -158,6 +152,112 @@ def format_matches_table(matches: list[dict[str, Any]]) -> str:
     return "".join(lines)
 
 
+def format_spread_history(pair_label: str, snapshots: list[SpreadSnapshot]) -> str:
+    """Format spread snapshots as an ASCII table.
+
+    Args:
+        pair_label: Human-readable label for the pair (e.g. "abc123 / KALSHI-XYZ").
+        snapshots: List of SpreadSnapshot models to render.
+
+    Returns:
+        Formatted table string, or "(no data)" if snapshots is empty.
+    """
+    if not snapshots:
+        return "(no data)\n"
+    header = (
+        f"Spread History: {pair_label}  ({len(snapshots)} data points)\n"
+        f"{'DETECTED_AT':19}  {'NET_SPREAD':>10}  {'ANNUALIZED':>10}"
+        f"  {'DEPTH_RISK':>10}  {'MAX_SIZE':>10}\n"
+    )
+    sep = "-" * 69 + "\n"
+    lines = [header, sep]
+    for s in snapshots:
+        ann = (
+            f"{float(s.annualized_return) * 100:.1f}%" if s.annualized_return is not None else "N/A"
+        )
+        lines.append(
+            f"{s.detected_at.strftime('%Y-%m-%d %H:%M'):19}"
+            f"  {float(s.net_spread_pct) * 100:9.2f}%"
+            f"  {ann:>10}"
+            f"  {'Yes' if s.depth_risk else 'No':>10}"
+            f"  ${float(s.max_size):>9.0f}\n"
+        )
+    return "".join(lines)
+
+
+def format_stats_report(
+    summaries: list[PairSummary],
+    health: list[ScanHealthSummary],
+    top_n: int = 10,
+) -> str:
+    """Format pair summaries and scan health as an ASCII report.
+
+    Args:
+        summaries: List of PairSummary models (sorted by peak_spread desc).
+        health: List of ScanHealthSummary models.
+        top_n: Maximum number of pair summaries to display.
+
+    Returns:
+        Formatted report string with two sections.
+    """
+    parts: list[str] = []
+    # Section 1: Top Pairs
+    if not summaries:
+        parts.append("Top Pairs by Peak Spread\n(no data)\n")
+    else:
+        parts.append(_format_pairs_section(summaries[:top_n]))
+    parts.append("")
+    # Section 2: Scanner Health
+    if not health:
+        parts.append("Scanner Health\n(no data)\n")
+    else:
+        parts.append(_format_health_section(health))
+    return "\n".join(parts)
+
+
+def _format_pairs_section(summaries: list[PairSummary]) -> str:
+    """Format the top pairs section of the stats report."""
+    header = (
+        f"Top Pairs by Peak Spread\n"
+        f"{'POLY_ID':20} {'KALSHI_ID':20} {'PEAK':>7} {'AVG':>7}"
+        f" {'DETECTIONS':>10} {'FIRST_SEEN':19} {'LAST_SEEN':19}\n"
+    )
+    sep = "-" * 108 + "\n"
+    lines = [header, sep]
+    for s in summaries:
+        lines.append(
+            f"{_truncate(s.poly_event_id, 20):20}"
+            f" {_truncate(s.kalshi_event_id, 20):20}"
+            f" {float(s.peak_spread) * 100:6.2f}%"
+            f" {float(s.avg_spread) * 100:6.2f}%"
+            f" {s.total_detections:>10}"
+            f" {s.first_seen.strftime('%Y-%m-%d %H:%M'):19}"
+            f" {s.last_seen.strftime('%Y-%m-%d %H:%M'):19}\n"
+        )
+    return "".join(lines)
+
+
+def _format_health_section(health: list[ScanHealthSummary]) -> str:
+    """Format the scanner health section of the stats report."""
+    header = (
+        f"Scanner Health\n"
+        f"{'HOUR':19} {'SCANS':>6} {'AVG_DURATION':>12}"
+        f" {'LLM_CALLS':>10} {'OPPS_FOUND':>10} {'ERRORS':>7}\n"
+    )
+    sep = "-" * 70 + "\n"
+    lines = [header, sep]
+    for h in health:
+        lines.append(
+            f"{h.hour.strftime('%Y-%m-%d %H:%M'):19}"
+            f" {h.scan_count:>6}"
+            f" {h.avg_duration_s:11.1f}s"
+            f" {h.total_llm_calls:>10}"
+            f" {h.total_opps:>10}"
+            f" {h.total_errors:>7}\n"
+        )
+    return "".join(lines)
+
+
 def write_output(text: str) -> None:
     """Write text to stdout without print.
 
@@ -168,15 +268,7 @@ def write_output(text: str) -> None:
 
 
 def _truncate(text: str, max_len: int) -> str:
-    """Truncate a string to max_len, appending ellipsis if needed.
-
-    Args:
-        text: The string to truncate.
-        max_len: Maximum length including ellipsis.
-
-    Returns:
-        Truncated string.
-    """
+    """Truncate a string to max_len, appending ellipsis if needed."""
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."

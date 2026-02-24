@@ -39,6 +39,7 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool[asyncpg.Record], None]:
 
     # Clean up all application data after each test
     await pool.execute(
-        "TRUNCATE execution_tickets, arb_opportunities, match_results, markets, scan_logs CASCADE"
+        "TRUNCATE execution_tickets, arb_opportunities, match_results,"
+        " markets, scan_logs, market_price_snapshots CASCADE"
     )
     await pool.close()
