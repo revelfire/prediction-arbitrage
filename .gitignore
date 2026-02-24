@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
+.env*
+
+# Data and databases
+data/
+*.db
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Config with secrets
+config.yaml
+
+# Coverage
+.coverage
+htmlcov/
+
+# Claude Code
+.claude/
+
+# Temporary files
+*.tmp
+*.swp

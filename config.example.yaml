@@ -1,0 +1,49 @@
+venues:
+  polymarket:
+    gamma_base_url: "https://gamma-api.polymarket.com"
+    clob_base_url: "https://clob.polymarket.com"
+    enabled: true
+    rate_limit_per_sec: 10
+  kalshi:
+    base_url: "https://api.elections.kalshi.com/trade-api/v2"
+    enabled: true
+    rate_limit_per_sec: 20
+
+claude:
+  model: "claude-sonnet-4-20250514"
+  api_key: "${ANTHROPIC_API_KEY}"
+  batch_size: 5
+  match_cache_ttl_hours: 24
+
+scanning:
+  interval_seconds: 60
+  mode: "continuous"
+
+arb_thresholds:
+  min_net_spread_pct: 0.02
+  min_size_usd: 10
+  thin_liquidity_threshold: 50
+
+notifications:
+  slack_webhook: "${SLACK_WEBHOOK_URL}"
+  discord_webhook: "${DISCORD_WEBHOOK_URL}"
+  enabled: true
+  min_spread_to_notify_pct: 0.02
+
+storage:
+  database_url: "${DATABASE_URL}"
+
+logging:
+  level: "INFO"
+  format: "json"
+
+fees:
+  polymarket:
+    maker_fee_pct: 0.0
+    taker_fee_pct: 0.0
+    fee_model: "on_winnings"
+  kalshi:
+    maker_fee_pct: 0.0
+    taker_fee_pct: 0.07
+    fee_model: "per_contract"
+    fee_cap: 0.07

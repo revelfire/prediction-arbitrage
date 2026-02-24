@@ -1,0 +1,62 @@
+[
+  {
+    "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"poly_event_id\": \"0x1234567890abcdef1234567890abcdef12345678\", \"kalshi_event_id\": \"BTC-100K-26\", \"match_confidence\": 0.95, \"resolution_equivalent\": true, \"safe_to_arb\": true, \"resolution_risks\": [], \"reasoning\": \"Both markets resolve on whether Bitcoin exceeds $100,000 by end of 2026. The Polymarket market uses CoinGecko as its price source and resolves YES if BTC/USD exceeds $100,000.00 before December 31, 2026 11:59 PM ET. The Kalshi market also uses CoinGecko as its primary source and resolves YES if BTC exceeds $100,000.00 before 11:59:59 PM ET on December 31, 2026. The resolution conditions are functionally identical: same underlying asset, same threshold, same time boundary (both effectively end-of-year 2026 ET), and same primary data source (CoinGecko). The secondary backup sources differ slightly (Kalshi specifies CoinMarketCap as fallback), but this is immaterial since both rely on CoinGecko primarily. These contracts are safe to arbitrage.\"}"
+      }
+    ],
+    "model": "claude-sonnet-4-20250514",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 1847,
+      "output_tokens": 312,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  },
+  {
+    "id": "msg_02YGEVEZKhBBDawoPuwWpZFM",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"poly_event_id\": \"0x5678901234abcdef5678901234abcdef56789012\", \"kalshi_event_id\": \"AI-MODEL-GPT5-JUN26\", \"match_confidence\": 0.30, \"resolution_equivalent\": false, \"safe_to_arb\": false, \"resolution_risks\": [\"Polymarket market is about Apple releasing a foldable iPhone, while Kalshi market is about OpenAI releasing GPT-5\", \"Completely different underlying events in different industries\", \"No overlap in resolution criteria whatsoever\"], \"reasoning\": \"These markets concern entirely different events. The Polymarket contract asks whether Apple will release a foldable iPhone in 2026, while the Kalshi contract asks whether OpenAI will release GPT-5 before July 2026. Despite both being in the technology category, they track completely unrelated corporate product launches by different companies (Apple vs. OpenAI) in different technology segments (consumer hardware vs. AI models). There is zero overlap in resolution conditions. These contracts are NOT equivalent and must not be arbitraged against each other.\"}"
+      }
+    ],
+    "model": "claude-sonnet-4-20250514",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 1623,
+      "output_tokens": 278,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  },
+  {
+    "id": "msg_03ZHFWFALiCCEbxqQvxXqAGN",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"poly_event_id\": \"0x4567890123abcdef4567890123abcdef45678901\", \"kalshi_event_id\": \"SP500-6000-MAR26\", \"match_confidence\": 0.70, \"resolution_equivalent\": true, \"safe_to_arb\": false, \"resolution_risks\": [\"Polymarket specifies 'closing price on March 31, 2026' while Kalshi says 'closing price of the S&P 500 index on March 31, 2026' - functionally identical but sourced from potentially different providers\", \"Fallback handling differs: Polymarket uses 'last available closing price before that date' while Kalshi uses 'most recent prior closing price' - semantically the same but untested edge case\", \"The Polymarket market references SPX while Kalshi references 'S&P 500 index' via S&P Dow Jones Indices - both track the same index but the resolution source specificity differs\", \"If March 31 falls on a weekend or holiday, both markets defer to the prior close, but neither specifies handling for extended trading hours vs. regular session close\"], \"reasoning\": \"Both markets ask whether the S&P 500 will close above 6,000 on March 31, 2026. The core question is identical. However, there are subtle resolution risks. The data sources may differ: Polymarket does not explicitly name a resolution source, while Kalshi cites S&P Dow Jones Indices. In the rare event of a data discrepancy between providers, the markets could resolve differently. Additionally, the handling of the March 31 date if it falls on a non-trading day is described in similar but not identical language. While these risks are unlikely to materialize, the lack of identical resolution source specifications introduces enough uncertainty that this pair should be flagged for manual review before arbitraging.\"}"
+      }
+    ],
+    "model": "claude-sonnet-4-20250514",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 1912,
+      "output_tokens": 421,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+]
