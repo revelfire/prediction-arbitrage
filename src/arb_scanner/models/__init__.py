@@ -10,6 +10,7 @@ from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.config import (
     ArbThresholds,
     ClaudeConfig,
+    EmbeddingConfig,
     FeesConfig,
     FeeSchedule,
     KalshiVenueConfig,
@@ -29,6 +30,7 @@ __all__ = [
     "ArbOpportunity",
     "ArbThresholds",
     "ClaudeConfig",
+    "EmbeddingConfig",
     "ExecutionTicket",
     "FeesConfig",
     "FeeSchedule",

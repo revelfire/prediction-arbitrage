@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.0",
     "anthropic",
     "bm25s",
+    "numpy",
     "asyncpg",
     "typer",
     "structlog",

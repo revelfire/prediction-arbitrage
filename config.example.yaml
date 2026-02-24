@@ -15,6 +15,13 @@ claude:
   batch_size: 5
   match_cache_ttl_hours: 24
 
+embedding:
+  enabled: true
+  model: "voyage-3-lite"
+  api_key: "${VOYAGE_API_KEY}"
+  cosine_threshold: 0.60
+  dimensions: 512
+
 scanning:
   interval_seconds: 60
   mode: "continuous"

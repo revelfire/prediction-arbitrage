@@ -57,7 +57,7 @@ def _format_pair(poly: Market, kalshi: Market, bm25_score: float) -> str:
         f"Kalshi ID: {kalshi.event_id}\n"
         f"Kalshi Title: {kalshi.title}\n"
         f"Kalshi Resolution: {kalshi.resolution_criteria}\n"
-        f"BM25 Score: {bm25_score:.4f}\n"
+        f"Similarity Score: {bm25_score:.4f}\n"
     )
 
 

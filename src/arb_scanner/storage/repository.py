@@ -55,6 +55,29 @@ class Repository:
             json.dumps(market.raw_data, default=str),
         )
 
+    async def update_market_embedding(
+        self,
+        venue: str,
+        event_id: str,
+        embedding: list[float],
+    ) -> None:
+        """Persist a title embedding vector for a market.
+
+        The pgvector asyncpg integration handles ``list[float]`` to
+        ``vector`` conversion automatically via the registered type codec.
+
+        Args:
+            venue: Venue identifier (e.g. ``"polymarket"``).
+            event_id: Market event identifier.
+            embedding: Float vector from the embedding model.
+        """
+        await self._pool.execute(
+            Q.UPDATE_MARKET_EMBEDDING,
+            venue,
+            event_id,
+            embedding,
+        )
+
     # ------------------------------------------------------------------
     # Match result operations
     # ------------------------------------------------------------------

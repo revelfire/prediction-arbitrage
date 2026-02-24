@@ -12,6 +12,8 @@ import structlog
 from arb_scanner.cli.fixtures import build_output, build_scan_log, load_fixture_markets
 from arb_scanner.engine.calculator import calculate_arbs
 from arb_scanner.engine.tickets import generate_ticket
+from arb_scanner.matching.embedding import _market_key, generate_embeddings
+from arb_scanner.matching.embedding_prefilter import embedding_rerank
 from arb_scanner.matching.prefilter import prefilter_candidates
 from arb_scanner.matching.semantic import evaluate_pairs
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
@@ -130,18 +132,53 @@ async def _match_candidates(
     dry_run: bool,
     errors: list[str],
 ) -> list[tuple[Market, Market, MatchResult]]:
-    """Run BM25 prefilter, cache lookup, and semantic matching."""
+    """Run BM25 prefilter, embedding rerank, cache lookup, and semantic matching."""
     bm25_pairs = await prefilter_candidates(poly_markets, kalshi_markets)
     if not bm25_pairs:
         return []
 
-    uncached = bm25_pairs if dry_run else await _filter_cached(bm25_pairs, config)
+    filtered_pairs, embeddings = await _run_embedding_rerank(bm25_pairs, config)
+
+    if not dry_run and embeddings:
+        await _persist_embeddings(embeddings, config)
+
+    uncached = filtered_pairs if dry_run else await _filter_cached(filtered_pairs, config)
     match_results = await _run_semantic(uncached, config, errors)
 
     if not dry_run:
         await _cache_results(match_results, config)
 
-    return _zip_safe_matches(bm25_pairs, match_results)
+    return _zip_safe_matches(filtered_pairs, match_results)
+
+
+async def _run_embedding_rerank(
+    bm25_pairs: list[tuple[Market, Market, float]],
+    config: Settings,
+) -> tuple[list[tuple[Market, Market, float]], dict[str, list[float]]]:
+    """Run embedding-based reranking if enabled, otherwise pass through.
+
+    Returns:
+        Tuple of (filtered_pairs, embeddings_dict). The embeddings dict
+        is empty when embedding is disabled or on API error.
+    """
+    if not config.embedding.enabled or not config.embedding.api_key:
+        logger.info("embedding.skip", reason="disabled_or_no_key")
+        return bm25_pairs, {}
+
+    seen: dict[str, Market] = {}
+    for poly, kalshi, _ in bm25_pairs:
+        seen[_market_key(poly)] = poly
+        seen[_market_key(kalshi)] = kalshi
+    unique_markets = list(seen.values())
+
+    embeddings = await generate_embeddings(unique_markets, config.embedding)
+    filtered_pairs = await embedding_rerank(bm25_pairs, embeddings, config.embedding)
+    logger.info(
+        "embedding.filtered",
+        before=len(bm25_pairs),
+        after=len(filtered_pairs),
+    )
+    return filtered_pairs, embeddings
 
 
 async def _filter_cached(
@@ -242,18 +279,39 @@ async def _persist_results(
         logger.exception("persist_results_failed")
 
 
+async def _persist_embeddings(
+    embeddings: dict[str, list[float]],
+    config: Settings,
+) -> None:
+    """Write embedding vectors to the markets table (fire-and-forget).
+
+    Errors are logged but never propagated so a persistence failure
+    cannot break the scan pipeline.
+
+    Args:
+        embeddings: Mapping of ``"venue:event_id"`` to float vectors.
+        config: Application settings for database access.
+    """
+    from arb_scanner.storage.db import Database
+    from arb_scanner.storage.repository import Repository
+
+    try:
+        async with Database(config.storage.database_url) as db:
+            repo = Repository(db.pool)
+            for key, vector in embeddings.items():
+                venue, event_id = key.split(":", 1)
+                await repo.update_market_embedding(venue, event_id, vector)
+        logger.info("embedding.persisted", count=len(embeddings))
+    except Exception:
+        logger.exception("embedding.persist_failed")
+
+
 async def _record_snapshots(
     config: Settings,
     poly_markets: list[Market],
     kalshi_markets: list[Market],
 ) -> None:
-    """Record price snapshots for all fetched markets.
-
-    Args:
-        config: Application settings.
-        poly_markets: Markets fetched from Polymarket.
-        kalshi_markets: Markets fetched from Kalshi.
-    """
+    """Record price snapshots for all fetched markets."""
     from arb_scanner.storage.analytics_repository import AnalyticsRepository
     from arb_scanner.storage.db import Database
 
