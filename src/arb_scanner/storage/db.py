@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Self
 
 import asyncpg
+from pgvector.asyncpg import register_vector  # type: ignore[import-untyped]
 
 
 class Database:
@@ -32,8 +33,11 @@ class Database:
         return self._pool
 
     async def connect(self) -> None:
-        """Create the asyncpg connection pool."""
-        self._pool = await asyncpg.create_pool(self._database_url)
+        """Create the asyncpg connection pool with pgvector type support."""
+        self._pool = await asyncpg.create_pool(
+            self._database_url,
+            init=_init_connection,
+        )
 
     async def disconnect(self) -> None:
         """Close the asyncpg connection pool."""
@@ -66,3 +70,12 @@ class Database:
     ) -> None:
         """Exit async context manager and disconnect."""
         await self.disconnect()
+
+
+async def _init_connection(conn: asyncpg.Connection[asyncpg.Record]) -> None:
+    """Register pgvector types on each new pool connection.
+
+    Args:
+        conn: The newly created asyncpg connection.
+    """
+    await register_vector(conn)

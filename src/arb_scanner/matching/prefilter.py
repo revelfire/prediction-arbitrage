@@ -78,7 +78,7 @@ def _collect_pairs(
 async def prefilter_candidates(
     poly_markets: list[Market],
     kalshi_markets: list[Market],
-    top_k: int = 10,
+    top_k: int = 20,
 ) -> list[tuple[Market, Market, float]]:
     """Pre-filter candidate market pairs using BM25+ text similarity.
 

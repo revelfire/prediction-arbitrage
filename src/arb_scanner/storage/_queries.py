@@ -111,3 +111,8 @@ JOIN arb_opportunities o ON t.arb_id = o.id
 ORDER BY t.created_at DESC
 LIMIT $1;
 """
+
+UPDATE_MARKET_EMBEDDING = """
+UPDATE markets SET title_embedding = $3
+WHERE venue = $1 AND event_id = $2;
+"""

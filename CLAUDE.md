@@ -21,7 +21,7 @@ src/arb_scanner/
 ├── models/          # Pydantic data models (Market, MatchedPair, ArbOpportunity, etc.)
 ├── config/          # YAML config loader, settings dataclass, fee schedules
 ├── ingestion/       # Async API clients: PolymarketClient, KalshiClient
-├── matching/        # Pre-filter (BM25 + pgvector), Claude semantic matcher, cache layer
+├── matching/        # Pre-filter (BM25 + pgvector), embedding.py (Voyage AI client), embedding_prefilter.py (cosine rerank), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
 ├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), stdout reporter
@@ -36,6 +36,7 @@ src/arb_scanner/
 - Human-in-the-loop: system produces execution tickets, never places orders
 - Match results cached in PostgreSQL with 24h TTL
 - BM25 pre-filter via bm25s (method="bm25+") reduces candidate pairs before Claude API calls
+- Voyage AI embedding pre-filter: after BM25 recall, cosine similarity of title embeddings drops low-quality pairs before Claude evaluation. Configured via `EmbeddingConfig` (model, api_key, cosine_threshold, dimensions). Gracefully degrades to BM25-only when disabled, missing key, or API error. Embeddings persisted to `markets.title_embedding` (pgvector) for reuse.
 - Fee models differ per venue (Polymarket: % on winnings; Kalshi: per-contract flat fee)
 
 ## API Integration Notes
@@ -98,7 +99,9 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 ## Active Technologies
 - Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml (001-arb-scanner-core)
 - PostgreSQL 15+ with pgvector extension (via asyncpg) (001-arb-scanner-core)
+- Voyage AI (voyage-3-lite) + numpy + pgvector Python package for embedding pre-filter (003-pgvector-embedding-prefilter)
 
 ## Recent Changes
+- 003-pgvector-embedding-prefilter: Added Voyage AI embedding client (`matching/embedding.py`), cosine-similarity reranker (`matching/embedding_prefilter.py`), `EmbeddingConfig` model, pgvector type registration in `db.py`, `UPDATE_MARKET_EMBEDDING` query + `update_market_embedding()` repository method, fire-and-forget embedding persistence in orchestrator, and integration tests for the full embedding pipeline
 - 002-arb-history-analytics: Added `history` and `stats` CLI commands, analytics models (SpreadSnapshot, PairStats, ScannerHealth), analytics_repository with time-windowed queries, date-range filtering on `report`/`match-audit`, and V002 migration for spread_snapshots + scan_log tables
 - 001-arb-scanner-core: Added Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml

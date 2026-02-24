@@ -47,6 +47,16 @@ class ClaudeConfig(BaseModel):
     match_cache_ttl_hours: int = 24
 
 
+class EmbeddingConfig(BaseModel):
+    """Configuration for the vector embedding pre-filter."""
+
+    enabled: bool = True
+    model: str = "voyage-3-lite"
+    api_key: str = ""
+    cosine_threshold: float = 0.60
+    dimensions: int = 512
+
+
 class ScanConfig(BaseModel):
     """Configuration for the scanning loop."""
 
@@ -99,6 +109,7 @@ class Settings(BaseModel):
 
     venues: VenuesConfig = VenuesConfig()
     claude: ClaudeConfig = ClaudeConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
     scanning: ScanConfig = ScanConfig()
     arb_thresholds: ArbThresholds = ArbThresholds()
     notifications: NotificationConfig = NotificationConfig()
