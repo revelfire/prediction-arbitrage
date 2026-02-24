@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from typing import Any
+
+import typer
 
 
 def load_config_safe(dry_run: bool) -> Any:
@@ -155,3 +158,30 @@ def _fmt_dec(value: Any) -> str:
     if value is None:
         return "N/A"
     return f"{float(value):.0f}"
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    """Parse an ISO 8601 date or datetime string into a timezone-aware UTC datetime.
+
+    Accepts formats: "YYYY-MM-DD" (start of day UTC), "YYYY-MM-DDTHH:MM:SS",
+    or "YYYY-MM-DDTHH:MM:SS+00:00".
+
+    Args:
+        value: ISO 8601 date or datetime string.
+
+    Returns:
+        Timezone-aware UTC datetime.
+
+    Raises:
+        typer.BadParameter: If the value cannot be parsed.
+    """
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise typer.BadParameter(
+            f"Invalid ISO 8601 date/datetime: '{value}'. "
+            "Expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."
+        ) from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
