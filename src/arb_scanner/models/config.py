@@ -101,6 +101,18 @@ class FeesConfig(BaseModel):
     kalshi: FeeSchedule
 
 
+class TrendAlertConfig(BaseModel):
+    """Configuration for trend-based alerting on spread movements."""
+
+    enabled: bool = True
+    window_size: int = 10
+    convergence_threshold_pct: float = 0.25
+    divergence_threshold_pct: float = 0.50
+    cooldown_minutes: int = 15
+    max_consecutive_failures: int = 3
+    zero_opp_alert_scans: int = 5
+
+
 class Settings(BaseModel):
     """Top-level application settings.
 
@@ -116,3 +128,4 @@ class Settings(BaseModel):
     storage: StorageConfig
     logging: LoggingConfig = LoggingConfig()
     fees: FeesConfig
+    trend_alerts: TrendAlertConfig = TrendAlertConfig()

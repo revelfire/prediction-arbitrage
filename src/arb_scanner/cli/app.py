@@ -34,6 +34,11 @@ from arb_scanner.cli import analytics_commands as _analytics  # noqa: E402
 
 _analytics.register(app)
 
+# Register alert commands (alerts) from separate module.
+from arb_scanner.cli import alert_commands as _alerts  # noqa: E402
+
+_alerts.register(app)
+
 
 @app.command()
 def scan(

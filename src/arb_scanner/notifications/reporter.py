@@ -6,7 +6,12 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from arb_scanner.models.analytics import PairSummary, ScanHealthSummary, SpreadSnapshot
+from arb_scanner.models.analytics import (
+    PairSummary,
+    ScanHealthSummary,
+    SpreadSnapshot,
+    TrendAlert,
+)
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.market import Venue
 
@@ -42,13 +47,9 @@ def format_markdown_report(
     return f"# Arbitrage Opportunities Report\n\n{_HEADER}{''.join(rows)}"
 
 
-def _build_ticket_map(
-    tickets: list[ExecutionTicket] | None,
-) -> dict[str, ExecutionTicket]:
+def _build_ticket_map(tickets: list[ExecutionTicket] | None) -> dict[str, ExecutionTicket]:
     """Build a lookup from arb_id to ExecutionTicket."""
-    if not tickets:
-        return {}
-    return {t.arb_id: t for t in tickets}
+    return {t.arb_id: t for t in tickets} if tickets else {}
 
 
 def _format_row(opp: ArbOpportunity, ticket_map: dict[str, ExecutionTicket]) -> str:
@@ -80,14 +81,7 @@ def _format_row(opp: ArbOpportunity, ticket_map: dict[str, ExecutionTicket]) -> 
 
 
 def _extract_legs(opp: ArbOpportunity) -> tuple[str, float, str, float]:
-    """Extract buy/sell venue names and prices from an opportunity.
-
-    Args:
-        opp: The arbitrage opportunity.
-
-    Returns:
-        Tuple of (buy_venue_name, buy_price, sell_venue_name, sell_price).
-    """
+    """Extract buy/sell venue names and prices from an opportunity."""
     if opp.buy_venue == Venue.POLYMARKET:
         buy_price = float(opp.poly_market.yes_ask)
         sell_price = float(opp.kalshi_market.no_ask)
@@ -108,9 +102,10 @@ def format_tickets_table(tickets: list[dict[str, Any]]) -> str:
     """
     if not tickets:
         return "No execution tickets found.\n"
-    header = f"{'ARB_ID':36} {'STATUS':10} {'COST':>10} {'PROFIT':>10} {'CREATED':19}\n"
-    sep = "-" * 89 + "\n"
-    lines = [header, sep]
+    lines = [
+        f"{'ARB_ID':36} {'STATUS':10} {'COST':>10} {'PROFIT':>10} {'CREATED':19}\n",
+        "-" * 89 + "\n",
+    ]
     for t in tickets:
         created = _format_dt(t.get("created_at"))
         lines.append(
@@ -136,8 +131,7 @@ def format_matches_table(matches: list[dict[str, Any]]) -> str:
         f"{'POLY_ID':20} {'KALSHI_ID':20} {'CONF':>5} "
         f"{'EQ':>3} {'SAFE':>4} {'REASONING':30} {'EXPIRED':>7}\n"
     )
-    sep = "-" * 95 + "\n"
-    lines = [header, sep]
+    lines = [header, "-" * 95 + "\n"]
     for m in matches:
         expired = _is_expired(m.get("ttl_expires"))
         reasoning = _truncate(str(m.get("reasoning", "")), 30)
@@ -156,7 +150,7 @@ def format_spread_history(pair_label: str, snapshots: list[SpreadSnapshot]) -> s
     """Format spread snapshots as an ASCII table.
 
     Args:
-        pair_label: Human-readable label for the pair (e.g. "abc123 / KALSHI-XYZ").
+        pair_label: Human-readable label for the pair.
         snapshots: List of SpreadSnapshot models to render.
 
     Returns:
@@ -169,18 +163,15 @@ def format_spread_history(pair_label: str, snapshots: list[SpreadSnapshot]) -> s
         f"{'DETECTED_AT':19}  {'NET_SPREAD':>10}  {'ANNUALIZED':>10}"
         f"  {'DEPTH_RISK':>10}  {'MAX_SIZE':>10}\n"
     )
-    sep = "-" * 69 + "\n"
-    lines = [header, sep]
+    lines = [header, "-" * 69 + "\n"]
     for s in snapshots:
         ann = (
             f"{float(s.annualized_return) * 100:.1f}%" if s.annualized_return is not None else "N/A"
         )
         lines.append(
             f"{s.detected_at.strftime('%Y-%m-%d %H:%M'):19}"
-            f"  {float(s.net_spread_pct) * 100:9.2f}%"
-            f"  {ann:>10}"
-            f"  {'Yes' if s.depth_risk else 'No':>10}"
-            f"  ${float(s.max_size):>9.0f}\n"
+            f"  {float(s.net_spread_pct) * 100:9.2f}%  {ann:>10}"
+            f"  {'Yes' if s.depth_risk else 'No':>10}  ${float(s.max_size):>9.0f}\n"
         )
     return "".join(lines)
 
@@ -193,26 +184,48 @@ def format_stats_report(
     """Format pair summaries and scan health as an ASCII report.
 
     Args:
-        summaries: List of PairSummary models (sorted by peak_spread desc).
-        health: List of ScanHealthSummary models.
-        top_n: Maximum number of pair summaries to display.
+        summaries: PairSummary models (sorted by peak_spread desc).
+        health: ScanHealthSummary models.
+        top_n: Maximum pair summaries to display.
 
     Returns:
         Formatted report string with two sections.
     """
-    parts: list[str] = []
-    # Section 1: Top Pairs
-    if not summaries:
-        parts.append("Top Pairs by Peak Spread\n(no data)\n")
-    else:
-        parts.append(_format_pairs_section(summaries[:top_n]))
-    parts.append("")
-    # Section 2: Scanner Health
-    if not health:
-        parts.append("Scanner Health\n(no data)\n")
-    else:
-        parts.append(_format_health_section(health))
-    return "\n".join(parts)
+    pairs = (
+        _format_pairs_section(summaries[:top_n])
+        if summaries
+        else "Top Pairs by Peak Spread\n(no data)\n"
+    )
+    hlth = _format_health_section(health) if health else "Scanner Health\n(no data)\n"
+    return f"{pairs}\n{hlth}"
+
+
+def format_alerts_table(alerts: list[TrendAlert]) -> str:
+    """Format trend alerts as a Markdown table.
+
+    Args:
+        alerts: List of trend alerts to format.
+
+    Returns:
+        Markdown-formatted table string.
+    """
+    if not alerts:
+        return "No trend alerts found."
+    lines: list[str] = [
+        "## Trend Alerts",
+        "",
+        "| Type | Pair | Before | After | Message | Time |",
+        "|------|------|--------|-------|---------|------|",
+    ]
+    for a in alerts:
+        pair = f"{a.poly_event_id or 'N/A'}/{a.kalshi_event_id or 'N/A'}"
+        before = f"{float(a.spread_before):.2%}" if a.spread_before is not None else "N/A"
+        after = f"{float(a.spread_after):.2%}" if a.spread_after is not None else "N/A"
+        time_str = a.dispatched_at.strftime("%Y-%m-%d %H:%M")
+        lines.append(
+            f"| {a.alert_type.value} | {pair} | {before} | {after} | {a.message} | {time_str} |"
+        )
+    return "\n".join(lines)
 
 
 def _format_pairs_section(summaries: list[PairSummary]) -> str:
@@ -222,8 +235,7 @@ def _format_pairs_section(summaries: list[PairSummary]) -> str:
         f"{'POLY_ID':20} {'KALSHI_ID':20} {'PEAK':>7} {'AVG':>7}"
         f" {'DETECTIONS':>10} {'FIRST_SEEN':19} {'LAST_SEEN':19}\n"
     )
-    sep = "-" * 108 + "\n"
-    lines = [header, sep]
+    lines = [header, "-" * 108 + "\n"]
     for s in summaries:
         lines.append(
             f"{_truncate(s.poly_event_id, 20):20}"
@@ -244,16 +256,12 @@ def _format_health_section(health: list[ScanHealthSummary]) -> str:
         f"{'HOUR':19} {'SCANS':>6} {'AVG_DURATION':>12}"
         f" {'LLM_CALLS':>10} {'OPPS_FOUND':>10} {'ERRORS':>7}\n"
     )
-    sep = "-" * 70 + "\n"
-    lines = [header, sep]
+    lines = [header, "-" * 70 + "\n"]
     for h in health:
         lines.append(
             f"{h.hour.strftime('%Y-%m-%d %H:%M'):19}"
-            f" {h.scan_count:>6}"
-            f" {h.avg_duration_s:11.1f}s"
-            f" {h.total_llm_calls:>10}"
-            f" {h.total_opps:>10}"
-            f" {h.total_errors:>7}\n"
+            f" {h.scan_count:>6} {h.avg_duration_s:11.1f}s"
+            f" {h.total_llm_calls:>10} {h.total_opps:>10} {h.total_errors:>7}\n"
         )
     return "".join(lines)
 
@@ -269,16 +277,12 @@ def write_output(text: str) -> None:
 
 def _truncate(text: str, max_len: int) -> str:
     """Truncate a string to max_len, appending ellipsis if needed."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
+    return text if len(text) <= max_len else text[: max_len - 3] + "..."
 
 
 def _fmt_decimal(value: Any) -> str:
     """Format a decimal-like value to 2 decimal places."""
-    if value is None:
-        return "N/A"
-    return f"{float(value):.2f}"
+    return "N/A" if value is None else f"{float(value):.2f}"
 
 
 def _format_dt(value: Any) -> str:

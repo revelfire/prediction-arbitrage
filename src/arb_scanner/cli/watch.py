@@ -9,8 +9,11 @@ from typing import Any
 import structlog
 
 from arb_scanner.cli.orchestrator import run_scan
+from arb_scanner.models.analytics import TrendAlert
 from arb_scanner.models.arbitrage import ArbOpportunity
 from arb_scanner.models.config import NotificationConfig, Settings
+from arb_scanner.notifications.alert_webhook import dispatch_trend_alert
+from arb_scanner.notifications.trend_detector import TrendDetector
 from arb_scanner.notifications.webhook import dispatch_webhook
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="cli.watch")
@@ -34,6 +37,7 @@ async def run_watch(
         dry_run: Use fixture data instead of live APIs.
     """
     seen_ids: set[str] = set()
+    detector = TrendDetector(config.trend_alerts) if config.trend_alerts.enabled else None
     interval = config.scanning.interval_seconds
     notif = config.notifications
     min_spread = Decimal(str(notif.min_spread_to_notify_pct))
@@ -53,6 +57,14 @@ async def run_watch(
         await _notify_new_opps(new_opps, notif)
         for opp in new_opps:
             seen_ids.add(opp.id)
+
+        if detector is not None:
+            trend_alerts = detector.ingest(result)
+            if trend_alerts:
+                await _dispatch_trend_alerts(trend_alerts, notif)
+                if not dry_run:
+                    await _persist_trend_alerts(trend_alerts, config)
+            logger.info("watch_trend_check", cycle=cycle, trend_alerts=len(trend_alerts))
 
         logger.info("watch_cycle_done", cycle=cycle, new_alerts=len(new_opps))
         await _interruptible_sleep(interval, stop_event)
@@ -95,6 +107,48 @@ async def _notify_new_opps(
             slack_url=notif.slack_webhook,
             discord_url=notif.discord_webhook,
         )
+
+
+async def _dispatch_trend_alerts(
+    alerts: list[TrendAlert],
+    notif: NotificationConfig,
+) -> None:
+    """Dispatch trend alert webhooks.
+
+    Args:
+        alerts: Trend alerts to dispatch.
+        notif: NotificationConfig with webhook URLs and enabled flag.
+    """
+    if not notif.enabled:
+        return
+    for alert in alerts:
+        await dispatch_trend_alert(
+            alert,
+            slack_url=notif.slack_webhook,
+            discord_url=notif.discord_webhook,
+        )
+
+
+async def _persist_trend_alerts(
+    alerts: list[TrendAlert],
+    config: Settings,
+) -> None:
+    """Persist trend alerts to DB (fire-and-forget).
+
+    Args:
+        alerts: Trend alerts to persist.
+        config: Application settings with database URL.
+    """
+    from arb_scanner.storage.analytics_repository import AnalyticsRepository
+    from arb_scanner.storage.db import Database
+
+    try:
+        async with Database(config.storage.database_url) as db:
+            repo = AnalyticsRepository(db.pool)
+            for alert in alerts:
+                await repo.insert_trend_alert(alert)
+    except Exception:
+        logger.exception("trend_alert_persist_failed")
 
 
 async def _interruptible_sleep(seconds: int, stop_event: asyncio.Event) -> None:

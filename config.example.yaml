@@ -37,6 +37,15 @@ notifications:
   enabled: true
   min_spread_to_notify_pct: 0.02
 
+trend_alerts:
+  enabled: true
+  window_size: 10
+  convergence_threshold_pct: 0.25
+  divergence_threshold_pct: 0.50
+  cooldown_minutes: 15
+  max_consecutive_failures: 3
+  zero_opp_alert_scans: 5
+
 storage:
   database_url: "${DATABASE_URL}"
 
