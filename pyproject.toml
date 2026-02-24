@@ -48,3 +48,7 @@ packages = ["arb_scanner"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m \"not live\""
+markers = [
+    "live: requires live API access (set LIVE_TESTS=1 to run)",
+]

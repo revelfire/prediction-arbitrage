@@ -177,7 +177,8 @@ def _parse_kalshi_market(raw: dict[str, object]) -> Market | None:
 
         rules = _build_rules(raw)
         expiry = _parse_expiry(raw.get("expiration_time"))
-        volume = _safe_decimal(raw.get("volume_fp", "0"))
+        volume_raw = raw.get("volume_dollars_24h_fp") or raw.get("volume_fp", "0")
+        volume = _safe_decimal(volume_raw)
 
         return Market(
             venue=Venue.KALSHI,
