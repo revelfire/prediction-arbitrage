@@ -133,6 +133,7 @@ class TestHelpText:
         assert result.exit_code == 0
         assert "--host" in result.output
         assert "--port" in result.output
+        assert "--no-db" in result.output
 
 
 class TestMigrateCommand:
@@ -148,7 +149,7 @@ class TestMigrateCommand:
 class TestServeCommand:
     """Tests for the serve command."""
 
-    @patch("arb_scanner.cli.app.load_config", side_effect=RuntimeError("no config"))
+    @patch("arb_scanner.cli.app.load_config_safe", side_effect=RuntimeError("no config"))
     def test_config_failure(self, mock_config: Any) -> None:
         """Serve exits 1 when config loading fails."""
         result = runner.invoke(app, ["serve"])
@@ -156,7 +157,7 @@ class TestServeCommand:
 
     @patch("uvicorn.run")
     @patch("arb_scanner.api.app.create_app")
-    @patch("arb_scanner.cli.app.load_config")
+    @patch("arb_scanner.cli.app.load_config_safe")
     def test_serve_starts_uvicorn(
         self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
     ) -> None:
@@ -165,12 +166,12 @@ class TestServeCommand:
         mock_create_app.return_value = fake_app
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
-        mock_create_app.assert_called_once_with(mock_config.return_value)
+        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=False)
         mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
 
     @patch("uvicorn.run")
     @patch("arb_scanner.api.app.create_app")
-    @patch("arb_scanner.cli.app.load_config")
+    @patch("arb_scanner.cli.app.load_config_safe")
     def test_serve_custom_host_port(
         self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
     ) -> None:
@@ -180,3 +181,17 @@ class TestServeCommand:
         result = runner.invoke(app, ["serve", "--host", "127.0.0.1", "--port", "9000"])
         assert result.exit_code == 0
         mock_uvicorn.assert_called_once_with(fake_app, host="127.0.0.1", port=9000)
+
+    @patch("uvicorn.run")
+    @patch("arb_scanner.api.app.create_app")
+    @patch("arb_scanner.cli.app.load_config_safe")
+    def test_serve_no_db_flag(
+        self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
+    ) -> None:
+        """Serve passes --no-db to create_app."""
+        fake_app = MagicMock()
+        mock_create_app.return_value = fake_app
+        result = runner.invoke(app, ["serve", "--no-db"])
+        assert result.exit_code == 0
+        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=True)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)

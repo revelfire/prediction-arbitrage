@@ -116,3 +116,22 @@ UPDATE_MARKET_EMBEDDING = """
 UPDATE markets SET title_embedding = $3
 WHERE venue = $1 AND event_id = $2;
 """
+
+UPDATE_MARKET_EMBEDDING_384 = """
+UPDATE markets SET title_embedding_384 = $3
+WHERE venue = $1 AND event_id = $2;
+"""
+
+GET_CACHED_EMBEDDINGS_384 = """
+SELECT venue, event_id, title_embedding_384
+FROM markets
+WHERE title_embedding_384 IS NOT NULL
+  AND (venue, event_id) = ANY($1::record[]);
+"""
+
+GET_CACHED_EMBEDDINGS_512 = """
+SELECT venue, event_id, title_embedding
+FROM markets
+WHERE title_embedding IS NOT NULL
+  AND (venue, event_id) = ANY($1::record[]);
+"""

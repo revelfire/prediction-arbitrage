@@ -21,6 +21,8 @@ class PolymarketVenueConfig(BaseModel):
     clob_base_url: str = "https://clob.polymarket.com"
     enabled: bool = True
     rate_limit_per_sec: int = 10
+    min_volume_24h: Decimal = Decimal("0")
+    max_markets: int = 0
 
 
 class KalshiVenueConfig(BaseModel):
@@ -28,7 +30,9 @@ class KalshiVenueConfig(BaseModel):
 
     base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     enabled: bool = True
-    rate_limit_per_sec: int = 20
+    rate_limit_per_sec: int = 10
+    min_volume_24h: Decimal = Decimal("0")
+    max_markets: int = 0
 
 
 class VenuesConfig(BaseModel):
@@ -51,10 +55,11 @@ class EmbeddingConfig(BaseModel):
     """Configuration for the vector embedding pre-filter."""
 
     enabled: bool = True
-    model: str = "voyage-3-lite"
+    provider: str = "local"
+    model: str = "BAAI/bge-small-en-v1.5"
     api_key: str = ""
     cosine_threshold: float = 0.60
-    dimensions: int = 512
+    dimensions: int = 384
 
 
 class ScanConfig(BaseModel):

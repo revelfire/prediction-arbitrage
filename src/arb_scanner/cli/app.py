@@ -295,17 +295,18 @@ async def _run_migrate(config: Any) -> list[str]:
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the dashboard server."),
     port: int = typer.Option(8000, "--port", help="Port for the dashboard server."),
+    no_db: bool = typer.Option(False, "--no-db", help="Start without database (UI preview only)."),
 ) -> None:
     """Start the web dashboard and API server."""
     try:
-        config = load_config()
+        config = load_config_safe(no_db)
     except Exception as exc:
         logger.error("config_load_failed", error=str(exc))
         raise typer.Exit(code=1) from exc
 
     from arb_scanner.api.app import create_app
 
-    api_app = create_app(config)
+    api_app = create_app(config, no_db=no_db)
 
     import uvicorn
 

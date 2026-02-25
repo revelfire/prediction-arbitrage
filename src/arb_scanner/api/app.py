@@ -23,20 +23,29 @@ _STATIC_DIR = Path(__file__).parent / "static"
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage database pool lifecycle."""
     config: Settings = app.state.config
-    db = Database(config.storage.database_url)
-    await db.connect()
-    app.state.db = db
-    logger.info("api.started", host=config.dashboard.host, port=config.dashboard.port)
+    no_db: bool = getattr(app.state, "no_db", False)
+    if no_db:
+        app.state.db = None
+        logger.info(
+            "api.started", host=config.dashboard.host, port=config.dashboard.port, db="disabled"
+        )
+    else:
+        db = Database(config.storage.database_url)
+        await db.connect()
+        app.state.db = db
+        logger.info("api.started", host=config.dashboard.host, port=config.dashboard.port)
     yield
-    await db.disconnect()
+    if not no_db and app.state.db is not None:
+        await app.state.db.disconnect()
     logger.info("api.stopped")
 
 
-def create_app(config: Settings) -> FastAPI:
+def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Application settings.
+        no_db: When True, skip database connection (UI-only mode).
 
     Returns:
         Configured FastAPI instance.
@@ -47,6 +56,7 @@ def create_app(config: Settings) -> FastAPI:
         lifespan=_lifespan,
     )
     app.state.config = config
+    app.state.no_db = no_db
 
     # Static files
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

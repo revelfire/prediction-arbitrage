@@ -61,10 +61,7 @@ class Repository:
         event_id: str,
         embedding: list[float],
     ) -> None:
-        """Persist a title embedding vector for a market.
-
-        The pgvector asyncpg integration handles ``list[float]`` to
-        ``vector`` conversion automatically via the registered type codec.
+        """Persist a 512-dim title embedding vector for a market.
 
         Args:
             venue: Venue identifier (e.g. ``"polymarket"``).
@@ -77,6 +74,54 @@ class Repository:
             event_id,
             embedding,
         )
+
+    async def update_market_embedding_384(
+        self,
+        venue: str,
+        event_id: str,
+        embedding: list[float],
+    ) -> None:
+        """Persist a 384-dim title embedding vector for a market.
+
+        Args:
+            venue: Venue identifier (e.g. ``"polymarket"``).
+            event_id: Market event identifier.
+            embedding: Float vector from the embedding model.
+        """
+        await self._pool.execute(
+            Q.UPDATE_MARKET_EMBEDDING_384,
+            venue,
+            event_id,
+            embedding,
+        )
+
+    async def get_cached_embeddings(
+        self,
+        pairs: list[tuple[str, str]],
+        dimensions: int,
+    ) -> dict[str, list[float]]:
+        """Load cached embeddings from pgvector for the given markets.
+
+        Args:
+            pairs: List of ``(venue, event_id)`` tuples to look up.
+            dimensions: Embedding dimensions (384 or 512) to pick the
+                correct column.
+
+        Returns:
+            Dict mapping ``"venue:event_id"`` to float vectors.
+        """
+        if not pairs:
+            return {}
+
+        query = Q.GET_CACHED_EMBEDDINGS_384 if dimensions == 384 else Q.GET_CACHED_EMBEDDINGS_512
+        rows = await self._pool.fetch(query, pairs)
+        result: dict[str, list[float]] = {}
+        for row in rows:
+            col = "title_embedding_384" if dimensions == 384 else "title_embedding"
+            vec = row[col]
+            if vec is not None:
+                result[f"{row['venue']}:{row['event_id']}"] = list(vec)
+        return result
 
     # ------------------------------------------------------------------
     # Match result operations

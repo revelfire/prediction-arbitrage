@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from operator import attrgetter
 
 import structlog
 
@@ -41,11 +42,18 @@ class KalshiClient(BaseVenueClient):
     # ------------------------------------------------------------------
 
     async def fetch_markets(self) -> list[Market]:
-        """Fetch all open Kalshi markets via cursor-based pagination.
+        """Fetch open Kalshi markets via cursor-based pagination.
+
+        Applies client-side volume filtering (``min_volume_24h``) and
+        caps results at ``max_markets`` (0 = unlimited).  Results are
+        sorted by 24h volume descending so the most liquid markets
+        appear first when capped.
 
         Returns:
             Normalised :class:`Market` list.
         """
+        min_vol = self._cfg.min_volume_24h
+        max_markets = self._cfg.max_markets
         markets: list[Market] = []
         cursor: str | None = None
         while True:
@@ -53,9 +61,14 @@ class KalshiClient(BaseVenueClient):
             for raw in page:
                 market = _parse_kalshi_market(raw)
                 if market is not None:
+                    if min_vol and market.volume_24h < min_vol:
+                        continue
                     markets.append(market)
             if not cursor:
                 break
+        if max_markets:
+            markets.sort(key=attrgetter("volume_24h"), reverse=True)
+            markets = markets[:max_markets]
         logger.info("kalshi_fetch_complete", total=len(markets))
         return markets
 

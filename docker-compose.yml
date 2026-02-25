@@ -1,0 +1,66 @@
+services:
+  # PostgreSQL 15 with pgvector extension for vector similarity search
+  db:
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arb_scanner}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Run database migrations on startup (exits after completion)
+  migrate:
+    build: .
+    command: ["uv", "run", "arb-scanner", "migrate"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Web dashboard + REST API
+  dashboard:
+    build: .
+    ports:
+      - "${DASHBOARD_PORT:-8000}:8000"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Continuous scanner (watch mode with webhook alerts)
+  scanner:
+    build: .
+    command: ["uv", "run", "arb-scanner", "watch", "--interval", "${SCAN_INTERVAL:-60}"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot scan (run manually with: docker compose run --rm scan)
+  scan:
+    build: .
+    command: ["uv", "run", "arb-scanner", "scan"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles:
+      - tools
+
+volumes:
+  pgdata:

@@ -485,7 +485,7 @@ class TestKalshiVenueConfig:
         cfg = KalshiVenueConfig()
         assert cfg.base_url == "https://api.elections.kalshi.com/trade-api/v2"
         assert cfg.enabled is True
-        assert cfg.rate_limit_per_sec == 20
+        assert cfg.rate_limit_per_sec == 10
 
 
 class TestVenuesConfig:

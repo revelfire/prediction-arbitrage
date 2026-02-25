@@ -12,7 +12,8 @@ build/
 venv/
 
 # Environment files
-.env*
+.env
+.env.local
 
 # Data and databases
 data/

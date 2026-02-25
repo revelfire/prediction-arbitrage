@@ -16,6 +16,7 @@ dependencies = [
     "pgvector",
     "fastapi",
     "uvicorn[standard]",
+    "fastembed",
 ]
 
 [project.scripts]

@@ -70,11 +70,16 @@ class PolymarketClient(BaseVenueClient):
     # ------------------------------------------------------------------
 
     async def fetch_markets(self) -> list[Market]:
-        """Fetch all active Polymarket markets via Gamma API pagination.
+        """Fetch active Polymarket markets via Gamma API pagination.
+
+        Applies server-side volume filtering and sorts by volume
+        descending so the most liquid markets are fetched first.
+        Stops early when ``max_markets`` is reached (0 = unlimited).
 
         Returns:
             Normalised :class:`Market` list.
         """
+        max_markets = self._cfg.max_markets
         markets: list[Market] = []
         offset = 0
         while True:
@@ -85,6 +90,9 @@ class PolymarketClient(BaseVenueClient):
                 market = _parse_gamma_market(raw)
                 if market is not None:
                     markets.append(market)
+            if max_markets and len(markets) >= max_markets:
+                markets = markets[:max_markets]
+                break
             if len(page) < _PAGE_LIMIT:
                 break
             offset += _PAGE_LIMIT
@@ -126,7 +134,11 @@ class PolymarketClient(BaseVenueClient):
             "closed": "false",
             "limit": _PAGE_LIMIT,
             "offset": offset,
+            "order": "volume",
+            "ascending": "false",
         }
+        if self._cfg.min_volume_24h > 0:
+            params["volume_num_min"] = str(self._cfg.min_volume_24h)
         async with self.rate_limiter.acquire():
             resp = await self.client.get("/markets", params=params)
             resp.raise_for_status()
