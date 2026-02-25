@@ -311,6 +311,25 @@ class Repository:
             json.dumps(log.errors),
         )
 
+    async def upsert_scan_log(self, log: ScanLog) -> None:
+        """Insert or update a scan log record.
+
+        Args:
+            log: The ScanLog model to persist or update.
+        """
+        await self._pool.execute(
+            Q.UPSERT_SCAN_LOG,
+            log.id,
+            log.started_at,
+            log.completed_at,
+            log.poly_markets_fetched,
+            log.kalshi_markets_fetched,
+            log.candidate_pairs,
+            log.llm_evaluations,
+            log.opportunities_found,
+            json.dumps(log.errors),
+        )
+
 
 def _row_to_match_result(row: asyncpg.Record) -> MatchResult:
     """Convert an asyncpg Record to a MatchResult model."""

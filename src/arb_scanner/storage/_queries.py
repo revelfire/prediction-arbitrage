@@ -54,6 +54,22 @@ INSERT INTO scan_logs (
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
 """
 
+UPSERT_SCAN_LOG = """
+INSERT INTO scan_logs (
+    id, started_at, completed_at, poly_markets_fetched,
+    kalshi_markets_fetched, candidate_pairs, llm_evaluations,
+    opportunities_found, errors
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT (id) DO UPDATE SET
+    completed_at=EXCLUDED.completed_at,
+    poly_markets_fetched=EXCLUDED.poly_markets_fetched,
+    kalshi_markets_fetched=EXCLUDED.kalshi_markets_fetched,
+    candidate_pairs=EXCLUDED.candidate_pairs,
+    llm_evaluations=EXCLUDED.llm_evaluations,
+    opportunities_found=EXCLUDED.opportunities_found,
+    errors=EXCLUDED.errors;
+"""
+
 GET_CACHED_MATCH = """
 SELECT poly_event_id, kalshi_event_id, match_confidence,
        resolution_equivalent, resolution_risks, safe_to_arb,

@@ -421,7 +421,7 @@ class TestPersistEmbeddingsFireAndForget:
     @pytest.mark.asyncio()
     async def test_persist_embeddings_db_error_does_not_raise(self) -> None:
         """A database error during embedding persistence should not raise."""
-        from arb_scanner.cli.orchestrator import _persist_embeddings
+        from arb_scanner.cli._persist import persist_embeddings as _persist_embeddings
 
         config = _make_settings()
         embeddings = {"polymarket:p1": [0.1, 0.2], "kalshi:k1": [0.3, 0.4]}
