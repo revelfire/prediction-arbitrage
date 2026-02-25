@@ -19,6 +19,7 @@ from arb_scanner.models.config import (
     ScanConfig,
     Settings,
     StorageConfig,
+    TrendAlertConfig,
     VenuesConfig,
 )
 from arb_scanner.models.market import Market, Venue
@@ -579,6 +580,40 @@ class TestFeesConfig:
         assert cfg.kalshi.taker_fee_pct == Decimal("0.07")
 
 
+class TestTrendAlertConfig:
+    """Tests for TrendAlertConfig."""
+
+    def test_defaults(self) -> None:
+        """Verify default values are set correctly."""
+        cfg = TrendAlertConfig()
+        assert cfg.enabled is True
+        assert cfg.window_size == 10
+        assert cfg.convergence_threshold_pct == 0.25
+        assert cfg.divergence_threshold_pct == 0.50
+        assert cfg.cooldown_minutes == 15
+        assert cfg.max_consecutive_failures == 3
+        assert cfg.zero_opp_alert_scans == 5
+
+    def test_custom_values(self) -> None:
+        """Verify custom values override defaults."""
+        cfg = TrendAlertConfig(
+            enabled=False,
+            window_size=20,
+            convergence_threshold_pct=0.10,
+            divergence_threshold_pct=1.0,
+            cooldown_minutes=30,
+            max_consecutive_failures=5,
+            zero_opp_alert_scans=10,
+        )
+        assert cfg.enabled is False
+        assert cfg.window_size == 20
+        assert cfg.convergence_threshold_pct == 0.10
+        assert cfg.divergence_threshold_pct == 1.0
+        assert cfg.cooldown_minutes == 30
+        assert cfg.max_consecutive_failures == 5
+        assert cfg.zero_opp_alert_scans == 10
+
+
 class TestSettings:
     """Tests for the top-level Settings model."""
 
@@ -630,3 +665,18 @@ class TestSettings:
         assert s.venues.polymarket.enabled is False
         assert s.venues.kalshi.rate_limit_per_sec == 5
         assert s.scanning.interval_seconds == 30
+
+    def test_trend_alerts_default(self) -> None:
+        """Verify trend_alerts defaults to TrendAlertConfig with defaults."""
+        s = Settings(**self._minimal_settings_data())  # type: ignore[arg-type]
+        assert isinstance(s.trend_alerts, TrendAlertConfig)
+        assert s.trend_alerts.enabled is True
+        assert s.trend_alerts.window_size == 10
+
+    def test_trend_alerts_override(self) -> None:
+        """Verify trend_alerts can be overridden via dict."""
+        data = self._minimal_settings_data()
+        data["trend_alerts"] = {"enabled": False, "window_size": 25}
+        s = Settings(**data)  # type: ignore[arg-type]
+        assert s.trend_alerts.enabled is False
+        assert s.trend_alerts.window_size == 25

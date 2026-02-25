@@ -1,10 +1,12 @@
 """Pydantic data models for the arb scanner application."""
 
 from arb_scanner.models.analytics import (
+    AlertType,
     HourlyBucket,
     PairSummary,
     ScanHealthSummary,
     SpreadSnapshot,
+    TrendAlert,
 )
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.config import (
@@ -27,6 +29,7 @@ from arb_scanner.models.matching import MatchResult
 from arb_scanner.models.scan_log import ScanLog
 
 __all__ = [
+    "AlertType",
     "ArbOpportunity",
     "ArbThresholds",
     "ClaudeConfig",
@@ -48,6 +51,7 @@ __all__ = [
     "Settings",
     "SpreadSnapshot",
     "StorageConfig",
+    "TrendAlert",
     "Venue",
     "VenuesConfig",
 ]

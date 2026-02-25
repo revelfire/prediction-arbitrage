@@ -106,3 +106,19 @@ WHERE venue = $1
   AND snapshotted_at >= $3
 ORDER BY snapshotted_at DESC;
 """
+
+INSERT_TREND_ALERT = """
+INSERT INTO trend_alerts (
+    alert_type, poly_event_id, kalshi_event_id,
+    spread_before, spread_after, message, dispatched_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7);
+"""
+
+GET_RECENT_ALERTS = """
+SELECT alert_type, poly_event_id, kalshi_event_id,
+       spread_before, spread_after, message, dispatched_at
+FROM trend_alerts
+WHERE ($1::text IS NULL OR alert_type = $1)
+ORDER BY dispatched_at DESC
+LIMIT $2;
+"""

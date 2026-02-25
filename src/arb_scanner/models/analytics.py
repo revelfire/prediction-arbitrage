@@ -1,9 +1,33 @@
 """Analytics models for historical spread tracking and scan health."""
 
+import enum
 from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
+
+
+class AlertType(str, enum.Enum):
+    """Classification of trend-based alerts."""
+
+    convergence = "convergence"
+    divergence = "divergence"
+    new_high = "new_high"
+    disappeared = "disappeared"
+    health_consecutive_failures = "health_consecutive_failures"
+    health_zero_opps = "health_zero_opps"
+
+
+class TrendAlert(BaseModel):
+    """A single trend-based alert dispatched by the alerting engine."""
+
+    alert_type: AlertType
+    poly_event_id: str | None = None
+    kalshi_event_id: str | None = None
+    spread_before: Decimal | None = None
+    spread_after: Decimal | None = None
+    message: str
+    dispatched_at: datetime
 
 
 class SpreadSnapshot(BaseModel):

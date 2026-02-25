@@ -9,10 +9,12 @@ from typing import Any
 import asyncpg
 
 from arb_scanner.models.analytics import (
+    AlertType,
     HourlyBucket,
     PairSummary,
     ScanHealthSummary,
     SpreadSnapshot,
+    TrendAlert,
 )
 from arb_scanner.models.market import Market
 from arb_scanner.storage import _analytics_queries as AQ
@@ -215,6 +217,57 @@ class AnalyticsRepository:
         """
         rows = await self._pool.fetch(AQ.GET_PRICE_HISTORY, venue, event_id, since)
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Trend alerts (T015–T016)
+    # ------------------------------------------------------------------
+
+    async def insert_trend_alert(self, alert: TrendAlert) -> None:
+        """Persist a trend alert to the database.
+
+        Args:
+            alert: The TrendAlert model to store.
+        """
+        await self._pool.execute(
+            AQ.INSERT_TREND_ALERT,
+            alert.alert_type.value,
+            alert.poly_event_id,
+            alert.kalshi_event_id,
+            alert.spread_before,
+            alert.spread_after,
+            alert.message,
+            alert.dispatched_at,
+        )
+
+    async def get_recent_alerts(
+        self, limit: int = 20, alert_type: str | None = None
+    ) -> list[TrendAlert]:
+        """Fetch recent trend alerts from the database.
+
+        Args:
+            limit: Maximum number of alerts to return.
+            alert_type: Optional filter by alert type value.
+
+        Returns:
+            List of TrendAlert models ordered by dispatched_at descending.
+        """
+        rows = await self._pool.fetch(
+            AQ.GET_RECENT_ALERTS,
+            alert_type,
+            limit,
+        )
+        return [
+            TrendAlert(
+                alert_type=AlertType(row["alert_type"]),
+                poly_event_id=row["poly_event_id"],
+                kalshi_event_id=row["kalshi_event_id"],
+                spread_before=row["spread_before"],
+                spread_after=row["spread_after"],
+                message=row["message"],
+                dispatched_at=row["dispatched_at"],
+            )
+            for row in rows
+        ]
 
 
 # ------------------------------------------------------------------

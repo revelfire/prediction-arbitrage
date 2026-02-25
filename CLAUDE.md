@@ -24,8 +24,8 @@ src/arb_scanner/
 ├── matching/        # Pre-filter (BM25 + pgvector), embedding.py (Voyage AI client), embedding_prefilter.py (cosine rerank), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
 ├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository
-├── notifications/   # Webhook dispatcher (Slack/Discord), stdout reporter
-├── cli/             # Typer app: scan, watch, report, match-audit, history, stats commands
+├── notifications/   # Webhook dispatcher (Slack/Discord), trend alert detector + dispatch, stdout reporter
+├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts commands
 └── utils/           # Retry logic, rate limiter, async helpers
 ```
 
@@ -64,6 +64,7 @@ uv run arb-scanner report        # Generate latest arb report
 uv run arb-scanner match-audit   # Dump cached contract matches for review
 uv run arb-scanner history --pair POLY/KALSHI  # Spread history for a pair
 uv run arb-scanner stats         # Aggregated analytics and scanner health
+uv run arb-scanner alerts         # List recent trend alerts
 uv run arb-scanner migrate       # Apply pending SQL migrations
 uv run pytest                    # Run test suite (live tests excluded by default)
 LIVE_TESTS=1 uv run pytest tests/live/ -v  # Run live API tests (requires network)
@@ -108,6 +109,7 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 005-trend-alerting: Added TrendDetector engine with rolling-window convergence/divergence/new-high/disappeared/health detection. Alert webhooks dispatch via existing Slack/Discord infrastructure with distinct emoji/color per alert type. TrendAlertConfig with configurable thresholds, window size, and cooldown. Alert persistence to trend_alerts table (migration 010). New `alerts` CLI command.
 - 004-live-api-testing: Added live API test suite (`tests/live/`) for Polymarket, Kalshi, and Claude semantic matching. Fixed Kalshi volume field bug (`volume_fp` -> `volume_dollars_24h_fp` with fallback). Added `live` pytest marker gated by `LIVE_TESTS=1` env var, excluded from default runs via addopts. Added `requires_live` and `requires_anthropic` skip markers in live conftest.
 - 003-pgvector-embedding-prefilter: Added Voyage AI embedding client (`matching/embedding.py`), cosine-similarity reranker (`matching/embedding_prefilter.py`), `EmbeddingConfig` model, pgvector type registration in `db.py`, `UPDATE_MARKET_EMBEDDING` query + `update_market_embedding()` repository method, fire-and-forget embedding persistence in orchestrator, and integration tests for the full embedding pipeline
 - 002-arb-history-analytics: Added `history` and `stats` CLI commands, analytics models (SpreadSnapshot, PairStats, ScannerHealth), analytics_repository with time-windowed queries, date-range filtering on `report`/`match-audit`, and V002 migration for spread_snapshots + scan_log tables
