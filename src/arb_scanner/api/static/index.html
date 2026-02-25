@@ -23,6 +23,7 @@
         <button class="tab-btn" data-tab="health">Health</button>
         <button class="tab-btn" data-tab="alerts">Alerts</button>
         <button class="tab-btn" data-tab="tickets">Tickets</button>
+        <button class="tab-btn" data-tab="flippenings">Flippenings</button>
     </div>
 
     <!-- Content -->
@@ -158,6 +159,64 @@
                 </thead>
                 <tbody id="tickets-tbody">
                     <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Flippenings Tab -->
+        <div id="tab-flippenings" class="tab-content">
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Total Signals</div>
+                    <div class="value" id="flip-total">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Win Rate</div>
+                    <div class="value" id="flip-winrate">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Avg P&L</div>
+                    <div class="value" id="flip-avgpnl">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Avg Hold</div>
+                    <div class="value" id="flip-avghold">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Active Flippenings</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sport</th>
+                        <th>Side</th>
+                        <th>Entry</th>
+                        <th>Target</th>
+                        <th>Stop</th>
+                        <th>Size</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody id="flip-active-tbody">
+                    <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+
+            <div class="section-title">Recent History</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sport</th>
+                        <th>Side</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>P&L</th>
+                        <th>Hold</th>
+                        <th>Outcome</th>
+                    </tr>
+                </thead>
+                <tbody id="flip-history-tbody">
+                    <tr><td colspan="7" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
         </div>

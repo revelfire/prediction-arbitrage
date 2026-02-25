@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import Request
 
 from arb_scanner.models.config import Settings
@@ -33,6 +35,23 @@ async def get_analytics_repo(request: Request) -> AnalyticsRepository:
     """
     db = request.app.state.db
     return AnalyticsRepository(db.pool)
+
+
+async def get_flip_repo(request: Request) -> Any:
+    """Provide a FlippeningRepository from the app's database pool.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        FlippeningRepository backed by the shared connection pool.
+    """
+    from arb_scanner.storage.flippening_repository import (
+        FlippeningRepository,
+    )
+
+    db = request.app.state.db
+    return FlippeningRepository(db.pool)
 
 
 async def get_config(request: Request) -> Settings:

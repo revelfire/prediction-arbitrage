@@ -39,6 +39,11 @@ from arb_scanner.cli import alert_commands as _alerts  # noqa: E402
 
 _alerts.register(app)
 
+# Register flippening commands (flip-watch, flip-history, flip-stats) from separate module.
+from arb_scanner.cli import flippening_commands as _flippening  # noqa: E402
+
+_flippening.register(app)
+
 
 @app.command()
 def scan(
