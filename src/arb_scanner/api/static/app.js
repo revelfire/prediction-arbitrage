@@ -333,14 +333,25 @@ async function refreshFlippenings() {
         fetchJSON('/api/flippenings/stats'),
     ]);
 
-    // Stats cards
-    if (stats) {
-        el('flip-total').textContent = stats.total || 0;
-        const wr = stats.win_rate != null ? (parseFloat(stats.win_rate) * 100).toFixed(1) + '%' : '-';
-        el('flip-winrate').textContent = wr;
-        const ap = stats.avg_pnl != null ? (parseFloat(stats.avg_pnl) >= 0 ? '+' : '') + parseFloat(stats.avg_pnl).toFixed(4) : '-';
-        el('flip-avgpnl').textContent = ap;
-        el('flip-avghold').textContent = stats.avg_hold != null ? parseFloat(stats.avg_hold).toFixed(0) + 'm' : '-';
+    // Stats cards — stats is a list of per-sport rows, aggregate for summary
+    if (stats && Array.isArray(stats) && stats.length > 0) {
+        const total = stats.reduce((s, r) => s + (r.total || 0), 0);
+        const wAvg = (field) => {
+            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total || 0), 0);
+            return total > 0 ? weighted / total : null;
+        };
+        el('flip-total').textContent = total;
+        const wr = wAvg('win_rate');
+        el('flip-winrate').textContent = wr != null ? (wr * 100).toFixed(1) + '%' : '-';
+        const ap = wAvg('avg_pnl');
+        el('flip-avgpnl').textContent = ap != null ? (ap >= 0 ? '+' : '') + ap.toFixed(4) : '-';
+        const ah = wAvg('avg_hold');
+        el('flip-avghold').textContent = ah != null ? ah.toFixed(0) + 'm' : '-';
+    } else {
+        el('flip-total').textContent = 0;
+        el('flip-winrate').textContent = '-';
+        el('flip-avgpnl').textContent = '-';
+        el('flip-avghold').textContent = '-';
     }
 
     // Active table
