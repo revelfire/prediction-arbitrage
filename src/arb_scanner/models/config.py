@@ -113,6 +113,14 @@ class TrendAlertConfig(BaseModel):
     zero_opp_alert_scans: int = 5
 
 
+class DashboardConfig(BaseModel):
+    """Configuration for the web dashboard."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+
 class Settings(BaseModel):
     """Top-level application settings.
 
@@ -129,3 +137,4 @@ class Settings(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     fees: FeesConfig
     trend_alerts: TrendAlertConfig = TrendAlertConfig()
+    dashboard: DashboardConfig = DashboardConfig()

@@ -14,6 +14,8 @@ dependencies = [
     "structlog",
     "pyyaml",
     "pgvector",
+    "fastapi",
+    "uvicorn[standard]",
 ]
 
 [project.scripts]

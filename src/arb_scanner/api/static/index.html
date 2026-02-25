@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arb Scanner Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>Arb Scanner Dashboard</h1>
+        <div class="header-actions">
+            <span id="status-text"></span>
+            <button id="scan-btn" class="btn btn-primary">Run Scan</button>
+        </div>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" data-tab="opportunities">Opportunities</button>
+        <button class="tab-btn" data-tab="health">Health</button>
+        <button class="tab-btn" data-tab="alerts">Alerts</button>
+        <button class="tab-btn" data-tab="tickets">Tickets</button>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+        <!-- Opportunities Tab -->
+        <div id="tab-opportunities" class="tab-content active">
+            <div class="section-title">Recent Opportunities</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Pair</th>
+                        <th>Buy</th>
+                        <th>Sell</th>
+                        <th>Spread</th>
+                        <th>Max Size</th>
+                        <th>Depth</th>
+                        <th>Annualized</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody id="opps-tbody">
+                    <tr><td colspan="8" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+
+            <!-- Pair Detail (hidden by default) -->
+            <div id="pair-detail" class="pair-detail" style="display:none">
+                <h3>Spread History</h3>
+                <div id="pair-chart-container" class="chart-container">
+                    <canvas id="spread-chart"></canvas>
+                </div>
+            </div>
+
+            <div class="section-title">Top Pairs (24h)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Pair</th>
+                        <th>Peak Spread</th>
+                        <th>Avg Spread</th>
+                        <th>Detections</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                    </tr>
+                </thead>
+                <tbody id="summaries-tbody">
+                    <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Health Tab -->
+        <div id="tab-health" class="tab-content">
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Total Scans (24h)</div>
+                    <div class="value" id="metric-scans">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Avg Duration</div>
+                    <div class="value" id="metric-duration">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">LLM Calls</div>
+                    <div class="value" id="metric-llm">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Errors</div>
+                    <div class="value" id="metric-errors">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Opportunities</div>
+                    <div class="value" id="metric-opps">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Hourly Activity</div>
+            <div class="chart-container">
+                <canvas id="health-chart"></canvas>
+            </div>
+
+            <div class="section-title">Recent Scans</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Duration</th>
+                        <th>Markets</th>
+                        <th>Pairs</th>
+                        <th>Opps</th>
+                        <th>Errors</th>
+                    </tr>
+                </thead>
+                <tbody id="scans-tbody">
+                    <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Alerts Tab -->
+        <div id="tab-alerts" class="tab-content">
+            <div class="filter-bar">
+                <label>Filter by type:</label>
+                <select id="alert-type-filter">
+                    <option value="">All</option>
+                    <option value="convergence">Convergence</option>
+                    <option value="divergence">Divergence</option>
+                    <option value="new_high">New High</option>
+                    <option value="disappeared">Disappeared</option>
+                    <option value="health_consecutive_failures">Health: Failures</option>
+                    <option value="health_zero_opps">Health: Zero Opps</option>
+                </select>
+            </div>
+            <div id="alerts-list" class="scroll-container">
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Tickets Tab -->
+        <div id="tab-tickets" class="tab-content">
+            <div class="section-title">Pending Execution Tickets</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Arb ID</th>
+                        <th>Expected Cost</th>
+                        <th>Expected Profit</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tickets-tbody">
+                    <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <span id="last-refresh">Last refreshed: --</span>
+        <button id="refresh-btn" class="btn btn-primary btn-sm">Refresh Now</button>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
