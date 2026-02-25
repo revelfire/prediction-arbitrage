@@ -17,6 +17,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "fastembed",
+    "websockets>=16.0",
 ]
 
 [project.scripts]

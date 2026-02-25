@@ -325,6 +325,68 @@ async function expireTicket(arbId) {
     if (result) refreshTickets();
 }
 
+// --- Flippenings Tab ---
+async function refreshFlippenings() {
+    const [active, history, stats] = await Promise.all([
+        fetchJSON('/api/flippenings/active?limit=50'),
+        fetchJSON('/api/flippenings/history?limit=20'),
+        fetchJSON('/api/flippenings/stats'),
+    ]);
+
+    // Stats cards
+    if (stats) {
+        el('flip-total').textContent = stats.total || 0;
+        const wr = stats.win_rate != null ? (parseFloat(stats.win_rate) * 100).toFixed(1) + '%' : '-';
+        el('flip-winrate').textContent = wr;
+        const ap = stats.avg_pnl != null ? (parseFloat(stats.avg_pnl) >= 0 ? '+' : '') + parseFloat(stats.avg_pnl).toFixed(4) : '-';
+        el('flip-avgpnl').textContent = ap;
+        el('flip-avghold').textContent = stats.avg_hold != null ? parseFloat(stats.avg_hold).toFixed(0) + 'm' : '-';
+    }
+
+    // Active table
+    const activeTbody = el('flip-active-tbody');
+    if (activeTbody && active) {
+        if (active.length === 0) {
+            activeTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No active flippenings</td></tr>';
+        } else {
+            activeTbody.innerHTML = active.map(a => `
+                <tr>
+                    <td>${a.sport || ''}</td>
+                    <td>${a.side || ''}</td>
+                    <td>${formatUSD(a.price)}</td>
+                    <td>${a.target_exit ? formatUSD(a.target_exit) : '-'}</td>
+                    <td>${a.stop_loss ? formatUSD(a.stop_loss) : '-'}</td>
+                    <td>${a.suggested_size ? formatUSD(a.suggested_size) : '-'}</td>
+                    <td>${a.confidence ? formatPct(a.confidence) : '-'}</td>
+                </tr>
+            `).join('');
+        }
+    }
+
+    // History table
+    const histTbody = el('flip-history-tbody');
+    if (histTbody && history) {
+        if (history.length === 0) {
+            histTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No history</td></tr>';
+        } else {
+            histTbody.innerHTML = history.map(h => {
+                const pnl = h.realized_pnl != null ? (parseFloat(h.realized_pnl) >= 0 ? '+' : '') + parseFloat(h.realized_pnl).toFixed(4) : '-';
+                return `
+                    <tr>
+                        <td>${h.sport || ''}</td>
+                        <td>${h.side || ''}</td>
+                        <td>${h.entry_price ? formatUSD(h.entry_price) : '-'}</td>
+                        <td>${h.exit_price ? formatUSD(h.exit_price) : '-'}</td>
+                        <td>${pnl}</td>
+                        <td>${h.hold_minutes ? parseFloat(h.hold_minutes).toFixed(0) + 'm' : '-'}</td>
+                        <td>${h.exit_reason || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    }
+}
+
 // --- Scan Trigger ---
 async function triggerScan() {
     const btn = el('scan-btn');
@@ -351,6 +413,7 @@ async function refreshActiveTab() {
         case 'health': await refreshHealth(); break;
         case 'alerts': await refreshAlerts(); break;
         case 'tickets': await refreshTickets(); break;
+        case 'flippenings': await refreshFlippenings(); break;
     }
 }
 

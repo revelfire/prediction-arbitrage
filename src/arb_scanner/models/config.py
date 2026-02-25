@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class FeeSchedule(BaseModel):
@@ -126,6 +126,58 @@ class DashboardConfig(BaseModel):
     port: int = 8000
 
 
+class ConfidenceWeights(BaseModel):
+    """Weights for the flippening confidence scoring formula."""
+
+    magnitude: float = 0.45
+    strength: float = 0.30
+    speed: float = 0.25
+
+    @model_validator(mode="after")
+    def weights_sum_to_one(self) -> "ConfidenceWeights":
+        """Validate that weights sum to 1.0 within tolerance."""
+        total = self.magnitude + self.strength + self.speed
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"Confidence weights must sum to 1.0, got {total}")
+        return self
+
+
+class SportOverride(BaseModel):
+    """Per-sport threshold overrides for flippening detection."""
+
+    spike_threshold_pct: float | None = None
+    confidence_modifier: float = 1.0
+    min_confidence: float | None = None
+
+
+class FlippeningConfig(BaseModel):
+    """Configuration for the flippening mean reversion engine."""
+
+    enabled: bool = False
+    sports: list[str] = [
+        "nba",
+        "nhl",
+        "nfl",
+        "mlb",
+        "epl",
+        "ufc",
+    ]
+    spike_threshold_pct: float = 0.15
+    spike_window_minutes: int = 10
+    min_confidence: float = 0.60
+    reversion_target_pct: float = 0.70
+    stop_loss_pct: float = 0.15
+    base_position_usd: float = 100.0
+    max_position_usd: float = 500.0
+    max_hold_minutes: int = 45
+    pre_game_window_minutes: int = 30
+    ws_reconnect_max_seconds: int = 60
+    late_join_penalty: float = 0.80
+    polling_interval_seconds: float = 5.0
+    confidence_weights: ConfidenceWeights = ConfidenceWeights()
+    sport_overrides: dict[str, SportOverride] = {}
+
+
 class Settings(BaseModel):
     """Top-level application settings.
 
@@ -143,3 +195,4 @@ class Settings(BaseModel):
     fees: FeesConfig
     trend_alerts: TrendAlertConfig = TrendAlertConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    flippening: FlippeningConfig = FlippeningConfig()

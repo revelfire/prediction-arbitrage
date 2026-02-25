@@ -23,10 +23,11 @@ src/arb_scanner/
 ├── ingestion/       # Async API clients: PolymarketClient, KalshiClient
 ├── matching/        # Pre-filter (BM25 + pgvector), embedding.py (Voyage AI client), embedding_prefilter.py (cosine rerank), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
-├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository
+├── flippening/      # Mean reversion engine for live sports markets (spike detection, signal generation, WebSocket streaming)
+├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository, flippening_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), trend alert detector + dispatch, stdout reporter
-├── api/             # FastAPI REST API + static dashboard (serve command)
-├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts commands
+├── api/             # FastAPI REST API + static dashboard (serve command), flippening endpoints
+├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts, flip-watch/history/stats commands
 └── utils/           # Retry logic, rate limiter, async helpers
 ```
 
@@ -67,6 +68,10 @@ uv run arb-scanner match-audit   # Dump cached contract matches for review
 uv run arb-scanner history --pair POLY/KALSHI  # Spread history for a pair
 uv run arb-scanner stats         # Aggregated analytics and scanner health
 uv run arb-scanner alerts         # List recent trend alerts
+uv run arb-scanner flip-watch     # Live mean reversion monitor for sports markets
+uv run arb-scanner flip-watch --sports nba,nfl --dry-run  # Dry run with sport filter
+uv run arb-scanner flip-history   # Show completed flippening signals
+uv run arb-scanner flip-stats     # Aggregated flippening performance by sport
 uv run arb-scanner serve          # Start web dashboard at http://localhost:8000
 uv run arb-scanner serve --no-db # Dashboard preview without PostgreSQL
 uv run arb-scanner migrate       # Apply pending SQL migrations
@@ -126,12 +131,14 @@ For local development without Docker, just start the database: `docker compose u
 - Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml (001-arb-scanner-core)
 - PostgreSQL 15+ with pgvector extension (via asyncpg) (001-arb-scanner-core)
 - fastembed (ONNX, BAAI/bge-small-en-v1.5, 384-dim) for local embedding pre-filter. Voyage AI optional via `provider: voyage` (007-local-embeddings)
+- websockets (>=16.0) for Polymarket CLOB WebSocket price streaming in flippening engine. Polling fallback via httpx. (008-flippening-engine)
 
 ## Live Test Gating
 
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 008-flippening-engine: Added mean reversion engine for live sports markets. `flippening/` subpackage with SpikeDetector (threshold + confidence scoring), SignalGenerator (entry/exit/ticket), GameManager (lifecycle + baseline drift EC-006), WebSocket price streaming (with polling fallback), alert formatting (Slack/Discord). Sports filter classifies Polymarket markets by sport slug/tags. FlippeningConfig with per-sport overrides, confidence weights, late-join penalty. New CLI commands (`flip-watch`, `flip-history`, `flip-stats`), 3 REST API endpoints, Flippenings dashboard tab. Edge cases: late join penalty (EC-001), multiple flippenings blocked while signal active (EC-002), game resolution exit (EC-003), WS disconnect handling (EC-004), no-markets retry (EC-005), baseline drift detection (EC-006). Migration 012 (flippening_baselines, flippening_events, flippening_signals tables).
 - 007-local-embeddings: Replaced Voyage AI as default embedding provider with local ONNX model (BAAI/bge-small-en-v1.5 via fastembed, 384-dim). No API key needed for embeddings. Added embedding cache read path — previously-seen markets skip regeneration by loading from pgvector. Voyage AI remains available as `provider: voyage` fallback. New `title_embedding_384` column (migration 011).
 - 006-dashboard-web-ui: Added FastAPI REST API with 11 endpoints wrapping existing repository methods. Vanilla JS dashboard with dark-theme UI, Chart.js spread/health charts, tab-based layout (Opportunities, Health, Alerts, Tickets). DashboardConfig for host/port. `serve` CLI command starts uvicorn. Ticket approve/expire from dashboard. Auto-refresh every 30s.
 - 005-trend-alerting: Added TrendDetector engine with rolling-window convergence/divergence/new-high/disappeared/health detection. Alert webhooks dispatch via existing Slack/Discord infrastructure with distinct emoji/color per alert type. TrendAlertConfig with configurable thresholds, window size, and cooldown. Alert persistence to trend_alerts table (migration 010). New `alerts` CLI command.

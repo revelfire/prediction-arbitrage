@@ -10,6 +10,7 @@ from arb_scanner.models.market import Market, Venue
 from arb_scanner.models.matching import MatchResult
 
 _VALID_STATUSES = frozenset({"pending", "approved", "expired"})
+_VALID_TICKET_TYPES = frozenset({"arbitrage", "flippening"})
 
 
 class ArbOpportunity(BaseModel):
@@ -61,6 +62,7 @@ class ExecutionTicket(BaseModel):
     expected_cost: Decimal
     expected_profit: Decimal
     status: str = "pending"
+    ticket_type: str = "arbitrage"
 
     @field_validator("status")
     @classmethod
@@ -68,4 +70,12 @@ class ExecutionTicket(BaseModel):
         """Validate that status is one of 'pending', 'approved', or 'expired'."""
         if v not in _VALID_STATUSES:
             raise ValueError(f"status must be one of {_VALID_STATUSES}, got '{v}'")
+        return v
+
+    @field_validator("ticket_type")
+    @classmethod
+    def ticket_type_valid(cls, v: str) -> str:
+        """Validate that ticket_type is 'arbitrage' or 'flippening'."""
+        if v not in _VALID_TICKET_TYPES:
+            raise ValueError(f"ticket_type must be one of {_VALID_TICKET_TYPES}, got '{v}'")
         return v
