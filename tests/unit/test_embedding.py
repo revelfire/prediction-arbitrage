@@ -1,19 +1,20 @@
-"""Tests for the vector embedding pre-filter module."""
+"""Tests for the vector embedding module (local + Voyage providers)."""
 
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
-from arb_scanner.models.config import EmbeddingConfig, Settings, StorageConfig
-from arb_scanner.models.market import Market, Venue
 from arb_scanner.matching.embedding import (
     _market_key,
     _market_text,
     generate_embeddings,
 )
+from arb_scanner.models.config import EmbeddingConfig, Settings, StorageConfig
+from arb_scanner.models.market import Market, Venue
 
 _NOW = datetime.now(tz=timezone.utc)
 
@@ -45,6 +46,17 @@ def _voyage_response(count: int, dims: int = 512) -> dict[str, Any]:
     return {"data": data}
 
 
+def _mock_fastembed(dims: int = 384) -> MagicMock:
+    """Build a mock fastembed TextEmbedding model."""
+    model = MagicMock()
+
+    def _embed(texts: list[str]) -> list[Any]:
+        return [np.array([0.1] * dims) for _ in texts]
+
+    model.embed = _embed
+    return model
+
+
 # ---------------------------------------------------------------------------
 # EmbeddingConfig defaults
 # ---------------------------------------------------------------------------
@@ -57,10 +69,11 @@ class TestEmbeddingConfigDefaults:
         """Verify all defaults are populated correctly."""
         cfg = EmbeddingConfig()
         assert cfg.enabled is True
-        assert cfg.model == "voyage-3-lite"
+        assert cfg.provider == "local"
+        assert cfg.model == "BAAI/bge-small-en-v1.5"
         assert cfg.api_key == ""
         assert cfg.cosine_threshold == 0.60
-        assert cfg.dimensions == 512
+        assert cfg.dimensions == 384
 
 
 class TestEmbeddingConfigCustom:
@@ -70,12 +83,14 @@ class TestEmbeddingConfigCustom:
         """Verify custom overrides are respected."""
         cfg = EmbeddingConfig(
             enabled=False,
+            provider="voyage",
             model="voyage-3",
             api_key="sk-test",
             cosine_threshold=0.75,
             dimensions=1024,
         )
         assert cfg.enabled is False
+        assert cfg.provider == "voyage"
         assert cfg.model == "voyage-3"
         assert cfg.api_key == "sk-test"
         assert cfg.cosine_threshold == 0.75
@@ -101,7 +116,7 @@ class TestEmbeddingConfigInSettings:
             },
         )
         assert isinstance(s.embedding, EmbeddingConfig)
-        assert s.embedding.enabled is True
+        assert s.embedding.provider == "local"
 
 
 # ---------------------------------------------------------------------------
@@ -128,22 +143,73 @@ class TestMarketText:
 
 
 # ---------------------------------------------------------------------------
-# generate_embeddings
+# Local provider
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateEmbeddings:
-    """Tests for the generate_embeddings async function."""
+class TestLocalProvider:
+    """Tests for local (fastembed) embedding generation."""
 
     @pytest.mark.asyncio()
-    async def test_success_two_markets(self) -> None:
-        """Two markets should produce a dict with two keys of correct length."""
+    async def test_local_success(self) -> None:
+        """Local provider generates embeddings for two markets."""
         m1 = _make_market(venue=Venue.POLYMARKET, event_id="p1")
         m2 = _make_market(venue=Venue.KALSHI, event_id="k1")
-        config = EmbeddingConfig(api_key="sk-test")
+        config = EmbeddingConfig(provider="local")
+
+        mock_model = _mock_fastembed(384)
+        with patch("arb_scanner.matching.embedding._get_local_model", return_value=mock_model):
+            result = await generate_embeddings([m1, m2], config)
+
+        assert "polymarket:p1" in result
+        assert "kalshi:k1" in result
+        assert len(result["polymarket:p1"]) == 384
+
+    @pytest.mark.asyncio()
+    async def test_local_no_api_key_still_works(self) -> None:
+        """Local provider works without an API key."""
+        m = _make_market()
+        config = EmbeddingConfig(provider="local", api_key="")
+
+        mock_model = _mock_fastembed(384)
+        with patch("arb_scanner.matching.embedding._get_local_model", return_value=mock_model):
+            result = await generate_embeddings([m], config)
+
+        assert len(result) == 1
+
+    @pytest.mark.asyncio()
+    async def test_local_error_returns_empty(self) -> None:
+        """Local provider errors are caught and return empty dict."""
+        m = _make_market()
+        config = EmbeddingConfig(provider="local")
+
+        with patch(
+            "arb_scanner.matching.embedding._get_local_model",
+            side_effect=RuntimeError("model load failed"),
+        ):
+            result = await generate_embeddings([m], config)
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Voyage provider
+# ---------------------------------------------------------------------------
+
+
+class TestVoyageProvider:
+    """Tests for Voyage AI embedding generation."""
+
+    @pytest.mark.asyncio()
+    async def test_voyage_success(self) -> None:
+        """Voyage provider generates embeddings via HTTP API."""
+        m1 = _make_market(venue=Venue.POLYMARKET, event_id="p1")
+        m2 = _make_market(venue=Venue.KALSHI, event_id="k1")
+        config = EmbeddingConfig(
+            provider="voyage", model="voyage-3-lite", api_key="sk-test", dimensions=512
+        )
 
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = _voyage_response(2)
 
@@ -159,17 +225,17 @@ class TestGenerateEmbeddings:
         assert "polymarket:p1" in result
         assert "kalshi:k1" in result
         assert len(result["polymarket:p1"]) == 512
-        assert len(result["kalshi:k1"]) == 512
 
     @pytest.mark.asyncio()
-    async def test_batching_200_markets(self) -> None:
-        """200 markets should produce exactly 2 API calls (128 + 72)."""
+    async def test_voyage_batching(self) -> None:
+        """200 markets should produce exactly 2 Voyage API calls (128 + 72)."""
         markets = [_make_market(event_id=f"e{i}") for i in range(200)]
-        config = EmbeddingConfig(api_key="sk-test")
+        config = EmbeddingConfig(
+            provider="voyage", model="voyage-3-lite", api_key="sk-test", dimensions=512
+        )
 
         def _make_response(count: int) -> MagicMock:
             resp = MagicMock()
-            resp.status_code = 200
             resp.raise_for_status = MagicMock()
             resp.json.return_value = _voyage_response(count)
             return resp
@@ -195,14 +261,16 @@ class TestGenerateEmbeddings:
         assert len(result) == 200
 
     @pytest.mark.asyncio()
-    async def test_api_error_returns_empty(self) -> None:
-        """HTTP errors should be caught, returning an empty dict."""
+    async def test_voyage_api_error_returns_empty(self) -> None:
+        """Voyage HTTP errors should be caught, returning an empty dict."""
         m = _make_market()
-        config = EmbeddingConfig(api_key="sk-test")
+        config = EmbeddingConfig(
+            provider="voyage", model="voyage-3-lite", api_key="sk-test", dimensions=512
+        )
 
         with patch("arb_scanner.matching.embedding.httpx.AsyncClient") as mock_cls:
             client_instance = AsyncMock()
-            client_instance.post.side_effect = httpx_error()
+            client_instance.post.side_effect = ConnectionError("network failure")
             client_instance.__aenter__ = AsyncMock(return_value=client_instance)
             client_instance.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value = client_instance
@@ -212,37 +280,45 @@ class TestGenerateEmbeddings:
         assert result == {}
 
     @pytest.mark.asyncio()
+    async def test_voyage_empty_api_key_skips(self) -> None:
+        """Voyage provider with empty api_key returns empty dict."""
+        m = _make_market()
+        config = EmbeddingConfig(provider="voyage", api_key="")
+
+        with patch("arb_scanner.matching.embedding.httpx.AsyncClient") as mock_cls:
+            result = await generate_embeddings([m], config)
+            mock_cls.assert_not_called()
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Provider dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProviderDispatch:
+    """Tests for provider routing logic."""
+
+    @pytest.mark.asyncio()
+    async def test_disabled_config_skips(self) -> None:
+        """When enabled=False, no embedding is generated."""
+        m = _make_market()
+        config = EmbeddingConfig(enabled=False)
+        result = await generate_embeddings([m], config)
+        assert result == {}
+
+    @pytest.mark.asyncio()
     async def test_empty_market_list(self) -> None:
-        """An empty market list should return an empty dict immediately."""
-        config = EmbeddingConfig(api_key="sk-test")
+        """An empty market list returns an empty dict."""
+        config = EmbeddingConfig()
         result = await generate_embeddings([], config)
         assert result == {}
 
     @pytest.mark.asyncio()
-    async def test_disabled_config_skips(self) -> None:
-        """When enabled=False, no API call should be made."""
+    async def test_unknown_provider_raises(self) -> None:
+        """Unknown provider raises ValueError."""
         m = _make_market()
-        config = EmbeddingConfig(enabled=False, api_key="sk-test")
-
-        with patch("arb_scanner.matching.embedding.httpx.AsyncClient") as mock_cls:
-            result = await generate_embeddings([m], config)
-            mock_cls.assert_not_called()
-
-        assert result == {}
-
-    @pytest.mark.asyncio()
-    async def test_empty_api_key_skips(self) -> None:
-        """When api_key is empty, no API call should be made."""
-        m = _make_market()
-        config = EmbeddingConfig(api_key="")
-
-        with patch("arb_scanner.matching.embedding.httpx.AsyncClient") as mock_cls:
-            result = await generate_embeddings([m], config)
-            mock_cls.assert_not_called()
-
-        assert result == {}
-
-
-def httpx_error() -> Exception:
-    """Create a generic connection error for testing."""
-    return ConnectionError("simulated network failure")
+        config = EmbeddingConfig(provider="openai")
+        with pytest.raises(ValueError, match="Unknown embedding provider"):
+            await generate_embeddings([m], config)

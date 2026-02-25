@@ -75,7 +75,15 @@ class Database:
 async def _init_connection(conn: asyncpg.Connection[asyncpg.Record]) -> None:
     """Register pgvector types on each new pool connection.
 
+    Gracefully skips registration if the pgvector extension is not yet
+    installed (e.g. on a fresh database before migrations run).
+
     Args:
         conn: The newly created asyncpg connection.
     """
-    await register_vector(conn)
+    try:
+        await register_vector(conn)
+    except (ValueError, asyncpg.UndefinedObjectError):
+        # pgvector extension not yet installed — skip type registration.
+        # Happens on fresh databases before migrations run.
+        pass

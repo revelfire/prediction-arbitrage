@@ -25,6 +25,7 @@ src/arb_scanner/
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
 ├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), trend alert detector + dispatch, stdout reporter
+├── api/             # FastAPI REST API + static dashboard (serve command)
 ├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts commands
 └── utils/           # Retry logic, rate limiter, async helpers
 ```
@@ -36,8 +37,9 @@ src/arb_scanner/
 - Human-in-the-loop: system produces execution tickets, never places orders
 - Match results cached in PostgreSQL with 24h TTL
 - BM25 pre-filter via bm25s (method="bm25+") reduces candidate pairs before Claude API calls
-- Voyage AI embedding pre-filter: after BM25 recall, cosine similarity of title embeddings drops low-quality pairs before Claude evaluation. Configured via `EmbeddingConfig` (model, api_key, cosine_threshold, dimensions). Gracefully degrades to BM25-only when disabled, missing key, or API error. Embeddings persisted to `markets.title_embedding` (pgvector) for reuse.
+- Embedding pre-filter: after BM25 recall, cosine similarity of title embeddings drops low-quality pairs before Claude evaluation. Default provider is `local` (fastembed ONNX, `BAAI/bge-small-en-v1.5`, 384-dim, no API key needed). Voyage AI available as `provider: voyage` fallback. Embeddings cached in pgvector — only new markets trigger model inference. Configured via `EmbeddingConfig` (provider, model, cosine_threshold, dimensions).
 - Fee models differ per venue (Polymarket: % on winnings; Kalshi: per-contract flat fee)
+- FastAPI dashboard served from same process (no separate frontend build). Vanilla JS + Chart.js CDN.
 
 ## API Integration Notes
 
@@ -65,6 +67,8 @@ uv run arb-scanner match-audit   # Dump cached contract matches for review
 uv run arb-scanner history --pair POLY/KALSHI  # Spread history for a pair
 uv run arb-scanner stats         # Aggregated analytics and scanner health
 uv run arb-scanner alerts         # List recent trend alerts
+uv run arb-scanner serve          # Start web dashboard at http://localhost:8000
+uv run arb-scanner serve --no-db # Dashboard preview without PostgreSQL
 uv run arb-scanner migrate       # Apply pending SQL migrations
 uv run pytest                    # Run test suite (live tests excluded by default)
 LIVE_TESTS=1 uv run pytest tests/live/ -v  # Run live API tests (requires network)
@@ -99,16 +103,37 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 - `.specify/features/*/plan.md` — implementation plans
 - `.specify/features/*/tasks.md` — task breakdowns
 
+## Docker
+
+```bash
+cp .env.example .env              # Edit with your API keys and passwords
+docker compose up -d db           # Start just PostgreSQL + pgvector
+docker compose up -d              # Start db + migrations + dashboard
+docker compose up -d                 # Start db + migrations + dashboard + scanner
+docker compose run --rm scan      # One-shot scan via Docker
+docker compose logs -f dashboard  # Tail dashboard logs
+docker compose down               # Stop all services
+docker compose down -v            # Stop and delete database volume
+```
+
+Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode, `full` profile), `scan` (one-shot, `tools` profile).
+
+Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
+
+For local development without Docker, just start the database: `docker compose up -d db` then use `uv run` commands directly against `DATABASE_URL=postgresql://arb_scanner:changeme@localhost:5432/arb_scanner`.
+
 ## Active Technologies
 - Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml (001-arb-scanner-core)
 - PostgreSQL 15+ with pgvector extension (via asyncpg) (001-arb-scanner-core)
-- Voyage AI (voyage-3-lite) + numpy + pgvector Python package for embedding pre-filter (003-pgvector-embedding-prefilter)
+- fastembed (ONNX, BAAI/bge-small-en-v1.5, 384-dim) for local embedding pre-filter. Voyage AI optional via `provider: voyage` (007-local-embeddings)
 
 ## Live Test Gating
 
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 007-local-embeddings: Replaced Voyage AI as default embedding provider with local ONNX model (BAAI/bge-small-en-v1.5 via fastembed, 384-dim). No API key needed for embeddings. Added embedding cache read path — previously-seen markets skip regeneration by loading from pgvector. Voyage AI remains available as `provider: voyage` fallback. New `title_embedding_384` column (migration 011).
+- 006-dashboard-web-ui: Added FastAPI REST API with 11 endpoints wrapping existing repository methods. Vanilla JS dashboard with dark-theme UI, Chart.js spread/health charts, tab-based layout (Opportunities, Health, Alerts, Tickets). DashboardConfig for host/port. `serve` CLI command starts uvicorn. Ticket approve/expire from dashboard. Auto-refresh every 30s.
 - 005-trend-alerting: Added TrendDetector engine with rolling-window convergence/divergence/new-high/disappeared/health detection. Alert webhooks dispatch via existing Slack/Discord infrastructure with distinct emoji/color per alert type. TrendAlertConfig with configurable thresholds, window size, and cooldown. Alert persistence to trend_alerts table (migration 010). New `alerts` CLI command.
 - 004-live-api-testing: Added live API test suite (`tests/live/`) for Polymarket, Kalshi, and Claude semantic matching. Fixed Kalshi volume field bug (`volume_fp` -> `volume_dollars_24h_fp` with fallback). Added `live` pytest marker gated by `LIVE_TESTS=1` env var, excluded from default runs via addopts. Added `requires_live` and `requires_anthropic` skip markers in live conftest.
 - 003-pgvector-embedding-prefilter: Added Voyage AI embedding client (`matching/embedding.py`), cosine-similarity reranker (`matching/embedding_prefilter.py`), `EmbeddingConfig` model, pgvector type registration in `db.py`, `UPDATE_MARKET_EMBEDDING` query + `update_market_embedding()` repository method, fire-and-forget embedding persistence in orchestrator, and integration tests for the full embedding pipeline

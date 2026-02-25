@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -90,6 +90,7 @@ class TestHelpText:
         assert "report" in result.output
         assert "match-audit" in result.output
         assert "migrate" in result.output
+        assert "serve" in result.output
 
     def test_scan_help(self) -> None:
         """Scan --help shows options."""
@@ -126,6 +127,14 @@ class TestHelpText:
         assert result.exit_code == 0
         assert "migration" in result.output.lower()
 
+    def test_serve_help(self) -> None:
+        """Serve --help shows options."""
+        result = runner.invoke(app, ["serve", "--help"])
+        assert result.exit_code == 0
+        assert "--host" in result.output
+        assert "--port" in result.output
+        assert "--no-db" in result.output
+
 
 class TestMigrateCommand:
     """Tests for the migrate command."""
@@ -135,3 +144,54 @@ class TestMigrateCommand:
         """Migrate exits 1 when config loading fails."""
         result = runner.invoke(app, ["migrate"])
         assert result.exit_code == 1
+
+
+class TestServeCommand:
+    """Tests for the serve command."""
+
+    @patch("arb_scanner.cli.app.load_config_safe", side_effect=RuntimeError("no config"))
+    def test_config_failure(self, mock_config: Any) -> None:
+        """Serve exits 1 when config loading fails."""
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 1
+
+    @patch("uvicorn.run")
+    @patch("arb_scanner.api.app.create_app")
+    @patch("arb_scanner.cli.app.load_config_safe")
+    def test_serve_starts_uvicorn(
+        self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
+    ) -> None:
+        """Serve calls uvicorn.run with the FastAPI app and default host/port."""
+        fake_app = MagicMock()
+        mock_create_app.return_value = fake_app
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=False)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
+
+    @patch("uvicorn.run")
+    @patch("arb_scanner.api.app.create_app")
+    @patch("arb_scanner.cli.app.load_config_safe")
+    def test_serve_custom_host_port(
+        self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
+    ) -> None:
+        """Serve passes custom --host and --port to uvicorn."""
+        fake_app = MagicMock()
+        mock_create_app.return_value = fake_app
+        result = runner.invoke(app, ["serve", "--host", "127.0.0.1", "--port", "9000"])
+        assert result.exit_code == 0
+        mock_uvicorn.assert_called_once_with(fake_app, host="127.0.0.1", port=9000)
+
+    @patch("uvicorn.run")
+    @patch("arb_scanner.api.app.create_app")
+    @patch("arb_scanner.cli.app.load_config_safe")
+    def test_serve_no_db_flag(
+        self, mock_config: Any, mock_create_app: Any, mock_uvicorn: Any
+    ) -> None:
+        """Serve passes --no-db to create_app."""
+        fake_app = MagicMock()
+        mock_create_app.return_value = fake_app
+        result = runner.invoke(app, ["serve", "--no-db"])
+        assert result.exit_code == 0
+        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=True)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)

@@ -137,7 +137,7 @@ async def _match_candidates(
     if not bm25_pairs:
         return []
 
-    filtered_pairs, embeddings = await _run_embedding_rerank(bm25_pairs, config)
+    filtered_pairs, embeddings = await _run_embedding_rerank(bm25_pairs, config, dry_run)
 
     if not dry_run and embeddings:
         await _persist_embeddings(embeddings, config)
@@ -154,31 +154,82 @@ async def _match_candidates(
 async def _run_embedding_rerank(
     bm25_pairs: list[tuple[Market, Market, float]],
     config: Settings,
+    dry_run: bool = False,
 ) -> tuple[list[tuple[Market, Market, float]], dict[str, list[float]]]:
     """Run embedding-based reranking if enabled, otherwise pass through.
 
+    Loads cached embeddings from pgvector first, only generates
+    embeddings for markets not already in the database.
+
     Returns:
-        Tuple of (filtered_pairs, embeddings_dict). The embeddings dict
-        is empty when embedding is disabled or on API error.
+        Tuple of (filtered_pairs, new_embeddings_dict). The new
+        embeddings dict contains only freshly generated vectors
+        (not cached ones).
     """
-    if not config.embedding.enabled or not config.embedding.api_key:
-        logger.info("embedding.skip", reason="disabled_or_no_key")
+    if not config.embedding.enabled:
+        logger.info("embedding.skip", reason="disabled")
+        return bm25_pairs, {}
+
+    if config.embedding.provider == "voyage" and not config.embedding.api_key:
+        logger.info("embedding.skip", reason="voyage_no_api_key")
         return bm25_pairs, {}
 
     seen: dict[str, Market] = {}
     for poly, kalshi, _ in bm25_pairs:
         seen[_market_key(poly)] = poly
         seen[_market_key(kalshi)] = kalshi
-    unique_markets = list(seen.values())
 
-    embeddings = await generate_embeddings(unique_markets, config.embedding)
-    filtered_pairs = await embedding_rerank(bm25_pairs, embeddings, config.embedding)
+    cached = await _load_cached_embeddings(list(seen.values()), config, dry_run)
+    uncached_markets = [m for k, m in seen.items() if k not in cached]
+
+    new_embeddings = await generate_embeddings(uncached_markets, config.embedding)
+    all_embeddings = {**cached, **new_embeddings}
+
+    logger.info(
+        "embedding.cache",
+        cached=len(cached),
+        generated=len(new_embeddings),
+        total=len(all_embeddings),
+    )
+
+    filtered_pairs = await embedding_rerank(bm25_pairs, all_embeddings, config.embedding)
     logger.info(
         "embedding.filtered",
         before=len(bm25_pairs),
         after=len(filtered_pairs),
     )
-    return filtered_pairs, embeddings
+    return filtered_pairs, new_embeddings
+
+
+async def _load_cached_embeddings(
+    markets: list[Market],
+    config: Settings,
+    dry_run: bool,
+) -> dict[str, list[float]]:
+    """Load previously persisted embeddings from pgvector.
+
+    Args:
+        markets: Markets to look up.
+        config: Application settings for database access.
+        dry_run: Skip DB access in dry-run mode.
+
+    Returns:
+        Dict mapping ``"venue:event_id"`` to float vectors.
+    """
+    if dry_run or not markets:
+        return {}
+
+    from arb_scanner.storage.db import Database
+    from arb_scanner.storage.repository import Repository
+
+    try:
+        pairs = [(m.venue.value, m.event_id) for m in markets]
+        async with Database(config.storage.database_url) as db:
+            repo = Repository(db.pool)
+            return await repo.get_cached_embeddings(pairs, config.embedding.dimensions)
+    except Exception:
+        logger.warning("embedding.cache_load_failed", exc_info=True)
+        return {}
 
 
 async def _filter_cached(
@@ -285,6 +336,7 @@ async def _persist_embeddings(
 ) -> None:
     """Write embedding vectors to the markets table (fire-and-forget).
 
+    Writes to the column matching the configured dimensions (384 or 512).
     Errors are logged but never propagated so a persistence failure
     cannot break the scan pipeline.
 
@@ -295,12 +347,17 @@ async def _persist_embeddings(
     from arb_scanner.storage.db import Database
     from arb_scanner.storage.repository import Repository
 
+    use_384 = config.embedding.dimensions == 384
+
     try:
         async with Database(config.storage.database_url) as db:
             repo = Repository(db.pool)
             for key, vector in embeddings.items():
                 venue, event_id = key.split(":", 1)
-                await repo.update_market_embedding(venue, event_id, vector)
+                if use_384:
+                    await repo.update_market_embedding_384(venue, event_id, vector)
+                else:
+                    await repo.update_market_embedding(venue, event_id, vector)
         logger.info("embedding.persisted", count=len(embeddings))
     except Exception:
         logger.exception("embedding.persist_failed")
