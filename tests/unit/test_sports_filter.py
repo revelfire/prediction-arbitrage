@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from arb_scanner.flippening.sports_filter import (
+    DiscoveryHealthSnapshot,
     _detect_sport,
     _extract_game_start,
     _extract_token_id,
@@ -43,20 +44,20 @@ class TestDetectSport:
     """Tests for _detect_sport."""
 
     def test_matches_group_slug_prefix(self) -> None:
-        """NBA slug prefix is detected."""
+        """NBA slug prefix is detected with method 'slug'."""
         result = _detect_sport(
             {"groupSlug": "nba-lakers-vs-celtics"},
             set(_ALLOWED),
         )
-        assert result == "nba"
+        assert result == ("nba", "slug")
 
     def test_matches_nfl_slug(self) -> None:
-        """NFL slug prefix is detected."""
+        """NFL slug prefix is detected with method 'slug'."""
         result = _detect_sport(
             {"groupSlug": "nfl-super-bowl"},
             set(_ALLOWED),
         )
-        assert result == "nfl"
+        assert result == ("nfl", "slug")
 
     def test_no_match_returns_none(self) -> None:
         """Non-sports slug returns None."""
@@ -67,23 +68,23 @@ class TestDetectSport:
         assert result is None
 
     def test_falls_back_to_tags(self) -> None:
-        """Falls back to tags when slug doesn't match."""
+        """Falls back to tags when slug doesn't match, method is 'tag'."""
         result = _detect_sport(
             {"groupSlug": "other", "tags": ["NBA", "Basketball"]},
             set(_ALLOWED),
         )
-        assert result == "nba"
+        assert result == ("nba", "tag")
 
     def test_falls_back_to_tags_json_string(self) -> None:
-        """Parses JSON string tags."""
+        """Parses JSON string tags, method is 'tag'."""
         result = _detect_sport(
             {"groupSlug": "other", "tags": '["NHL", "Hockey"]'},
             set(_ALLOWED),
         )
-        assert result == "nhl"
+        assert result == ("nhl", "tag")
 
     def test_falls_back_to_group_item_title(self) -> None:
-        """Falls back to groupItemTitle keywords."""
+        """Falls back to groupItemTitle keywords, method is 'title'."""
         result = _detect_sport(
             {
                 "groupSlug": "sports",
@@ -92,7 +93,7 @@ class TestDetectSport:
             },
             set(_ALLOWED),
         )
-        assert result == "epl"
+        assert result == ("epl", "title")
 
     def test_respects_allowed_filter(self) -> None:
         """Ignores sports not in the allowed list."""
@@ -159,22 +160,43 @@ class TestClassifySportsMarkets:
     """Tests for classify_sports_markets."""
 
     def test_classifies_nba_market(self) -> None:
-        """NBA market is classified correctly."""
+        """NBA market is classified correctly and health snapshot is valid."""
         m = _market(
             raw={"groupSlug": "nba-game", "clobTokenIds": '["t1"]'},
         )
-        result = classify_sports_markets([m], _ALLOWED)
-        assert len(result) == 1
-        assert result[0].sport == "nba"
+        markets, health = classify_sports_markets([m], _ALLOWED)
+        assert len(markets) == 1
+        assert markets[0].sport == "nba"
+        assert markets[0].classification_method == "slug"
+        assert isinstance(health, DiscoveryHealthSnapshot)
+        assert health.total_scanned == 1
+        assert health.sports_found == 1
+        assert health.hit_rate == 1.0
+        assert health.by_sport == {"nba": 1}
+        assert health.overrides_applied == 0
+        assert health.exclusions_applied == 0
 
     def test_ignores_non_sports(self) -> None:
-        """Non-sports market is excluded."""
+        """Non-sports market is excluded and health reflects zero found."""
         m = _market(raw={"groupSlug": "politics"})
-        result = classify_sports_markets([m], _ALLOWED)
-        assert len(result) == 0
+        markets, health = classify_sports_markets([m], _ALLOWED)
+        assert len(markets) == 0
+        assert health.sports_found == 0
+        assert health.hit_rate == 0.0
 
     def test_skips_market_without_token_id(self) -> None:
-        """Market without token ID is skipped."""
+        """Market without token ID is skipped even when sport is detected."""
         m = _market(raw={"groupSlug": "nba-game"})
-        result = classify_sports_markets([m], _ALLOWED)
-        assert len(result) == 0
+        markets, health = classify_sports_markets([m], _ALLOWED)
+        assert len(markets) == 0
+
+    def test_returns_tuple(self) -> None:
+        """Return value is a two-element tuple."""
+        result = classify_sports_markets([], _ALLOWED)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        markets, health = result
+        assert isinstance(markets, list)
+        assert isinstance(health, DiscoveryHealthSnapshot)
+        assert health.total_scanned == 0
+        assert health.hit_rate == 0.0

@@ -104,7 +104,7 @@ arb-scanner match-audit [--include-expired] [--min-confidence FLOAT]
 | `KALSHI_API_KEY` | No (market data is public) | For future trading features |
 | `KALSHI_PRIVATE_KEY_PATH` | No | RSA private key for Kalshi auth |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SLACK_WEBHOOK_URL` | No | Slack notification webhook |
+| `ARBITRAGE_SLACK_WEBHOOK_URL` | No | Slack notification webhook |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook |
 
 ## Config File

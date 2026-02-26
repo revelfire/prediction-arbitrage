@@ -4,19 +4,24 @@ venues:
     clob_base_url: "https://clob.polymarket.com"
     enabled: true
     rate_limit_per_sec: 10
+    min_volume_24h: 100
+    max_markets: 500
   kalshi:
     base_url: "https://api.elections.kalshi.com/trade-api/v2"
     enabled: true
     rate_limit_per_sec: 5  # Kalshi Basic tier: 10 reads/sec, keep headroom
+    min_volume_24h: 100
+    max_markets: 500
 
 claude:
   model: "claude-sonnet-4-20250514"
   api_key: "${ANTHROPIC_API_KEY}"
   batch_size: 5
   match_cache_ttl_hours: 24
+  max_semantic_pairs: 50  # Cap Claude API calls per scan (0 = unlimited)
 
 embedding:
-  enabled: true
+  enabled: false  # Disabled by default for Docker (ONNX segfaults under QEMU/emulation)
   provider: "local"
   model: "BAAI/bge-small-en-v1.5"
   cosine_threshold: 0.60
@@ -37,7 +42,7 @@ arb_thresholds:
   thin_liquidity_threshold: 50
 
 notifications:
-  slack_webhook: "${SLACK_WEBHOOK_URL}"
+  slack_webhook: "${ARBITRAGE_SLACK_WEBHOOK_URL}"
   discord_webhook: "${DISCORD_WEBHOOK_URL}"
   enabled: true
   min_spread_to_notify_pct: 0.02
@@ -57,7 +62,7 @@ dashboard:
   port: 8000
 
 flippening:
-  enabled: false
+  enabled: true
   sports:
     - nba
     - nhl
@@ -88,6 +93,21 @@ flippening:
     nba:
       spike_threshold_pct: 0.15
       confidence_modifier: 1.0
+  # manual_market_ids:
+  #   - market_id: "0x1234..."
+  #     sport: "nba"
+  # excluded_market_ids:
+  #   - "0xdead..."
+  # sport_keywords:
+  #   nba: ["lakers", "celtics", "warriors"]
+  min_hit_rate_pct: 0.01
+  discovery_alert_cooldown_minutes: 60
+  # ws_telemetry_interval_seconds: 60
+  # ws_schema_match_pct: 0.50
+  # orderbook_cache_ttl_seconds: 10.0
+  # orderbook_cache_max_size: 200
+  # synthetic_spread_penalty: 0.85
+  # ws_telemetry_persist_interval_seconds: 300
 
 storage:
   database_url: "${DATABASE_URL}"

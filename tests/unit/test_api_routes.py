@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arb_scanner.api.app import create_app
-from arb_scanner.api.deps import get_analytics_repo, get_config, get_repo
+from arb_scanner.api.deps import get_analytics_repo, get_config, get_flip_repo, get_repo
 from arb_scanner.models.analytics import (
     AlertType,
     PairSummary,
@@ -151,7 +151,23 @@ def mock_analytics_repo() -> AsyncMock:
 
 
 @pytest.fixture()
-def client(mock_repo: AsyncMock, mock_analytics_repo: AsyncMock) -> TestClient:
+def mock_flip_repo() -> AsyncMock:
+    """Create a mock FlippeningRepository with pre-configured async methods."""
+    repo = AsyncMock()
+    repo.get_active_signals = AsyncMock(return_value=[])
+    repo.get_history = AsyncMock(return_value=[])
+    repo.get_stats = AsyncMock(return_value=[])
+    repo.get_recent_events = AsyncMock(return_value=[])
+    repo.get_discovery_health = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture()
+def client(
+    mock_repo: AsyncMock,
+    mock_analytics_repo: AsyncMock,
+    mock_flip_repo: AsyncMock,
+) -> TestClient:
     """Build a TestClient with mocked DB and overridden dependencies."""
     config = _test_config()
 
@@ -162,6 +178,7 @@ def client(mock_repo: AsyncMock, mock_analytics_repo: AsyncMock) -> TestClient:
         app = create_app(config)
         app.dependency_overrides[get_repo] = lambda: mock_repo
         app.dependency_overrides[get_analytics_repo] = lambda: mock_analytics_repo
+        app.dependency_overrides[get_flip_repo] = lambda: mock_flip_repo
         app.dependency_overrides[get_config] = lambda: config
 
         with TestClient(app, raise_server_exceptions=False) as tc:
@@ -299,11 +316,11 @@ class TestHealthRoutes:
         mock_analytics_repo.get_recent_scan_logs.assert_awaited_once_with(20)
 
     def test_health_db_error(self, client: TestClient, mock_analytics_repo: AsyncMock) -> None:
-        """GET /api/health returns 503 when repo raises."""
+        """GET /api/health returns 500 when repo raises."""
         mock_analytics_repo.get_scan_health.side_effect = RuntimeError("DB down")
 
         resp = client.get("/api/health")
-        assert resp.status_code == 503
+        assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +466,75 @@ class TestUnknownRoute:
         """GET /api/nonexistent returns 404."""
         resp = client.get("/api/nonexistent")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Discovery health routes
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoveryHealthRoute:
+    """Tests for /api/flippenings/discovery-health endpoint."""
+
+    def test_discovery_health_empty(self, client: TestClient, mock_flip_repo: AsyncMock) -> None:
+        """GET /api/flippenings/discovery-health returns 200 with empty list."""
+        mock_flip_repo.get_discovery_health.return_value = []
+        resp = client.get("/api/flippenings/discovery-health")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_discovery_health_with_data(
+        self, client: TestClient, mock_flip_repo: AsyncMock
+    ) -> None:
+        """GET /api/flippenings/discovery-health returns health snapshots."""
+        mock_flip_repo.get_discovery_health.return_value = [
+            {"total_scanned": 500, "sports_found": 12, "hit_rate": 0.024}
+        ]
+        resp = client.get("/api/flippenings/discovery-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["total_scanned"] == 500
+
+    def test_discovery_health_limit_param(
+        self, client: TestClient, mock_flip_repo: AsyncMock
+    ) -> None:
+        """GET /api/flippenings/discovery-health?limit=5 passes limit to repo."""
+        mock_flip_repo.get_discovery_health.return_value = []
+        resp = client.get("/api/flippenings/discovery-health?limit=5")
+        assert resp.status_code == 200
+        mock_flip_repo.get_discovery_health.assert_awaited_once_with(limit=5)
+
+    def test_discovery_health_db_error(self, client: TestClient, mock_flip_repo: AsyncMock) -> None:
+        """GET /api/flippenings/discovery-health returns 503 when repo raises."""
+        mock_flip_repo.get_discovery_health.side_effect = RuntimeError("DB down")
+        resp = client.get("/api/flippenings/discovery-health")
+        assert resp.status_code == 503
+
+
+class TestWsHealthRoute:
+    """Tests for /api/flippenings/ws-health endpoint."""
+
+    def test_ws_health_empty(self, client: TestClient, mock_flip_repo: AsyncMock) -> None:
+        """GET /api/flippenings/ws-health returns 200 with empty list."""
+        mock_flip_repo.get_ws_telemetry.return_value = []
+        resp = client.get("/api/flippenings/ws-health")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_ws_health_with_data(self, client: TestClient, mock_flip_repo: AsyncMock) -> None:
+        """GET /api/flippenings/ws-health returns telemetry snapshots."""
+        mock_flip_repo.get_ws_telemetry.return_value = [
+            {"messages_received": 1000, "schema_match_rate": 0.95}
+        ]
+        resp = client.get("/api/flippenings/ws-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["messages_received"] == 1000
+
+    def test_ws_health_db_error(self, client: TestClient, mock_flip_repo: AsyncMock) -> None:
+        """GET /api/flippenings/ws-health returns 503 when repo raises."""
+        mock_flip_repo.get_ws_telemetry.side_effect = RuntimeError("DB down")
+        resp = client.get("/api/flippenings/ws-health")
+        assert resp.status_code == 503

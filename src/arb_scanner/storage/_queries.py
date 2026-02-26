@@ -54,6 +54,22 @@ INSERT INTO scan_logs (
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
 """
 
+UPSERT_SCAN_LOG = """
+INSERT INTO scan_logs (
+    id, started_at, completed_at, poly_markets_fetched,
+    kalshi_markets_fetched, candidate_pairs, llm_evaluations,
+    opportunities_found, errors
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT (id) DO UPDATE SET
+    completed_at=EXCLUDED.completed_at,
+    poly_markets_fetched=EXCLUDED.poly_markets_fetched,
+    kalshi_markets_fetched=EXCLUDED.kalshi_markets_fetched,
+    candidate_pairs=EXCLUDED.candidate_pairs,
+    llm_evaluations=EXCLUDED.llm_evaluations,
+    opportunities_found=EXCLUDED.opportunities_found,
+    errors=EXCLUDED.errors;
+"""
+
 GET_CACHED_MATCH = """
 SELECT poly_event_id, kalshi_event_id, match_confidence,
        resolution_equivalent, resolution_risks, safe_to_arb,
@@ -126,12 +142,12 @@ GET_CACHED_EMBEDDINGS_384 = """
 SELECT venue, event_id, title_embedding_384
 FROM markets
 WHERE title_embedding_384 IS NOT NULL
-  AND (venue, event_id) = ANY($1::record[]);
+  AND (venue, event_id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]));
 """
 
 GET_CACHED_EMBEDDINGS_512 = """
 SELECT venue, event_id, title_embedding
 FROM markets
 WHERE title_embedding IS NOT NULL
-  AND (venue, event_id) = ANY($1::record[]);
+  AND (venue, event_id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]));
 """

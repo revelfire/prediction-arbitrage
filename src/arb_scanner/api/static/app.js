@@ -34,9 +34,16 @@ function shortTime(iso) {
 async function fetchJSON(url) {
     try {
         const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            const detail = body ? `: ${body.substring(0, 120)}` : '';
+            setStatus(`API error ${resp.status} on ${url}${detail}`);
+            console.error(`Fetch failed: ${url} HTTP ${resp.status}`, body);
+            return null;
+        }
         return await resp.json();
     } catch (err) {
+        setStatus(`Network error: ${err.message}`);
         console.error(`Fetch failed: ${url}`, err);
         return null;
     }
@@ -80,34 +87,36 @@ function switchTab(tabName) {
 // --- Opportunities Tab ---
 async function refreshOpportunities() {
     const data = await fetchJSON('/api/opportunities?limit=50');
-    if (!data) return;
-
     const tbody = el('opps-tbody');
     if (!tbody) return;
 
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No opportunities found</td></tr>';
+    if (!data) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load opportunities (check status bar)</td></tr>';
         return;
     }
 
-    tbody.innerHTML = data.map(o => `
-        <tr class="clickable" onclick="loadPairDetail('${o.poly_event_id}', '${o.kalshi_event_id}')">
-            <td title="${o.poly_event_id}">${(o.poly_event_id || '').substring(0, 12)}...</td>
-            <td>${o.buy_venue || 'N/A'}</td>
-            <td>${o.sell_venue || 'N/A'}</td>
-            <td><strong>${formatPct(o.net_spread_pct)}</strong></td>
-            <td>${formatUSD(o.max_size)}</td>
-            <td>${o.depth_risk ? '\u26a0\ufe0f' : '\u2713'}</td>
-            <td>${o.annualized_return ? formatPct(o.annualized_return) : 'N/A'}</td>
-            <td>${shortTime(o.detected_at)}</td>
-        </tr>
-    `).join('');
+    if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No opportunities found</td></tr>';
+    } else {
+        tbody.innerHTML = data.map(o => `
+            <tr class="clickable" onclick="loadPairDetail('${o.poly_event_id}', '${o.kalshi_event_id}')">
+                <td title="${o.poly_event_id}">${(o.poly_event_id || '').substring(0, 12)}...</td>
+                <td>${o.buy_venue || 'N/A'}</td>
+                <td>${o.sell_venue || 'N/A'}</td>
+                <td><strong>${formatPct(o.net_spread_pct)}</strong></td>
+                <td>${formatUSD(o.max_size)}</td>
+                <td>${o.depth_risk ? '\u26a0\ufe0f' : '\u2713'}</td>
+                <td>${o.annualized_return ? formatPct(o.annualized_return) : 'N/A'}</td>
+                <td>${shortTime(o.detected_at)}</td>
+            </tr>
+        `).join('');
+    }
 
     // Also load pair summaries
     const summaries = await fetchJSON('/api/pairs/summaries?hours=24&top=10');
     const sumBody = el('summaries-tbody');
-    if (summaries && sumBody) {
-        if (summaries.length === 0) {
+    if (sumBody) {
+        if (!summaries || summaries.length === 0) {
             sumBody.innerHTML = '<tr><td colspan="6" class="empty-state">No pair data</td></tr>';
         } else {
             sumBody.innerHTML = summaries.map(s => `
@@ -239,16 +248,20 @@ async function refreshHealth() {
                 tbody.innerHTML = scans.map(s => {
                     const duration = s.completed_at && s.started_at
                         ? ((new Date(s.completed_at) - new Date(s.started_at)) / 1000).toFixed(1) + 's'
-                        : 'N/A';
-                    const errCount = Array.isArray(s.errors) ? s.errors.length : 0;
+                        : '<span style="color: var(--warning, orange)">incomplete</span>';
+                    const errs = Array.isArray(s.errors) ? s.errors : (typeof s.errors === 'string' ? JSON.parse(s.errors || '[]') : []);
+                    const errCount = errs.length;
+                    const errTip = errCount > 0 ? errs.map(e => e.substring(0, 100)).join('\n') : '';
+                    const poly = s.poly_markets_fetched || 0;
+                    const kalshi = s.kalshi_markets_fetched || 0;
                     return `
                         <tr>
                             <td>${shortTime(s.started_at)}</td>
                             <td>${duration}</td>
-                            <td>${(s.poly_markets_fetched || 0) + (s.kalshi_markets_fetched || 0)}</td>
+                            <td title="Poly: ${poly}, Kalshi: ${kalshi}">${poly + kalshi}</td>
                             <td>${s.candidate_pairs || 0}</td>
                             <td>${s.opportunities_found || 0}</td>
-                            <td>${errCount > 0 ? '<span style="color: var(--danger)">' + errCount + '</span>' : '0'}</td>
+                            <td${errCount > 0 ? ' title="' + errTip.replace(/"/g, '&quot;') + '" style="color: var(--danger, #e94560); cursor: help"' : ''}>${errCount}</td>
                         </tr>
                     `;
                 }).join('');
@@ -333,14 +346,25 @@ async function refreshFlippenings() {
         fetchJSON('/api/flippenings/stats'),
     ]);
 
-    // Stats cards
-    if (stats) {
-        el('flip-total').textContent = stats.total || 0;
-        const wr = stats.win_rate != null ? (parseFloat(stats.win_rate) * 100).toFixed(1) + '%' : '-';
-        el('flip-winrate').textContent = wr;
-        const ap = stats.avg_pnl != null ? (parseFloat(stats.avg_pnl) >= 0 ? '+' : '') + parseFloat(stats.avg_pnl).toFixed(4) : '-';
-        el('flip-avgpnl').textContent = ap;
-        el('flip-avghold').textContent = stats.avg_hold != null ? parseFloat(stats.avg_hold).toFixed(0) + 'm' : '-';
+    // Stats cards — stats is a list of per-sport rows, aggregate for summary
+    if (stats && Array.isArray(stats) && stats.length > 0) {
+        const total = stats.reduce((s, r) => s + (r.total || 0), 0);
+        const wAvg = (field) => {
+            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total || 0), 0);
+            return total > 0 ? weighted / total : null;
+        };
+        el('flip-total').textContent = total;
+        const wr = wAvg('win_rate');
+        el('flip-winrate').textContent = wr != null ? (wr * 100).toFixed(1) + '%' : '-';
+        const ap = wAvg('avg_pnl');
+        el('flip-avgpnl').textContent = ap != null ? (ap >= 0 ? '+' : '') + ap.toFixed(4) : '-';
+        const ah = wAvg('avg_hold');
+        el('flip-avghold').textContent = ah != null ? ah.toFixed(0) + 'm' : '-';
+    } else {
+        el('flip-total').textContent = 0;
+        el('flip-winrate').textContent = '-';
+        el('flip-avgpnl').textContent = '-';
+        el('flip-avghold').textContent = '-';
     }
 
     // Active table

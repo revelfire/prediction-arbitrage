@@ -107,3 +107,35 @@ WHERE ($2::TEXT IS NULL OR sport = $2)
 ORDER BY detected_at DESC
 LIMIT $1
 """
+
+INSERT_DISCOVERY_HEALTH = """
+INSERT INTO flippening_discovery_health (
+    cycle_timestamp, total_scanned, sports_found, hit_rate,
+    by_sport, overrides_applied, exclusions_applied, unclassified_candidates
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+"""
+
+GET_DISCOVERY_HEALTH = """
+SELECT cycle_timestamp, total_scanned, sports_found, hit_rate,
+       by_sport, overrides_applied, exclusions_applied, unclassified_candidates
+FROM flippening_discovery_health
+ORDER BY cycle_timestamp DESC
+LIMIT $1;
+"""
+
+INSERT_WS_TELEMETRY = """
+INSERT INTO ws_telemetry (
+    snapshot_time, messages_received, messages_parsed,
+    messages_failed, messages_ignored, schema_match_rate,
+    book_cache_hit_rate, connection_state
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+"""
+
+GET_WS_TELEMETRY = """
+SELECT snapshot_time, messages_received, messages_parsed,
+       messages_failed, messages_ignored, schema_match_rate,
+       book_cache_hit_rate, connection_state
+FROM ws_telemetry
+ORDER BY snapshot_time DESC
+LIMIT $1;
+"""

@@ -16,6 +16,7 @@ from arb_scanner.utils.retry import async_retry
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="ingestion.kalshi")
 
 _PAGE_LIMIT = 200
+_MAX_PAGES = 100  # Safety cap: never paginate beyond 20K markets
 
 
 class KalshiClient(BaseVenueClient):
@@ -49,27 +50,36 @@ class KalshiClient(BaseVenueClient):
         sorted by 24h volume descending so the most liquid markets
         appear first when capped.
 
+        Pagination stops early when enough qualifying markets are
+        collected (3x ``max_markets`` to allow sorting headroom) or
+        after ``_MAX_PAGES`` pages as a safety net.
+
         Returns:
             Normalised :class:`Market` list.
         """
         min_vol = self._cfg.min_volume_24h
         max_markets = self._cfg.max_markets
+        collect_target = max_markets * 3 if max_markets else 0
         markets: list[Market] = []
         cursor: str | None = None
+        pages = 0
         while True:
             page, cursor = await self._fetch_markets_page(cursor)
+            pages += 1
             for raw in page:
                 market = _parse_kalshi_market(raw)
                 if market is not None:
                     if min_vol and market.volume_24h < min_vol:
                         continue
                     markets.append(market)
-            if not cursor:
+            if collect_target and len(markets) >= collect_target:
+                break
+            if not cursor or pages >= _MAX_PAGES:
                 break
         if max_markets:
             markets.sort(key=attrgetter("volume_24h"), reverse=True)
             markets = markets[:max_markets]
-        logger.info("kalshi_fetch_complete", total=len(markets))
+        logger.info("kalshi_fetch_complete", total=len(markets), pages=pages)
         return markets
 
     @async_retry(max_retries=3)

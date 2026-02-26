@@ -26,7 +26,7 @@ class TestParseWsMessage:
     """Tests for _parse_ws_message helper."""
 
     def test_valid_message(self) -> None:
-        """Parses a valid WS message into PriceUpdate."""
+        """Parses a valid WS message into PriceUpdate with synthetic_spread."""
         msg = json.dumps(
             {
                 "market": "mkt-1",
@@ -40,6 +40,7 @@ class TestParseWsMessage:
         assert update.token_id == "tok-1"
         assert update.yes_bid == Decimal("0.64")
         assert update.yes_ask == Decimal("0.66")
+        assert update.synthetic_spread is True
 
     def test_missing_market_returns_none(self) -> None:
         """Message without market/condition_id returns None."""
@@ -71,6 +72,103 @@ class TestParseWsMessage:
         update = _parse_ws_message(msg)
         assert update is not None
         assert update.market_id == "cond-1"
+
+    def test_heartbeat_ignored_with_telemetry(self) -> None:
+        """Heartbeat messages are classified as ignored."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"type": "heartbeat"})
+        assert _parse_ws_message(msg, telemetry=t) is None
+        assert t.ignored == 1
+
+    def test_subscription_ack_ignored(self) -> None:
+        """Subscription ack messages are ignored."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"type": "subscribed"})
+        assert _parse_ws_message(msg, telemetry=t) is None
+        assert t.ignored == 1
+
+    def test_error_msg_ignored(self) -> None:
+        """Error messages are ignored (logged at warning)."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"type": "error", "message": "bad"})
+        assert _parse_ws_message(msg, telemetry=t) is None
+        assert t.ignored == 1
+
+    def test_telemetry_tracks_parsed(self) -> None:
+        """Successful parse increments parsed_ok."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"})
+        _parse_ws_message(msg, telemetry=t)
+        assert t.parsed_ok == 1
+
+    def test_telemetry_failure_missing_market_id(self) -> None:
+        """Missing market_id tracked as failure."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"asset_id": "t", "price": "0.5"})
+        _parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("missing_market_id") == 1
+
+    def test_telemetry_failure_missing_token_id(self) -> None:
+        """Missing token_id tracked as failure."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"market": "m", "price": "0.5"})
+        _parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("missing_token_id") == 1
+
+    def test_telemetry_failure_missing_price(self) -> None:
+        """Missing price tracked as failure."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"market": "m", "asset_id": "t"})
+        _parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("missing_price") == 1
+
+    def test_telemetry_failure_price_out_of_range(self) -> None:
+        """Price > 1.0 tracked as out_of_range failure."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"market": "m", "asset_id": "t", "price": "1.5"})
+        _parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("price_out_of_range") == 1
+
+    def test_bytes_message_parsed(self) -> None:
+        """Bytes messages are decoded and parsed."""
+        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"}).encode()
+        update = _parse_ws_message(msg)
+        assert update is not None
+        assert update.market_id == "m"
+
+    def test_non_json_bytes_ignored(self) -> None:
+        """Non-JSON bytes messages are ignored, not failed."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        _parse_ws_message(b"ping", telemetry=t)
+        assert t.ignored == 1
+        assert t.parse_failed == 0
+
+    def test_schema_recorded_for_json(self) -> None:
+        """Schema is recorded for every valid JSON dict."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"})
+        _parse_ws_message(msg, telemetry=t)
+        assert len(t.known_schemas) == 1
 
 
 class TestParseOrderbook:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
@@ -198,4 +199,64 @@ class FlippeningRepository:
             List of event dicts.
         """
         rows = await self._pool.fetch(Q.GET_RECENT_EVENTS, limit, sport)
+        return [dict(row) for row in rows]
+
+    async def insert_discovery_health(self, snapshot: dict[str, Any]) -> None:
+        """Persist a discovery health snapshot.
+
+        Args:
+            snapshot: Discovery health dict with keys matching the table columns.
+        """
+        await self._pool.execute(
+            Q.INSERT_DISCOVERY_HEALTH,
+            snapshot.get("cycle_timestamp", datetime.now(tz=timezone.utc)),
+            snapshot["total_scanned"],
+            snapshot["sports_found"],
+            snapshot["hit_rate"],
+            json.dumps(snapshot["by_sport"]),
+            snapshot.get("overrides_applied", 0),
+            snapshot.get("exclusions_applied", 0),
+            snapshot.get("unclassified_candidates", 0),
+        )
+
+    async def get_discovery_health(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch recent discovery health snapshots.
+
+        Args:
+            limit: Maximum number of results.
+
+        Returns:
+            List of discovery health dicts.
+        """
+        rows = await self._pool.fetch(Q.GET_DISCOVERY_HEALTH, limit)
+        return [dict(row) for row in rows]
+
+    async def insert_ws_telemetry(self, snapshot: dict[str, Any]) -> None:
+        """Persist a WS telemetry snapshot.
+
+        Args:
+            snapshot: Telemetry dict with counter values.
+        """
+        await self._pool.execute(
+            Q.INSERT_WS_TELEMETRY,
+            snapshot.get("snapshot_time", datetime.now(tz=timezone.utc)),
+            snapshot.get("cum_received", 0),
+            snapshot.get("cum_parsed_ok", 0),
+            snapshot.get("cum_parse_failed", 0),
+            snapshot.get("cum_ignored", 0),
+            snapshot.get("schema_match_rate", 1.0),
+            snapshot.get("book_cache_hit_rate", 0.0),
+            snapshot.get("connection_state", "connected"),
+        )
+
+    async def get_ws_telemetry(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch recent WS telemetry snapshots.
+
+        Args:
+            limit: Maximum number of results.
+
+        Returns:
+            List of WS telemetry dicts.
+        """
+        rows = await self._pool.fetch(Q.GET_WS_TELEMETRY, limit)
         return [dict(row) for row in rows]

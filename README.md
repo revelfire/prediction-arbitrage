@@ -28,7 +28,7 @@ export DATABASE_URL="postgresql://localhost/arb_scanner"
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Optional: notification webhooks
-export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+export ARBITRAGE_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 
 # Copy and edit config
@@ -147,7 +147,7 @@ src/arb_scanner/
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes (unless `--dry-run`) | Claude API key for semantic matching |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SLACK_WEBHOOK_URL` | No | Slack notification webhook URL |
+| `ARBITRAGE_SLACK_WEBHOOK_URL` | No | Slack notification webhook URL |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook URL |
 | `ARB_SCANNER_CONFIG` | No | Path to config file (default: `config.yaml`) |
 

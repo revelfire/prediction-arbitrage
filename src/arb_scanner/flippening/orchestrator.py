@@ -16,10 +16,16 @@ from arb_scanner.flippening.alert_formatter import (
     dispatch_flip_alert,
 )
 from arb_scanner.flippening.game_manager import GameManager
+from arb_scanner.flippening.orderbook_cache import OrderBookCache
 from arb_scanner.flippening.signal_generator import SignalGenerator
 from arb_scanner.flippening.spike_detector import SpikeDetector
-from arb_scanner.flippening.sports_filter import classify_sports_markets
+from arb_scanner.flippening.sports_filter import (
+    DiscoveryHealthSnapshot,
+    check_degradation,
+    classify_sports_markets,
+)
 from arb_scanner.flippening.ws_client import create_price_stream
+from arb_scanner.flippening.ws_telemetry import WsTelemetry
 from arb_scanner.models.config import Settings
 from arb_scanner.models.flippening import (
     EntrySignal,
@@ -60,12 +66,20 @@ async def run_flip_watch(
     spike_detector = SpikeDetector(flip_cfg)
     signal_gen = SignalGenerator(flip_cfg)
     game_mgr = GameManager(flip_cfg)
+    telemetry = WsTelemetry()
+    book_cache = OrderBookCache(
+        max_size=flip_cfg.orderbook_cache_max_size,
+        ttl_seconds=flip_cfg.orderbook_cache_ttl_seconds,
+    )
 
     repo: Any = None
     if not dry_run:
         repo = await _create_repo(config)
 
-    http_client = httpx.AsyncClient()
+    http_client = httpx.AsyncClient(
+        base_url="https://clob.polymarket.com",
+        timeout=10.0,
+    )
     try:
         markets = await _discover_markets(
             config,
@@ -75,11 +89,22 @@ async def run_flip_watch(
         if not markets:
             logger.warning("no_sports_markets_found")
 
-        sports_markets = classify_sports_markets(markets, allowed_sports)
+        sports_markets, health = classify_sports_markets(markets, allowed_sports, config.flippening)
+        prev_health: DiscoveryHealthSnapshot | None = None
+        await _handle_discovery_health(
+            health,
+            prev_health,
+            config,
+            allowed_sports,
+            repo,
+            http_client,
+            dry_run,
+        )
+        prev_health = health
         game_mgr.initialize(sports_markets)
 
         token_ids = [sm.token_id for sm in sports_markets]
-        stream = await create_price_stream(flip_cfg)
+        stream = await create_price_stream(flip_cfg, telemetry=telemetry)
         if token_ids:
             await stream.subscribe(token_ids)
 
@@ -91,10 +116,15 @@ async def run_flip_watch(
         )
 
         last_discovery = asyncio.get_event_loop().time()
+        last_persist = asyncio.get_event_loop().time()
+        stall_count = 0
+        last_stall_received = telemetry.cum_received
+        last_drift_alert = 0.0
         try:
             async for update in stream:
+                enriched = await book_cache.enrich(update, http_client)
                 await _process_update(
-                    update,
+                    enriched,
                     game_mgr,
                     spike_detector,
                     signal_gen,
@@ -105,14 +135,33 @@ async def run_flip_watch(
                 )
                 now = asyncio.get_event_loop().time()
                 if now - last_discovery > _DISCOVERY_INTERVAL_SECONDS:
-                    await _periodic_discovery(
+                    prev_health = await _periodic_discovery(
                         config,
                         allowed_sports,
                         http_client,
                         game_mgr,
                         stream,
+                        prev_health,
+                        repo,
+                        dry_run,
                     )
                     last_discovery = now
+                stall_count, last_stall_received, last_drift_alert = await _check_telemetry(
+                    telemetry,
+                    book_cache,
+                    config,
+                    repo,
+                    http_client,
+                    dry_run,
+                    now,
+                    last_persist,
+                    stall_count,
+                    last_stall_received,
+                    last_drift_alert,
+                    stream,
+                )
+                if now - last_persist > flip_cfg.ws_telemetry_persist_interval_seconds:
+                    last_persist = now
         except (KeyboardInterrupt, asyncio.CancelledError):
             logger.info("flip_watch_shutting_down")
         finally:
@@ -371,6 +420,64 @@ async def _dispatch_exit_alert(
     )
 
 
+async def _handle_discovery_health(
+    health: DiscoveryHealthSnapshot,
+    prev_health: DiscoveryHealthSnapshot | None,
+    config: Settings,
+    allowed_sports: list[str],
+    repo: Any,
+    client: httpx.AsyncClient,
+    dry_run: bool,
+) -> None:
+    """Persist health snapshot and dispatch degradation alerts.
+
+    Args:
+        health: Current discovery health snapshot.
+        prev_health: Previous cycle's health snapshot.
+        config: Application settings.
+        allowed_sports: Sports being monitored.
+        repo: FlippeningRepository (None if dry_run).
+        client: Shared HTTP client for webhooks.
+        dry_run: Whether to skip persistence and alerts.
+    """
+    if not dry_run and repo is not None:
+        try:
+            import dataclasses
+
+            await repo.insert_discovery_health(dataclasses.asdict(health))
+        except Exception:
+            logger.exception("discovery_health_persist_failed")
+
+    alerts = check_degradation(
+        health,
+        prev_health,
+        config.flippening,
+        allowed_sports,
+    )
+    if alerts and not dry_run:
+        for msg in alerts:
+            logger.warning("discovery_degradation", alert=msg)
+        notif = config.notifications
+        if notif.slack_webhook or notif.discord_webhook:
+            slack_payload = (
+                {"text": f":warning: Sports Discovery Alert\n{chr(10).join(alerts)}"}
+                if notif.slack_webhook
+                else None
+            )
+            discord_payload = (
+                {"content": f"**Sports Discovery Alert**\n{chr(10).join(alerts)}"}
+                if notif.discord_webhook
+                else None
+            )
+            await dispatch_flip_alert(
+                slack_payload,
+                discord_payload,
+                slack_url=notif.slack_webhook,
+                discord_url=notif.discord_webhook,
+                client=client,
+            )
+
+
 async def _discover_markets(
     config: Settings,
     allowed_sports: list[str],
@@ -425,7 +532,10 @@ async def _periodic_discovery(
     client: httpx.AsyncClient,
     game_mgr: GameManager,
     stream: Any,
-) -> None:
+    prev_health: DiscoveryHealthSnapshot | None,
+    repo: Any,
+    dry_run: bool,
+) -> DiscoveryHealthSnapshot | None:
     """Refresh sports market discovery and update game manager.
 
     Args:
@@ -434,6 +544,12 @@ async def _periodic_discovery(
         client: Shared HTTP client.
         game_mgr: Game lifecycle manager.
         stream: Price stream for subscribing new tokens.
+        prev_health: Previous discovery health snapshot.
+        repo: FlippeningRepository (None if dry_run).
+        dry_run: Whether to skip persistence and alerts.
+
+    Returns:
+        Updated health snapshot, or prev_health on failure.
     """
     try:
         markets = await _discover_markets(
@@ -441,7 +557,16 @@ async def _periodic_discovery(
             allowed_sports,
             client,
         )
-        sports_markets = classify_sports_markets(markets, allowed_sports)
+        sports_markets, health = classify_sports_markets(markets, allowed_sports, config.flippening)
+        await _handle_discovery_health(
+            health,
+            prev_health,
+            config,
+            allowed_sports,
+            repo,
+            client,
+            dry_run,
+        )
         game_mgr.initialize(sports_markets)
         new_tokens = [
             sm.token_id
@@ -454,5 +579,108 @@ async def _periodic_discovery(
             "periodic_discovery_complete",
             new_markets=len(sports_markets),
         )
+        return health
     except Exception:
         logger.exception("periodic_discovery_failed")
+        return prev_health
+
+
+_STALL_THRESHOLD = 3
+_DRIFT_ALERT_COOLDOWN = 3600.0  # 1 hour
+
+
+async def _check_telemetry(
+    telemetry: WsTelemetry,
+    book_cache: OrderBookCache,
+    config: Settings,
+    repo: Any,
+    client: httpx.AsyncClient,
+    dry_run: bool,
+    now: float,
+    last_persist: float,
+    stall_count: int,
+    last_stall_received: int,
+    last_drift_alert: float,
+    stream: Any,
+) -> tuple[int, int, float]:
+    """Check telemetry health: persist, drift alerts, stall detection.
+
+    Args:
+        telemetry: WS telemetry tracker.
+        book_cache: Order book cache.
+        config: Application settings.
+        repo: FlippeningRepository (None if dry_run).
+        client: HTTP client for webhooks.
+        dry_run: Whether to skip persistence.
+        now: Current loop time.
+        last_persist: Last persist timestamp.
+        stall_count: Consecutive stall intervals.
+        last_stall_received: cum_received at last stall check.
+        last_drift_alert: Timestamp of last drift alert.
+        stream: Price stream (for forced reconnect).
+
+    Returns:
+        Updated (stall_count, last_stall_received, last_drift_alert).
+    """
+    flip_cfg = config.flippening
+    logged = telemetry.should_log(flip_cfg.ws_telemetry_interval_seconds)
+
+    if logged:
+        # Stall detection
+        if telemetry.cum_received == last_stall_received:
+            stall_count += 1
+            if stall_count >= 2:
+                logger.warning("ws_stall_detected", stalls=stall_count)
+            if stall_count >= _STALL_THRESHOLD:
+                logger.error("ws_stall_reconnect", stalls=stall_count)
+                await stream.close()
+                stall_count = 0
+        else:
+            stall_count = 0
+        last_stall_received = telemetry.cum_received
+
+        # Schema drift check
+        if telemetry.check_drift(flip_cfg.ws_schema_match_pct):
+            if now - last_drift_alert > _DRIFT_ALERT_COOLDOWN:
+                logger.warning(
+                    "ws_schema_drift",
+                    match_rate=telemetry.schema_match_rate,
+                )
+                if not dry_run:
+                    await _dispatch_drift_alert(config, client)
+                last_drift_alert = now
+
+    # Telemetry persistence
+    persist_interval = flip_cfg.ws_telemetry_persist_interval_seconds
+    if not dry_run and repo is not None and now - last_persist > persist_interval:
+        snap = telemetry.snapshot()
+        snap["book_cache_hit_rate"] = book_cache.cache_hit_rate
+        try:
+            await repo.insert_ws_telemetry(snap)
+        except Exception:
+            logger.exception("ws_telemetry_persist_failed")
+
+    return stall_count, last_stall_received, last_drift_alert
+
+
+async def _dispatch_drift_alert(
+    config: Settings,
+    client: httpx.AsyncClient,
+) -> None:
+    """Dispatch a schema drift alert via webhooks.
+
+    Args:
+        config: Application settings.
+        client: HTTP client.
+    """
+    notif = config.notifications
+    msg = "WebSocket schema drift detected — parser match rate below threshold."
+    slack_payload = {"text": f":warning: {msg}"} if notif.slack_webhook else None
+    discord_payload = {"content": f"**{msg}**"} if notif.discord_webhook else None
+    await dispatch_flip_alert(
+        slack_payload,
+        discord_payload,
+        slack_url=notif.slack_webhook,
+        discord_url=notif.discord_webhook,
+        client=client,
+    )

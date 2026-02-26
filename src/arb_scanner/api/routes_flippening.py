@@ -93,3 +93,45 @@ async def get_stats(
     except Exception as exc:
         logger.error("stats_flippenings_failed", error=str(exc))
         raise HTTPException(503, "Database unavailable") from exc
+
+
+@router.get("/api/flippenings/discovery-health")
+async def discovery_health(
+    limit: int = Query(20, ge=1, le=200),
+    repo: FlippeningRepository = Depends(get_flip_repo),
+) -> list[dict[str, Any]]:
+    """Fetch recent discovery health snapshots.
+
+    Args:
+        limit: Maximum number of snapshots to return.
+        repo: Injected FlippeningRepository.
+
+    Returns:
+        List of discovery health snapshot dicts.
+    """
+    try:
+        return await repo.get_discovery_health(limit=limit)
+    except Exception as exc:
+        logger.error("discovery_health_failed", error=str(exc))
+        raise HTTPException(503, "Database unavailable") from exc
+
+
+@router.get("/api/flippenings/ws-health")
+async def ws_health(
+    limit: int = Query(20, ge=1, le=200),
+    repo: FlippeningRepository = Depends(get_flip_repo),
+) -> list[dict[str, Any]]:
+    """Fetch recent WebSocket telemetry snapshots.
+
+    Args:
+        limit: Maximum number of snapshots to return.
+        repo: Injected FlippeningRepository.
+
+    Returns:
+        List of WS telemetry snapshot dicts.
+    """
+    try:
+        return await repo.get_ws_telemetry(limit=limit)
+    except Exception as exc:
+        logger.error("ws_health_failed", error=str(exc))
+        raise HTTPException(503, "Database unavailable") from exc

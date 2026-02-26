@@ -114,7 +114,9 @@ class Repository:
             return {}
 
         query = Q.GET_CACHED_EMBEDDINGS_384 if dimensions == 384 else Q.GET_CACHED_EMBEDDINGS_512
-        rows = await self._pool.fetch(query, pairs)
+        venues = [p[0] for p in pairs]
+        event_ids = [p[1] for p in pairs]
+        rows = await self._pool.fetch(query, venues, event_ids)
         result: dict[str, list[float]] = {}
         for row in rows:
             col = "title_embedding_384" if dimensions == 384 else "title_embedding"
@@ -300,6 +302,25 @@ class Repository:
         """
         await self._pool.execute(
             Q.INSERT_SCAN_LOG,
+            log.id,
+            log.started_at,
+            log.completed_at,
+            log.poly_markets_fetched,
+            log.kalshi_markets_fetched,
+            log.candidate_pairs,
+            log.llm_evaluations,
+            log.opportunities_found,
+            json.dumps(log.errors),
+        )
+
+    async def upsert_scan_log(self, log: ScanLog) -> None:
+        """Insert or update a scan log record.
+
+        Args:
+            log: The ScanLog model to persist or update.
+        """
+        await self._pool.execute(
+            Q.UPSERT_SCAN_LOG,
             log.id,
             log.started_at,
             log.completed_at,

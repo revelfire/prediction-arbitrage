@@ -200,6 +200,9 @@ class SpikeDetector:
         if baseline.late_join:
             raw *= self._config.late_join_penalty
 
+        if update.synthetic_spread:
+            raw *= self._config.synthetic_spread_penalty
+
         return max(0.0, min(raw, 1.0))
 
     def _compute_speed_score(

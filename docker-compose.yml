@@ -49,6 +49,18 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Flippening mean reversion engine (live sports market monitoring)
+  flip-watch:
+    build: .
+    command: ["uv", "run", "arb-scanner", "flip-watch"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # One-shot scan (run manually with: docker compose run --rm scan)
   scan:
     build: .
