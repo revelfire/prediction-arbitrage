@@ -25,6 +25,7 @@
         <button class="tab-btn" data-tab="tickets">Tickets</button>
         <button class="tab-btn" data-tab="flippenings">Flippenings</button>
         <button class="tab-btn" data-tab="discovery">Discovery</button>
+        <button class="tab-btn" data-tab="wshealth">WS Health</button>
     </div>
 
     <!-- Content -->
@@ -306,6 +307,70 @@
                 </thead>
                 <tbody id="disc-unclassified-tbody">
                     <tr><td colspan="2" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- WS Health Tab -->
+        <div id="tab-wshealth" class="tab-content">
+            <!-- FR-001: Connection Status Banner -->
+            <div id="ws-status-banner" class="ws-status-banner ws-idle">
+                <span id="ws-status-dot" class="ws-status-dot"></span>
+                <span id="ws-status-label">Idle - Start flip-watch to see telemetry</span>
+            </div>
+
+            <!-- FR-005: Order Book Cache Performance -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Messages Received</div>
+                    <div class="value" id="ws-total-received">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Parse Success</div>
+                    <div class="value" id="ws-total-parsed">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Parse Failed</div>
+                    <div class="value" id="ws-total-failed">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Cache Hit Rate</div>
+                    <div class="value" id="ws-cache-hit-rate">-</div>
+                </div>
+            </div>
+
+            <!-- FR-003: Schema Match Rate Gauge -->
+            <div class="section-title">Schema Match Rate</div>
+            <div class="ws-gauge-row">
+                <div class="ws-gauge-container">
+                    <canvas id="ws-schema-gauge" width="200" height="120"></canvas>
+                    <div id="ws-schema-pct" class="ws-gauge-value">-</div>
+                </div>
+                <div class="ws-gauge-chart-container chart-container">
+                    <canvas id="ws-schema-trend-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- FR-002: Throughput Chart -->
+            <div class="section-title">Throughput (messages/interval)</div>
+            <div class="chart-container">
+                <canvas id="ws-throughput-chart"></canvas>
+            </div>
+
+            <!-- FR-004: Stall and Reconnect Log -->
+            <div class="section-title">Stall &amp; Reconnect Log</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        <th>Prev State</th>
+                        <th>New State</th>
+                        <th>Messages</th>
+                    </tr>
+                </thead>
+                <tbody id="ws-events-tbody">
+                    <tr><td colspan="5" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
