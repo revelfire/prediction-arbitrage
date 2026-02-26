@@ -72,6 +72,7 @@ def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
     from arb_scanner.api.routes_health import router as health_router
     from arb_scanner.api.routes_matches import router as matches_router
     from arb_scanner.api.routes_opportunities import router as opportunities_router
+    from arb_scanner.api.routes_price_stream import router as price_stream_router
     from arb_scanner.api.routes_scan import router as scan_router
     from arb_scanner.api.routes_tickets import router as tickets_router
 
@@ -82,5 +83,6 @@ def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
     app.include_router(tickets_router)
     app.include_router(scan_router)
     app.include_router(flippening_router)
+    app.include_router(price_stream_router)
 
     return app

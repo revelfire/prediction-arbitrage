@@ -24,6 +24,7 @@
         <button class="tab-btn" data-tab="alerts">Alerts</button>
         <button class="tab-btn" data-tab="tickets">Tickets</button>
         <button class="tab-btn" data-tab="flippenings">Flippenings</button>
+        <button class="tab-btn" data-tab="discovery">Discovery</button>
     </div>
 
     <!-- Content -->
@@ -165,6 +166,29 @@
 
         <!-- Flippenings Tab -->
         <div id="tab-flippenings" class="tab-content">
+            <!-- Live Price Ticker Banner -->
+            <div id="ticker-status" class="ticker-banner ticker-idle">Engine not active</div>
+
+            <!-- Live Prices Section -->
+            <div class="section-title">Live Prices</div>
+            <table id="ticker-table">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Category</th>
+                        <th>YES Mid</th>
+                        <th>Baseline</th>
+                        <th>Deviation</th>
+                        <th>Sparkline</th>
+                        <th>Spread</th>
+                        <th>Depth</th>
+                    </tr>
+                </thead>
+                <tbody id="ticker-tbody">
+                    <tr><td colspan="8" class="empty-state">Connecting...</td></tr>
+                </tbody>
+            </table>
+
             <div class="metrics-grid">
                 <div class="metric-card">
                     <div class="label">Total Signals</div>
@@ -217,6 +241,71 @@
                 </thead>
                 <tbody id="flip-history-tbody">
                     <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Discovery Tab -->
+        <div id="tab-discovery" class="tab-content">
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Total Scanned</div>
+                    <div class="value" id="disc-total-scanned">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Classified</div>
+                    <div class="value" id="disc-classified">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Hit Rate</div>
+                    <div class="value" id="disc-hit-rate">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Unclassified</div>
+                    <div class="value" id="disc-unclassified">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Markets per Category</div>
+            <div class="chart-container">
+                <canvas id="disc-category-chart"></canvas>
+            </div>
+
+            <div class="section-title">Hit Rate Over Time (24h)</div>
+            <div class="chart-container">
+                <canvas id="disc-hitrate-chart"></canvas>
+            </div>
+
+            <div class="section-title">Classification Methods</div>
+            <div class="chart-container" style="height:250px">
+                <canvas id="disc-method-chart"></canvas>
+            </div>
+
+            <div class="section-title">Degradation Alerts</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Alert</th>
+                        <th>Category</th>
+                        <th>Resolved</th>
+                    </tr>
+                </thead>
+                <tbody id="disc-alerts-tbody">
+                    <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+
+            <div class="section-title">Unclassified Market Inspector</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Slug</th>
+                    </tr>
+                </thead>
+                <tbody id="disc-unclassified-tbody">
+                    <tr><td colspan="2" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
         </div>

@@ -221,3 +221,35 @@ tr.clickable { cursor: pointer; }
     font-weight: 600;
     margin: 24px 0 8px 0;
 }
+
+/* Live Price Ticker */
+.ticker-banner {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 16px;
+    text-align: center;
+}
+.ticker-idle { background: var(--bg-accent); color: var(--text-secondary); }
+.ticker-connected { background: rgba(102, 187, 106, 0.15); color: var(--success); }
+.ticker-disconnected { background: rgba(233, 69, 96, 0.15); color: var(--danger); }
+
+.category-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 500;
+    background: var(--bg-accent);
+    color: var(--accent);
+}
+
+.deviation-green { color: var(--success); }
+.deviation-amber { color: var(--warning); }
+.deviation-red { color: var(--danger); }
+
+.sparkline-canvas {
+    width: 100px;
+    height: 30px;
+}

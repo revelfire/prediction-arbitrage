@@ -154,3 +154,29 @@ FROM ws_telemetry
 ORDER BY snapshot_time DESC
 LIMIT $1;
 """
+
+SELECT_DISCOVERY_HEALTH_HISTORY = """
+SELECT cycle_timestamp, total_scanned, sports_found, hit_rate,
+       by_sport, overrides_applied, exclusions_applied, unclassified_candidates
+FROM flippening_discovery_health
+WHERE cycle_timestamp >= $1
+ORDER BY cycle_timestamp;
+"""
+
+INSERT_DISCOVERY_ALERT = """
+INSERT INTO flippening_discovery_alerts (alert_text, category, created_at)
+VALUES ($1, $2, $3);
+"""
+
+SELECT_DISCOVERY_ALERTS = """
+SELECT id, alert_text, category, resolved, created_at, resolved_at
+FROM flippening_discovery_alerts
+ORDER BY created_at DESC
+LIMIT $1;
+"""
+
+RESOLVE_DISCOVERY_ALERT = """
+UPDATE flippening_discovery_alerts
+SET resolved = TRUE, resolved_at = $2
+WHERE category = $1 AND resolved = FALSE;
+"""
