@@ -220,6 +220,7 @@ class TestRunDiscover:
         mock_sm.market = mock_market
         mock_sm.sport = "nba"
         mock_sm.classification_method = "slug"
+        mock_sm.token_id = "tok_abc123"
 
         mock_health = DiscoveryHealthSnapshot(
             total_scanned=100,

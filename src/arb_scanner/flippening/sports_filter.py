@@ -17,8 +17,8 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.sports_filter",
 )
 
-# Tracks when each alert category was last fired; keyed by category string.
-_last_alert_time: dict[str, datetime] = {}
+_last_alert_time: dict[str, datetime] = {}  # rate-limit tracker
+_sport_zero_count: dict[str, int] = {}  # per-sport consecutive zero-result counter
 
 
 @dataclasses.dataclass
@@ -32,6 +32,7 @@ class DiscoveryHealthSnapshot:
     overrides_applied: int
     exclusions_applied: int
     unclassified_candidates: int
+    unclassified_sample: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
 
 def classify_sports_markets(
@@ -39,12 +40,7 @@ def classify_sports_markets(
     allowed_sports: list[str],
     config: FlippeningConfig | None = None,
 ) -> tuple[list[SportsMarket], DiscoveryHealthSnapshot]:
-    """Filter and classify Polymarket markets as sports events.
-
-    Multi-pass pipeline: automated slug/tag/title detection, manual overrides,
-    fuzzy keyword matching, then exclusion filtering. Returns classified markets
-    and a health snapshot. ``config=None`` uses empty defaults.
-    """
+    """Multi-pass classification: slug/tag/title, overrides, fuzzy, exclusions."""
     allowed = set(s.lower() for s in allowed_sports)
     manual_overrides: dict[str, str] = {}  # market_id -> sport
     excluded_ids: set[str] = set()
@@ -153,6 +149,13 @@ def classify_sports_markets(
     total = len(markets)
     found = len(filtered)
     hit_rate = found / total if total > 0 else 0.0
+    unclassified_top = [
+        {
+            "title": str(m.raw_data.get("groupItemTitle", m.title)),
+            "slug": str(m.raw_data.get("groupSlug", "")),
+        }
+        for m in fuzzy_unmatched[:10]
+    ]
     health = DiscoveryHealthSnapshot(
         total_scanned=total,
         sports_found=found,
@@ -161,6 +164,7 @@ def classify_sports_markets(
         overrides_applied=overrides_applied,
         exclusions_applied=exclusions_applied,
         unclassified_candidates=len(fuzzy_unmatched),
+        unclassified_sample=unclassified_top,
     )
 
     logger.info(
@@ -192,15 +196,8 @@ def check_degradation(
     config: FlippeningConfig,
     allowed_sports: list[str],
 ) -> list[str]:
-    """Return alert strings for detected discovery degradation.
-
-    Evaluates hit-rate below threshold for 2 consecutive cycles and
-    sports_found dropping to zero. EC-005: ``total_scanned == 0`` means the
-    API returned nothing (not a classification issue), so returns [] immediately.
-    Rate-limiting suppresses repeats within ``discovery_alert_cooldown_minutes``.
-    ``allowed_sports`` is reserved for future per-sport dropout checks.
-    """
-    if current.total_scanned == 0:  # EC-005: API returned nothing, not our problem.
+    """Return alert strings for detected discovery degradation."""
+    if current.total_scanned == 0:  # EC-005: API returned nothing.
         return []
     alerts: list[str] = []
     cooldown = config.discovery_alert_cooldown_minutes
@@ -223,21 +220,26 @@ def check_degradation(
         alerts.append(
             f"Sports market discovery dropped to 0 results (previous: {previous.sports_found})"
         )
+    # Per-sport 3-cycle dropout: alert when a sport returns 0 for 3 cycles.
+    for sport in allowed_sports:
+        if current.by_sport.get(sport, 0) == 0:
+            _sport_zero_count[sport] = _sport_zero_count.get(sport, 0) + 1
+        else:
+            _sport_zero_count[sport] = 0
+        if _sport_zero_count[sport] >= 3 and _should_alert(f"sport_dropout_{sport}", cooldown):
+            alerts.append(f"Sport '{sport}' returned 0 results for 3 consecutive cycles")
     return alerts
 
 
 def _market_key(market: Market) -> str:
-    """Return conditionId from raw_data when available, otherwise event_id."""
+    """Return conditionId when available, else event_id."""
     cid = market.raw_data.get("conditionId")
     if isinstance(cid, str) and cid:
         return cid
     return market.event_id
 
 
-def _detect_sport(
-    raw_data: dict[str, object],
-    allowed: set[str],
-) -> tuple[str, str] | None:
+def _detect_sport(raw_data: dict[str, object], allowed: set[str]) -> tuple[str, str] | None:
     """Return (sport, method) from groupSlug/tags/groupItemTitle, or None."""
     slug = str(raw_data.get("groupSlug", "")).lower()
     for sport in allowed:
@@ -265,10 +267,8 @@ def _detect_sport(
     return None
 
 
-def _extract_game_start(
-    raw_data: dict[str, object],
-) -> datetime | None:
-    """Return parsed game start datetime from raw market metadata, or None."""
+def _extract_game_start(raw_data: dict[str, object]) -> datetime | None:
+    """Return parsed game start datetime, or None."""
     for field in ("startDate", "game_start_time", "startDateIso"):
         value = raw_data.get(field)
         if isinstance(value, str) and value:
@@ -282,7 +282,7 @@ def _extract_game_start(
 
 
 def _extract_token_id(raw_data: dict[str, object]) -> str:
-    """Return the CLOB token ID from raw market metadata, or empty string."""
+    """Return CLOB token ID, or empty string."""
     clob_ids = raw_data.get("clobTokenIds")
     if isinstance(clob_ids, str):
         try:

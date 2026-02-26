@@ -30,6 +30,7 @@ async def run_discover(config: Any, allowed: list[str]) -> dict[str, Any]:
             "title": str(sm.market.raw_data.get("groupItemTitle", sm.market.title)),
             "sport": sm.sport,
             "classification_method": sm.classification_method,
+            "token_id": sm.token_id,
         }
         for sm in sports_markets
     ]
@@ -42,6 +43,7 @@ async def run_discover(config: Any, allowed: list[str]) -> dict[str, Any]:
         "overrides_applied": health.overrides_applied,
         "exclusions_applied": health.exclusions_applied,
         "unclassified_candidates": health.unclassified_candidates,
+        "unclassified_sample": health.unclassified_sample,
         "matched": matched,
     }
 
@@ -69,22 +71,26 @@ def render_discover_table(result: dict[str, Any], *, verbose: bool) -> None:
         sys.stdout.write(f"  {sport:<10} {count}\n")
     if not result["by_sport"]:
         sys.stdout.write("  (none)\n")
+    unclassified = result.get("unclassified_sample", [])
+    if unclassified:
+        sys.stdout.write("\nTop unclassified candidates (review for overrides/exclusions):\n")
+        for uc in unclassified:
+            title = str(uc.get("title", ""))[:60]
+            slug = str(uc.get("slug", ""))[:30]
+            sys.stdout.write(f"  {slug:<30} {title}\n")
     if verbose:
         _render_verbose(result["matched"])
 
 
 def _render_verbose(matched: list[dict[str, Any]]) -> None:
-    """Print a per-market table for verbose mode.
-
-    Args:
-        matched: List of matched market dicts from :func:`run_discover`.
-    """
+    """Print a per-market table for verbose mode."""
     sys.stdout.write("\nMatched markets:\n")
-    hdr = f"  {'ID':<14} {'Sport':<8} {'Method':<16} Title"
+    hdr = f"  {'ID':<14} {'Sport':<8} {'Method':<16} {'Token':<14} Title"
     sys.stdout.write(hdr + "\n")
     sys.stdout.write("  " + "-" * (len(hdr) - 2) + "\n")
     for m in matched:
-        title = str(m["title"])[:60]
+        title = str(m["title"])[:50]
+        token = str(m.get("token_id", ""))[:14]
         sys.stdout.write(
-            f"  {m['event_id']:<14} {m['sport']:<8} {m['classification_method']:<16} {title}\n"
+            f"  {m['event_id']:<14} {m['sport']:<8} {m['classification_method']:<16} {token:<14} {title}\n"
         )

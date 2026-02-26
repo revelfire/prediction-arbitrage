@@ -10,6 +10,7 @@ from arb_scanner.flippening.sports_filter import (
     DiscoveryHealthSnapshot,
     _last_alert_time,
     _should_alert,
+    _sport_zero_count,
     check_degradation,
 )
 from arb_scanner.models.config import FlippeningConfig
@@ -55,8 +56,9 @@ def _config(
 
 @pytest.fixture(autouse=True)
 def _clear_alert_state() -> None:
-    """Reset the module-level _last_alert_time dict before every test."""
+    """Reset the module-level alert state dicts before every test."""
     _last_alert_time.clear()
+    _sport_zero_count.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +161,40 @@ class TestEC005:
         # Nothing should have been recorded.
         assert "hit_rate_low" not in _last_alert_time
         assert "sports_zero_drop" not in _last_alert_time
+
+
+# ---------------------------------------------------------------------------
+# check_degradation — per-sport dropout
+# ---------------------------------------------------------------------------
+
+
+class TestPerSportDropout:
+    """Alert when a specific sport returns 0 results for 3 consecutive cycles."""
+
+    def test_fires_after_three_consecutive_zero_cycles(self) -> None:
+        cfg = _config()
+        for _ in range(2):
+            check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        alerts = check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        assert any("'nba'" in a and "3 consecutive" in a for a in alerts)
+
+    def test_no_alert_before_three_cycles(self) -> None:
+        cfg = _config()
+        check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        alerts = check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        assert not any("'nba'" in a for a in alerts)
+
+    def test_resets_on_nonzero(self) -> None:
+        cfg = _config()
+        # 2 zero cycles for nba
+        check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        # nba comes back
+        check_degradation(_snap(by_sport={"nba": 1, "nhl": 2}), None, cfg, _ALLOWED)
+        # 2 more zero cycles — not yet 3 consecutive
+        check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        alerts = check_degradation(_snap(by_sport={"nhl": 2}), None, cfg, _ALLOWED)
+        assert not any("'nba'" in a for a in alerts)
 
 
 # ---------------------------------------------------------------------------

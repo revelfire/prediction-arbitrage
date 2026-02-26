@@ -293,7 +293,7 @@ def flip_ws_validate(
 
     try:
         report = asyncio.run(
-            run_ws_validate(config.flippening, token_ids, count, timeout),
+            run_ws_validate(config.flippening, token_ids, count, timeout, settings=config),
         )
     except Exception as exc:
         logger.error("ws_validate_failed", error=str(exc))
