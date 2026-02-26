@@ -311,28 +311,134 @@ async function refreshAlerts() {
 
 // --- Tickets Tab ---
 async function refreshTickets() {
-    const data = await fetchJSON('/api/tickets');
+    const filter = el('ticket-status-filter');
+    const statusParam = filter && filter.value ? `?status=${filter.value}` : '';
+    const data = await fetchJSON(`/api/tickets${statusParam}`);
     const tbody = el('tickets-tbody');
     if (!tbody || !data) return;
 
     if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No pending tickets</td></tr>';
+        const label = filter && filter.value ? filter.value : '';
+        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No ${label} tickets</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = data.map(t => `
-        <tr>
-            <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...</td>
-            <td>${formatUSD(t.expected_cost)}</td>
-            <td>${formatUSD(t.expected_profit)}</td>
-            <td><span class="badge badge-${t.status}">${t.status}</span></td>
-            <td>${shortTime(t.created_at)}</td>
-            <td>
-                <button class="btn btn-success btn-sm" onclick="approveTicket('${t.arb_id}')">Approve</button>
-                <button class="btn btn-danger btn-sm" onclick="expireTicket('${t.arb_id}')">Expire</button>
-            </td>
-        </tr>
-    `).join('');
+    tbody.innerHTML = data.map(t => {
+        const actions = t.status === 'pending'
+            ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${t.arb_id}')">Review</button>
+               <button class="btn btn-success btn-sm" onclick="event.stopPropagation(); approveTicket('${t.arb_id}')">Approve</button>
+               <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${t.arb_id}')">Expire</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${t.arb_id}')">View</button>`;
+        return `
+            <tr class="clickable" onclick="openTicketDetail('${t.arb_id}')">
+                <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...</td>
+                <td>${formatUSD(t.expected_cost)}</td>
+                <td>${formatUSD(t.expected_profit)}</td>
+                <td><span class="badge badge-${t.status}">${t.status}</span></td>
+                <td>${shortTime(t.created_at)}</td>
+                <td>${actions}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function openTicketDetail(arbId) {
+    const modal = el('ticket-modal');
+    const body = el('modal-body');
+    if (!modal || !body) return;
+    modal.style.display = 'flex';
+    body.innerHTML = '<div class="empty-state">Loading...</div>';
+
+    const d = await fetchJSON(`/api/tickets/${encodeURIComponent(arbId)}`);
+    if (!d) {
+        body.innerHTML = '<div class="empty-state">Failed to load ticket detail</div>';
+        return;
+    }
+
+    const spread = d.net_spread_pct != null ? formatPct(d.net_spread_pct) : 'N/A';
+    const annual = d.annualized_return != null ? formatPct(d.annualized_return) : 'N/A';
+    const depth = d.depth_risk ? 'Low liquidity' : 'OK';
+
+    const polyLink = d.poly_url
+        ? `<a class="venue-link" href="${d.poly_url}" target="_blank" rel="noopener">${d.poly_title || d.poly_event_id || 'View on Polymarket'}</a>`
+        : (d.poly_title || d.poly_event_id || 'N/A');
+    const kalshiLink = d.kalshi_url
+        ? `<a class="venue-link" href="${d.kalshi_url}" target="_blank" rel="noopener">${d.kalshi_title || d.kalshi_event_id || 'View on Kalshi'}</a>`
+        : (d.kalshi_title || d.kalshi_event_id || 'N/A');
+
+    const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
+    const leg2 = typeof d.leg_2 === 'string' ? JSON.parse(d.leg_2) : (d.leg_2 || {});
+
+    const actionBtns = d.status === 'pending'
+        ? `<div class="modal-actions">
+               <button class="btn btn-success" onclick="approveTicket('${d.arb_id}'); closeTicketModal();">Approve</button>
+               <button class="btn btn-danger" onclick="expireTicket('${d.arb_id}'); closeTicketModal();">Expire</button>
+           </div>`
+        : `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
+
+    body.innerHTML = `
+        <div class="detail-section">
+            <h4>Markets</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${polyLink}</span></div>
+                <div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${kalshiLink}</span></div>
+            </div>
+        </div>
+        <div class="detail-section">
+            <h4>Opportunity</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Buy venue</span><span class="detail-value">${d.buy_venue || 'N/A'}</span></div>
+                <div class="detail-row"><span class="detail-label">Sell venue</span><span class="detail-value">${d.sell_venue || 'N/A'}</span></div>
+                <div class="detail-row"><span class="detail-label">Net spread</span><span class="detail-value">${spread}</span></div>
+                <div class="detail-row"><span class="detail-label">Annualized</span><span class="detail-value">${annual}</span></div>
+                <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(d.max_size)}</span></div>
+                <div class="detail-row"><span class="detail-label">Depth risk</span><span class="detail-value">${depth}</span></div>
+                <div class="detail-row"><span class="detail-label">Cost/contract</span><span class="detail-value">${formatUSD(d.cost_per_contract)}</span></div>
+                <div class="detail-row"><span class="detail-label">Net profit/contract</span><span class="detail-value">${formatUSD(d.net_profit)}</span></div>
+            </div>
+        </div>
+        <div class="detail-section">
+            <h4>Current Prices</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Poly YES</span><span class="detail-value">${d.poly_yes_bid != null ? parseFloat(d.poly_yes_bid).toFixed(3) + ' / ' + parseFloat(d.poly_yes_ask).toFixed(3) : 'N/A'}</span></div>
+                <div class="detail-row"><span class="detail-label">Kalshi YES</span><span class="detail-value">${d.kalshi_yes_bid != null ? parseFloat(d.kalshi_yes_bid).toFixed(3) + ' / ' + parseFloat(d.kalshi_yes_ask).toFixed(3) : 'N/A'}</span></div>
+                <div class="detail-row"><span class="detail-label">Poly volume 24h</span><span class="detail-value">${d.poly_volume != null ? formatUSD(d.poly_volume) : 'N/A'}</span></div>
+                <div class="detail-row"><span class="detail-label">Kalshi volume 24h</span><span class="detail-value">${d.kalshi_volume != null ? formatUSD(d.kalshi_volume) : 'N/A'}</span></div>
+            </div>
+        </div>
+        <div class="detail-section">
+            <h4>Execution Legs</h4>
+            <div class="detail-grid">
+                <div class="leg-card">
+                    <div class="leg-title">Leg 1 - Buy ${leg1.side || ''}</div>
+                    <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg1.venue || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg1.size)}</span></div>
+                </div>
+                <div class="leg-card">
+                    <div class="leg-title">Leg 2 - Buy ${leg2.side || ''}</div>
+                    <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg2.venue || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg2.price)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg2.size)}</span></div>
+                </div>
+            </div>
+        </div>
+        <div class="detail-section">
+            <h4>Ticket</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
+                <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
+                <div class="detail-row"><span class="detail-label">Detected</span><span class="detail-value">${formatTime(d.detected_at)}</span></div>
+                <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+            </div>
+        </div>
+        ${actionBtns}
+    `;
+}
+
+function closeTicketModal() {
+    const modal = el('ticket-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 async function approveTicket(arbId) {
@@ -902,6 +1008,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // Alert type filter
     const alertFilter = el('alert-type-filter');
     if (alertFilter) alertFilter.addEventListener('change', refreshAlerts);
+
+    // Ticket status filter
+    const ticketFilter = el('ticket-status-filter');
+    if (ticketFilter) ticketFilter.addEventListener('change', refreshTickets);
+
+    // Close modal on Escape key or overlay click
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeTicketModal();
+    });
+    const modalOverlay = el('ticket-modal');
+    if (modalOverlay) {
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) closeTicketModal();
+        });
+    }
 
     // Initial load
     switchTab('opportunities');

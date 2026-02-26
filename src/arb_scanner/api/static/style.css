@@ -306,3 +306,85 @@ tr.clickable { cursor: pointer; }
 .ws-event-reconnect { color: var(--success); }
 .ws-event-disconnect { color: var(--danger); }
 .ws-event-connect { color: var(--accent); }
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.modal-content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 85vh;
+    overflow-y: auto;
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { font-size: 15px; font-weight: 600; }
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 4px;
+}
+.modal-close:hover { color: var(--text-primary); }
+.modal-body { padding: 20px; font-size: 13px; }
+.modal-body .detail-section { margin-bottom: 20px; }
+.modal-body .detail-section h4 {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.modal-body .detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 24px;
+}
+.modal-body .detail-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+}
+.modal-body .detail-label { color: var(--text-secondary); }
+.modal-body .detail-value { font-weight: 500; text-align: right; }
+.modal-body .venue-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+}
+.modal-body .venue-link:hover { text-decoration: underline; }
+.modal-body .leg-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+}
+.modal-body .leg-card .leg-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+.modal-actions {
+    display: flex;
+    gap: 8px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+}

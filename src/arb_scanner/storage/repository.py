@@ -254,6 +254,37 @@ class Repository:
         rows = await self._pool.fetch(Q.GET_PENDING_TICKETS)
         return [dict(row) for row in rows]
 
+    async def get_tickets_by_status(
+        self,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch tickets filtered by status.
+
+        Args:
+            status: Filter to this status, or None for all.
+            limit: Maximum number of results.
+
+        Returns:
+            List of ticket records as dictionaries.
+        """
+        rows = await self._pool.fetch(Q.GET_TICKETS_BY_STATUS, status, limit)
+        return [dict(row) for row in rows]
+
+    async def get_ticket_detail(self, arb_id: str) -> dict[str, Any] | None:
+        """Fetch a single ticket with full opportunity and market data.
+
+        Args:
+            arb_id: The arbitrage opportunity ID.
+
+        Returns:
+            Ticket detail dict or None if not found.
+        """
+        row = await self._pool.fetchrow(Q.GET_TICKET_DETAIL, arb_id)
+        if row is None:
+            return None
+        return dict(row)
+
     async def update_ticket_status(self, arb_id: str, status: str) -> None:
         """Update the status of an execution ticket.
 
