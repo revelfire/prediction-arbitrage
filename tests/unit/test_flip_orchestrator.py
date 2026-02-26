@@ -8,11 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from arb_scanner.flippening._orch_processing import process_update as _process_update
 from arb_scanner.flippening.game_manager import GameManager
-from arb_scanner.flippening.orchestrator import (
-    _process_update,
-    run_flip_watch,
-)
+from arb_scanner.flippening.orchestrator import run_flip_watch
 from arb_scanner.flippening.signal_generator import SignalGenerator
 from arb_scanner.flippening.spike_detector import SpikeDetector
 from arb_scanner.models.config import (
@@ -97,7 +95,7 @@ class TestRunFlipWatch:
         config = _minimal_settings(enabled=False)
         with (
             patch(
-                "arb_scanner.flippening.orchestrator._discover_markets",
+                "arb_scanner.flippening._orch_repo.discover_markets",
                 new_callable=AsyncMock,
                 return_value=[],
             ),
@@ -132,6 +130,7 @@ class TestProcessUpdate:
         sm = SportsMarket(
             market=_market(),
             sport="nba",
+            category="nba",
             game_start_time=_NOW - timedelta(minutes=30),
             token_id="tok-1",
         )

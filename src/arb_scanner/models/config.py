@@ -1,8 +1,13 @@
 """Configuration models for the arb scanner application."""
 
+from __future__ import annotations
+
 from decimal import Decimal
 
+import structlog
 from pydantic import BaseModel, model_validator
+
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="models.config")
 
 
 class FeeSchedule(BaseModel):
@@ -153,10 +158,51 @@ class SportOverride(BaseModel):
 
 
 class ManualOverride(BaseModel):
-    """Manual market override for sports discovery."""
+    """Manual market override for market discovery."""
 
     market_id: str
     sport: str
+
+
+VALID_CATEGORY_TYPES = frozenset(
+    {"sport", "entertainment", "politics", "crypto", "economics", "corporate"},
+)
+VALID_BASELINE_STRATEGIES = frozenset({"first_price", "rolling_window", "pre_event_snapshot"})
+
+
+class CategoryConfig(BaseModel):
+    """Configuration for a single market category."""
+
+    category_type: str = "sport"
+    enabled: bool = True
+    baseline_strategy: str = "first_price"
+    baseline_window_minutes: int = 30
+    spike_threshold_pct: float | None = None
+    confidence_modifier: float = 1.0
+    min_confidence: float | None = None
+    reversion_target_pct: float | None = None
+    stop_loss_pct: float | None = None
+    max_hold_minutes: int | None = None
+    late_join_penalty: float | None = None
+    event_window_hours: float = 4.0
+    discovery_keywords: list[str] = []
+    discovery_tags: list[str] = []
+    discovery_slugs: list[str] = []
+
+    @model_validator(mode="after")
+    def validate_enums(self) -> CategoryConfig:
+        """Validate category_type and baseline_strategy values."""
+        if self.category_type not in VALID_CATEGORY_TYPES:
+            raise ValueError(
+                f"category_type must be one of {sorted(VALID_CATEGORY_TYPES)}, "
+                f"got '{self.category_type}'"
+            )
+        if self.baseline_strategy not in VALID_BASELINE_STRATEGIES:
+            raise ValueError(
+                f"baseline_strategy must be one of {sorted(VALID_BASELINE_STRATEGIES)}, "
+                f"got '{self.baseline_strategy}'"
+            )
+        return self
 
 
 class FlippeningConfig(BaseModel):
@@ -184,6 +230,7 @@ class FlippeningConfig(BaseModel):
     late_join_penalty: float = 0.80
     polling_interval_seconds: float = 5.0
     confidence_weights: ConfidenceWeights = ConfidenceWeights()
+    categories: dict[str, CategoryConfig] = {}
     sport_overrides: dict[str, SportOverride] = {}
     manual_market_ids: list[ManualOverride] = []
     excluded_market_ids: list[str] = []
@@ -200,6 +247,29 @@ class FlippeningConfig(BaseModel):
     tick_retention_days: int = 90
     tick_buffer_size: int = 100
     tick_flush_interval_seconds: float = 5.0
+
+    @model_validator(mode="after")
+    def migrate_sports_to_categories(self) -> FlippeningConfig:
+        """Auto-convert legacy sports list to categories when categories is empty."""
+        if self.categories:
+            if self.sports != FlippeningConfig.model_fields["sports"].default:
+                logger.warning("categories_and_sports_both_set")
+            return self
+        if not self.sports:
+            return self
+        for sport in self.sports:
+            override = self.sport_overrides.get(sport, SportOverride())
+            kw = self.sport_keywords.get(sport, [])
+            self.categories[sport] = CategoryConfig(
+                category_type="sport",
+                baseline_strategy="first_price",
+                spike_threshold_pct=override.spike_threshold_pct,
+                confidence_modifier=override.confidence_modifier,
+                min_confidence=override.min_confidence,
+                discovery_keywords=kw,
+                discovery_slugs=[f"{sport}-"],
+            )
+        return self
 
 
 class Settings(BaseModel):

@@ -32,13 +32,14 @@ SELECT_DISTINCT_MARKETS = """
 SELECT DISTINCT t.market_id
 FROM flippening_price_ticks t
 JOIN flippening_baselines b ON b.market_id = t.market_id
-WHERE b.sport = $1
+WHERE (b.sport = $1 OR b.category = $1)
   AND t.timestamp >= $2
   AND t.timestamp <= $3
 """
 
 SELECT_BASELINE = """
 SELECT market_id, token_id, baseline_yes, baseline_no, sport,
+       category, category_type, baseline_strategy,
        game_start_time, captured_at, late_join
 FROM flippening_baselines
 WHERE market_id = $1

@@ -41,7 +41,7 @@ class FlippeningRepository:
         """Persist a baseline odds capture.
 
         Args:
-            baseline: Captured baseline odds for a sports market.
+            baseline: Captured baseline odds for a market.
         """
         await self._pool.execute(
             Q.INSERT_BASELINE,
@@ -53,11 +53,14 @@ class FlippeningRepository:
             baseline.game_start_time,
             baseline.captured_at,
             baseline.late_join,
+            baseline.category or baseline.sport,
+            baseline.category_type,
+            baseline.baseline_strategy,
         )
         logger.info(
             "baseline_inserted",
             market_id=baseline.market_id,
-            sport=baseline.sport,
+            category=baseline.category or baseline.sport,
             late_join=baseline.late_join,
         )
 
@@ -79,12 +82,14 @@ class FlippeningRepository:
             event.confidence,
             event.sport,
             event.detected_at,
+            event.category or event.sport,
+            event.category_type,
         )
         logger.info(
             "event_inserted",
             event_id=event.id,
             market_id=event.market_id,
-            sport=event.sport,
+            category=event.category or event.sport,
         )
 
     async def insert_signal(
@@ -135,18 +140,8 @@ class FlippeningRepository:
             signal_type="entry" if isinstance(signal, EntrySignal) else "exit",
         )
 
-    async def get_active_signals(
-        self,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Fetch open entry signals with no corresponding exit.
-
-        Args:
-            limit: Maximum number of results.
-
-        Returns:
-            List of active signal dicts.
-        """
+    async def get_active_signals(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch open entry signals with no corresponding exit."""
         rows = await self._pool.fetch(Q.GET_ACTIVE_SIGNALS, limit)
         return [dict(row) for row in rows]
 
@@ -154,34 +149,24 @@ class FlippeningRepository:
         self,
         limit: int = 50,
         sport: str | None = None,
+        category: str | None = None,
+        category_type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch completed flippenings with entry/exit pairs.
-
-        Args:
-            limit: Maximum number of results.
-            sport: Optional sport filter.
-
-        Returns:
-            List of completed flippening dicts.
-        """
-        rows = await self._pool.fetch(Q.GET_HISTORY, limit, sport)
+        """Fetch completed flippenings with entry/exit pairs."""
+        cat_filter = category or sport
+        rows = await self._pool.fetch(Q.GET_HISTORY, limit, cat_filter, category_type)
         return [dict(row) for row in rows]
 
     async def get_stats(
         self,
         sport: str | None = None,
+        category: str | None = None,
+        category_type: str | None = None,
         since: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch aggregated flippening performance by sport.
-
-        Args:
-            sport: Optional sport filter.
-            since: Optional start timestamp.
-
-        Returns:
-            List of per-sport stat dicts.
-        """
-        rows = await self._pool.fetch(Q.GET_STATS, sport, since)
+        """Fetch aggregated flippening performance by category."""
+        cat_filter = category or sport
+        rows = await self._pool.fetch(Q.GET_STATS, cat_filter, category_type, since)
         return [dict(row) for row in rows]
 
     async def get_recent_events(
@@ -189,45 +174,28 @@ class FlippeningRepository:
         limit: int = 50,
         sport: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch recent flippening events.
-
-        Args:
-            limit: Maximum number of results.
-            sport: Optional sport filter.
-
-        Returns:
-            List of event dicts.
-        """
+        """Fetch recent flippening events."""
         rows = await self._pool.fetch(Q.GET_RECENT_EVENTS, limit, sport)
         return [dict(row) for row in rows]
 
     async def insert_discovery_health(self, snapshot: dict[str, Any]) -> None:
-        """Persist a discovery health snapshot.
-
-        Args:
-            snapshot: Discovery health dict with keys matching the table columns.
-        """
+        """Persist a discovery health snapshot."""
+        found = snapshot.get("markets_found", snapshot.get("sports_found", 0))
+        by_cat = snapshot.get("by_category", snapshot.get("by_sport", {}))
         await self._pool.execute(
             Q.INSERT_DISCOVERY_HEALTH,
             snapshot.get("cycle_timestamp", datetime.now(tz=timezone.utc)),
             snapshot["total_scanned"],
-            snapshot["sports_found"],
+            found,
             snapshot["hit_rate"],
-            json.dumps(snapshot["by_sport"]),
+            json.dumps(by_cat),
             snapshot.get("overrides_applied", 0),
             snapshot.get("exclusions_applied", 0),
             snapshot.get("unclassified_candidates", 0),
         )
 
     async def get_discovery_health(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Fetch recent discovery health snapshots.
-
-        Args:
-            limit: Maximum number of results.
-
-        Returns:
-            List of discovery health dicts.
-        """
+        """Fetch recent discovery health snapshots."""
         rows = await self._pool.fetch(Q.GET_DISCOVERY_HEALTH, limit)
         return [dict(row) for row in rows]
 
@@ -276,11 +244,7 @@ class FlippeningRepository:
         )
 
     async def insert_ws_telemetry(self, snapshot: dict[str, Any]) -> None:
-        """Persist a WS telemetry snapshot.
-
-        Args:
-            snapshot: Telemetry dict with counter values.
-        """
+        """Persist a WS telemetry snapshot."""
         await self._pool.execute(
             Q.INSERT_WS_TELEMETRY,
             snapshot.get("snapshot_time", datetime.now(tz=timezone.utc)),
@@ -294,13 +258,6 @@ class FlippeningRepository:
         )
 
     async def get_ws_telemetry(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Fetch recent WS telemetry snapshots.
-
-        Args:
-            limit: Maximum number of results.
-
-        Returns:
-            List of WS telemetry dicts.
-        """
+        """Fetch recent WS telemetry snapshots."""
         rows = await self._pool.fetch(Q.GET_WS_TELEMETRY, limit)
         return [dict(row) for row in rows]

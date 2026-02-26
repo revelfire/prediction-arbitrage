@@ -1,4 +1,4 @@
-"""Sports market discovery and categorization from Polymarket data."""
+"""Market discovery and categorization from Polymarket data."""
 
 from __future__ import annotations
 
@@ -8,144 +8,115 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 
-from arb_scanner.flippening.sport_keywords import fuzzy_match_sport, get_sport_keywords
-from arb_scanner.models.config import FlippeningConfig
-from arb_scanner.models.flippening import SportsMarket
+from arb_scanner.flippening.category_keywords import fuzzy_match_category, get_category_keywords
+from arb_scanner.models.config import CategoryConfig, FlippeningConfig
+from arb_scanner.models.flippening import CategoryMarket
 from arb_scanner.models.market import Market
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
-    module="flippening.sports_filter",
+    module="flippening.market_classifier",
 )
 
-_last_alert_time: dict[str, datetime] = {}  # rate-limit tracker
-_sport_zero_count: dict[str, int] = {}  # per-sport consecutive zero-result counter
+_last_alert_time: dict[str, datetime] = {}
+_category_zero_count: dict[str, int] = {}
 
 
 @dataclasses.dataclass
 class DiscoveryHealthSnapshot:
-    """Health metrics from a single sports market classification run."""
+    """Health metrics from a single market classification run."""
 
     total_scanned: int
-    sports_found: int
+    markets_found: int
     hit_rate: float
-    by_sport: dict[str, int]
+    by_category: dict[str, int]
+    by_category_type: dict[str, int]
     overrides_applied: int
     exclusions_applied: int
     unclassified_candidates: int
     unclassified_sample: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
 
-def classify_sports_markets(
+def classify_markets(
     markets: list[Market],
-    allowed_sports: list[str],
+    categories: dict[str, CategoryConfig],
     config: FlippeningConfig | None = None,
-) -> tuple[list[SportsMarket], DiscoveryHealthSnapshot]:
+) -> tuple[list[CategoryMarket], DiscoveryHealthSnapshot]:
     """Multi-pass classification: slug/tag/title, overrides, fuzzy, exclusions."""
-    allowed = set(s.lower() for s in allowed_sports)
-    manual_overrides: dict[str, str] = {}  # market_id -> sport
+    enabled = {cid: c for cid, c in categories.items() if c.enabled}
+    manual_overrides: dict[str, str] = {}
     excluded_ids: set[str] = set()
-    config_keywords: dict[str, list[str]] = {}
     if config is not None:
         for mo in config.manual_market_ids:
             manual_overrides[mo.market_id] = mo.sport
         excluded_ids = set(config.excluded_market_ids)
-        config_keywords = config.sport_keywords
     keyword_map: dict[str, list[str]] = {
-        sport: get_sport_keywords(config_keywords, sport) for sport in allowed
+        cid: get_category_keywords(cat, cid) for cid, cat in enabled.items()
     }
 
-    # Pass 1: Automated (slug / tag / title).
-    results: list[SportsMarket] = []
+    results: list[CategoryMarket] = []
     unmatched: list[Market] = []
     market_ids_in_api: set[str] = set()
     for market in markets:
-        detected = _detect_sport(market.raw_data, allowed)
+        detected = _detect_category(market.raw_data, enabled)
         mid = _market_key(market)
         market_ids_in_api.add(mid)
-
         if detected is not None:
-            sport, method = detected
+            cat_id, method = detected
             token_id = _extract_token_id(market.raw_data)
             if not token_id:
-                logger.debug("skipped_no_token_id", event_id=market.event_id)
                 continue
-            results.append(
-                SportsMarket(
-                    market=market,
-                    sport=sport,
-                    game_start_time=_extract_game_start(market.raw_data),
-                    token_id=token_id,
-                    classification_method=method,
-                )
-            )
+            cat_cfg = enabled[cat_id]
+            results.append(_build_category_market(market, cat_id, cat_cfg, token_id, method))
         else:
             unmatched.append(market)
 
-    # Pass 2: Manual overrides (only for markets not already matched).
     automated_ids = {_market_key(sm.market) for sm in results}
     overrides_applied = 0
     still_unmatched: list[Market] = []
-
     for market in unmatched:
         mid = _market_key(market)
-        if mid in manual_overrides:
-            sport = manual_overrides[mid]
+        if mid in manual_overrides and manual_overrides[mid] in enabled:
+            cat_id = manual_overrides[mid]
             token_id = _extract_token_id(market.raw_data)
             if not token_id:
-                logger.debug("skipped_no_token_id_override", event_id=market.event_id)
                 still_unmatched.append(market)
                 continue
-            logger.info("manual_override_applied", market_id=mid, sport=sport)
+            cat_cfg = enabled[cat_id]
             results.append(
-                SportsMarket(
-                    market=market,
-                    sport=sport,
-                    game_start_time=_extract_game_start(market.raw_data),
-                    token_id=token_id,
-                    classification_method="manual_override",
-                )
+                _build_category_market(market, cat_id, cat_cfg, token_id, "manual_override")
             )
             overrides_applied += 1
         else:
             still_unmatched.append(market)
-    for mid in manual_overrides:  # EC-002: warn for override IDs missing from API.
+    for mid in manual_overrides:
         if mid not in market_ids_in_api and mid not in automated_ids:
             logger.warning("override_market_not_found", market_id=mid, error_code="EC-002")
-    # Pass 3: Fuzzy keyword matching.
+
     fuzzy_unmatched: list[Market] = []
     for market in still_unmatched:
         title = str(market.raw_data.get("groupItemTitle", ""))
         question = str(market.raw_data.get("question", ""))
-        fuzzy_sport: str | None = fuzzy_match_sport(title, question, allowed, keyword_map)
-        if fuzzy_sport is not None:
+        fuzzy_cat = fuzzy_match_category(title, question, enabled, keyword_map)
+        if fuzzy_cat is not None:
             token_id = _extract_token_id(market.raw_data)
             if not token_id:
-                logger.debug("skipped_no_token_id_fuzzy", event_id=market.event_id)
                 fuzzy_unmatched.append(market)
                 continue
-            results.append(
-                SportsMarket(
-                    market=market,
-                    sport=fuzzy_sport,
-                    game_start_time=_extract_game_start(market.raw_data),
-                    token_id=token_id,
-                    classification_method="fuzzy",
-                )
-            )
+            cat_cfg = enabled[fuzzy_cat]
+            results.append(_build_category_market(market, fuzzy_cat, cat_cfg, token_id, "fuzzy"))
         else:
             fuzzy_unmatched.append(market)
-    # Pass 4: Exclusion filter.
+
     exclusions_applied = 0
-    filtered: list[SportsMarket] = []
+    filtered: list[CategoryMarket] = []
     for sm in results:
         mid = _market_key(sm.market)
         if mid in excluded_ids:
             exclusions_applied += 1
         else:
             filtered.append(sm)
-    by_sport: dict[str, int] = {}
-    for sm in filtered:
-        by_sport[sm.sport] = by_sport.get(sm.sport, 0) + 1
+
+    by_category, by_category_type = _compute_breakdowns(filtered)
     total = len(markets)
     found = len(filtered)
     hit_rate = found / total if total > 0 else 0.0
@@ -158,26 +129,55 @@ def classify_sports_markets(
     ]
     health = DiscoveryHealthSnapshot(
         total_scanned=total,
-        sports_found=found,
+        markets_found=found,
         hit_rate=hit_rate,
-        by_sport=by_sport,
+        by_category=by_category,
+        by_category_type=by_category_type,
         overrides_applied=overrides_applied,
         exclusions_applied=exclusions_applied,
         unclassified_candidates=len(fuzzy_unmatched),
         unclassified_sample=unclassified_top,
     )
-
     logger.info(
         "sports_classification_complete",
         total_markets=total,
         sports_markets=found,
         hit_rate=round(hit_rate, 4),
-        by_sport=by_sport,
+        by_sport=by_category,
         overrides_applied=overrides_applied,
         exclusions_applied=exclusions_applied,
         unclassified_candidates=health.unclassified_candidates,
     )
     return filtered, health
+
+
+def _build_category_market(
+    market: Market,
+    cat_id: str,
+    cat_cfg: CategoryConfig,
+    token_id: str,
+    method: str,
+) -> CategoryMarket:
+    """Build a CategoryMarket from discovery results."""
+    return CategoryMarket(
+        market=market,
+        sport=cat_id,
+        category=cat_id,
+        category_type=cat_cfg.category_type,
+        game_start_time=_extract_game_start(market.raw_data),
+        token_id=token_id,
+        classification_method=method,
+    )
+
+
+def _compute_breakdowns(filtered: list[CategoryMarket]) -> tuple[dict[str, int], dict[str, int]]:
+    """Compute by_category and by_category_type counts."""
+    by_cat: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for sm in filtered:
+        by_cat[sm.category] = by_cat.get(sm.category, 0) + 1
+        by_type[sm.category_type] = by_type.get(sm.category_type, 0) + 1
+    return by_cat, by_type
 
 
 def _should_alert(category: str, cooldown_minutes: int) -> bool:
@@ -194,10 +194,10 @@ def check_degradation(
     current: DiscoveryHealthSnapshot,
     previous: DiscoveryHealthSnapshot | None,
     config: FlippeningConfig,
-    allowed_sports: list[str],
+    categories: dict[str, CategoryConfig],
 ) -> list[str]:
     """Return alert strings for detected discovery degradation."""
-    if current.total_scanned == 0:  # EC-005: API returned nothing.
+    if current.total_scanned == 0:
         return []
     alerts: list[str] = []
     cooldown = config.discovery_alert_cooldown_minutes
@@ -212,22 +212,19 @@ def check_degradation(
             f"{config.min_hit_rate_pct} for 2 consecutive cycles"
         )
     if (
-        current.sports_found == 0
+        current.markets_found == 0
         and previous is not None
-        and previous.sports_found > 0
-        and _should_alert("sports_zero_drop", cooldown)
+        and previous.markets_found > 0
+        and _should_alert("markets_zero_drop", cooldown)
     ):
-        alerts.append(
-            f"Sports market discovery dropped to 0 results (previous: {previous.sports_found})"
-        )
-    # Per-sport 3-cycle dropout: alert when a sport returns 0 for 3 cycles.
-    for sport in allowed_sports:
-        if current.by_sport.get(sport, 0) == 0:
-            _sport_zero_count[sport] = _sport_zero_count.get(sport, 0) + 1
+        alerts.append(f"Market discovery dropped to 0 results (previous: {previous.markets_found})")
+    for cat_id in categories:
+        if current.by_category.get(cat_id, 0) == 0:
+            _category_zero_count[cat_id] = _category_zero_count.get(cat_id, 0) + 1
         else:
-            _sport_zero_count[sport] = 0
-        if _sport_zero_count[sport] >= 3 and _should_alert(f"sport_dropout_{sport}", cooldown):
-            alerts.append(f"Sport '{sport}' returned 0 results for 3 consecutive cycles")
+            _category_zero_count[cat_id] = 0
+        if _category_zero_count[cat_id] >= 3 and _should_alert(f"cat_dropout_{cat_id}", cooldown):
+            alerts.append(f"Category '{cat_id}' returned 0 results for 3 consecutive cycles")
     return alerts
 
 
@@ -239,12 +236,17 @@ def _market_key(market: Market) -> str:
     return market.event_id
 
 
-def _detect_sport(raw_data: dict[str, object], allowed: set[str]) -> tuple[str, str] | None:
-    """Return (sport, method) from groupSlug/tags/groupItemTitle, or None."""
+def _detect_category(
+    raw_data: dict[str, object],
+    categories: dict[str, CategoryConfig],
+) -> tuple[str, str] | None:
+    """Return (category_id, method) from slug/tag/title, or None."""
     slug = str(raw_data.get("groupSlug", "")).lower()
-    for sport in allowed:
-        if slug.startswith(f"{sport}-") or slug == sport:
-            return sport, "slug"
+    for cat_id, cat_cfg in sorted(categories.items()):
+        slugs = cat_cfg.discovery_slugs or [f"{cat_id}-"]
+        for prefix in slugs:
+            if slug.startswith(prefix) or slug == cat_id:
+                return cat_id, "slug"
 
     tags = raw_data.get("tags", [])
     if isinstance(tags, str):
@@ -255,15 +257,16 @@ def _detect_sport(raw_data: dict[str, object], allowed: set[str]) -> tuple[str, 
     if isinstance(tags, list):
         for tag in tags:
             tag_lower = str(tag).lower()
-            for sport in allowed:
-                if sport in tag_lower:
-                    return sport, "tag"
+            for cat_id, cat_cfg in sorted(categories.items()):
+                tag_patterns = cat_cfg.discovery_tags or [cat_id]
+                for pat in tag_patterns:
+                    if pat in tag_lower:
+                        return cat_id, "tag"
 
     title = str(raw_data.get("groupItemTitle", "")).lower()
-    for sport in allowed:
-        if sport in title:
-            return sport, "title"
-
+    for cat_id in sorted(categories):
+        if cat_id in title:
+            return cat_id, "title"
     return None
 
 
@@ -273,9 +276,7 @@ def _extract_game_start(raw_data: dict[str, object]) -> datetime | None:
         value = raw_data.get(field)
         if isinstance(value, str) and value:
             try:
-                return datetime.fromisoformat(
-                    value.replace("Z", "+00:00"),
-                )
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 continue
     return None
@@ -293,7 +294,6 @@ def _extract_token_id(raw_data: dict[str, object]) -> str:
             pass
     if isinstance(clob_ids, list) and clob_ids:
         return str(clob_ids[0])
-
     condition_id = raw_data.get("conditionId", "")
     if isinstance(condition_id, str):
         return condition_id

@@ -42,20 +42,29 @@ async def list_active(
 async def list_history(
     limit: int = Query(50, ge=1, le=200),
     sport: str | None = Query(None),
+    category: str | None = Query(None),
+    category_type: str | None = Query(None),
     repo: FlippeningRepository = Depends(get_flip_repo),
 ) -> list[dict[str, Any]]:
     """Fetch flippening signal history.
 
     Args:
         limit: Maximum number of records.
-        sport: Optional sport filter.
+        sport: Optional sport filter (legacy, same as category for sports).
+        category: Optional category filter.
+        category_type: Optional category type filter.
         repo: Injected FlippeningRepository.
 
     Returns:
         List of completed signal records.
     """
+    effective_cat = category or sport
     try:
-        return await repo.get_history(limit=limit, sport=sport)
+        return await repo.get_history(
+            limit=limit,
+            sport=effective_cat,
+            category_type=category_type,
+        )
     except Exception as exc:
         logger.error("history_flippenings_failed", error=str(exc))
         raise HTTPException(503, "Database unavailable") from exc
@@ -64,19 +73,24 @@ async def list_history(
 @router.get("/api/flippenings/stats")
 async def get_stats(
     sport: str | None = Query(None),
+    category: str | None = Query(None),
+    category_type: str | None = Query(None),
     since: str | None = Query(None),
     repo: FlippeningRepository = Depends(get_flip_repo),
 ) -> list[dict[str, Any]]:
     """Fetch aggregated flippening statistics.
 
     Args:
-        sport: Optional sport filter.
+        sport: Optional sport filter (legacy, same as category for sports).
+        category: Optional category filter.
+        category_type: Optional category type filter.
         since: Optional ISO 8601 start date.
         repo: Injected FlippeningRepository.
 
     Returns:
         Stats dictionary.
     """
+    effective_cat = category or sport
     since_dt: datetime | None = None
     if since:
         try:
@@ -89,7 +103,11 @@ async def get_stats(
                 f"Invalid date format: {since}",
             ) from exc
     try:
-        return await repo.get_stats(sport=sport, since=since_dt)
+        return await repo.get_stats(
+            sport=effective_cat,
+            since=since_dt,
+            category_type=category_type,
+        )
     except Exception as exc:
         logger.error("stats_flippenings_failed", error=str(exc))
         raise HTTPException(503, "Database unavailable") from exc

@@ -19,6 +19,12 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.alert_formatter",
 )
 
+
+def _label(event: FlippeningEvent) -> str:
+    """Return the display label for an event (category or sport)."""
+    return (event.category or event.sport).upper()
+
+
 _ENTRY_EMOJI = ":rotating_light:"
 _EXIT_EMOJI_MAP: dict[ExitReason, str] = {
     ExitReason.REVERSION: ":moneybag:",
@@ -51,7 +57,7 @@ def build_entry_slack_payload(
     """
     title = f"{_ENTRY_EMOJI} Flippening Detected"
     return {
-        "text": f"Flippening: {event.sport.upper()} spike on {event.market_id}",
+        "text": f"Flippening: {_label(event)} spike on {event.market_id}",
         "blocks": [
             {
                 "type": "header",
@@ -60,7 +66,7 @@ def build_entry_slack_payload(
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Sport:* {event.sport.upper()}"},
+                    {"type": "mrkdwn", "text": f"*Category:* {_label(event)}"},
                     {"type": "mrkdwn", "text": f"*Baseline:* {float(event.baseline_yes):.2f}"},
                     {"type": "mrkdwn", "text": f"*Current:* {float(event.spike_price):.2f}"},
                     {
@@ -94,13 +100,13 @@ def build_entry_discord_payload(
         Discord webhook JSON payload.
     """
     return {
-        "content": f"Flippening: {event.sport.upper()} spike detected",
+        "content": f"Flippening: {_label(event)} spike detected",
         "embeds": [
             {
                 "title": "Flippening Detected",
                 "color": 15105570,  # orange
                 "fields": [
-                    {"name": "Sport", "value": event.sport.upper(), "inline": True},
+                    {"name": "Category", "value": _label(event), "inline": True},
                     {
                         "name": "Baseline",
                         "value": f"{float(event.baseline_yes):.2f}",
@@ -167,7 +173,7 @@ def build_exit_slack_payload(
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Sport:* {event.sport.upper()}"},
+                    {"type": "mrkdwn", "text": f"*Category:* {_label(event)}"},
                     {"type": "mrkdwn", "text": f"*Reason:* {reason}"},
                     {"type": "mrkdwn", "text": f"*Entry:* {float(entry.entry_price):.2f}"},
                     {"type": "mrkdwn", "text": f"*Exit:* {float(exit_sig.exit_price):.2f}"},
@@ -207,7 +213,7 @@ def build_exit_discord_payload(
                 "title": f"Flippening Exit — {reason}",
                 "color": color,
                 "fields": [
-                    {"name": "Sport", "value": event.sport.upper(), "inline": True},
+                    {"name": "Category", "value": _label(event), "inline": True},
                     {"name": "Entry", "value": f"{float(entry.entry_price):.2f}", "inline": True},
                     {"name": "Exit", "value": f"{float(exit_sig.exit_price):.2f}", "inline": True},
                     {

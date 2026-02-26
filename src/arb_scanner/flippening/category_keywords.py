@@ -1,10 +1,12 @@
+"""Built-in keyword sets and matching utilities for market category discovery.
+
+Provides default keyword dictionaries for sport categories and fuzzy matching
+used to classify prediction market titles into configured categories.
+"""
+
 from __future__ import annotations
 
-"""Built-in keyword sets per sport for fuzzy sports market discovery on Polymarket.
-
-Provides default keyword dictionaries and matching utilities used to classify
-prediction market titles and questions into a known sport category.
-"""
+from arb_scanner.models.config import CategoryConfig
 
 DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
     "nba": [
@@ -183,58 +185,44 @@ DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def get_sport_keywords(
-    config_keywords: dict[str, list[str]],
-    sport: str,
-) -> list[str]:
-    """Return keyword list for a sport, preferring config overrides over defaults.
-
-    If ``sport`` is present in ``config_keywords`` the caller-supplied list is
-    returned unchanged, allowing full replacement of the built-in set.  When
-    the sport is absent from ``config_keywords`` the function falls back to
-    ``DEFAULT_SPORT_KEYWORDS``.  An empty list is returned when the sport is
-    unknown in both sources.
+def get_category_keywords(category: CategoryConfig, category_id: str) -> list[str]:
+    """Return keywords for a category, falling back to built-in sport keywords.
 
     Args:
-        config_keywords: Caller-supplied keyword overrides keyed by sport slug.
-        sport: Lowercase sport identifier, e.g. ``"nba"`` or ``"ufc"``.
+        category: Category configuration.
+        category_id: Category identifier slug.
 
     Returns:
-        A list of lowercase keyword strings for the requested sport.
+        List of lowercase keyword strings.
     """
-    if sport in config_keywords:
-        return config_keywords[sport]
-    return DEFAULT_SPORT_KEYWORDS.get(sport, [])
+    if category.discovery_keywords:
+        return category.discovery_keywords
+    return DEFAULT_SPORT_KEYWORDS.get(category_id, [])
 
 
-def fuzzy_match_sport(
+def fuzzy_match_category(
     title: str,
     question: str,
-    allowed: set[str],
-    keywords: dict[str, list[str]],
+    categories: dict[str, CategoryConfig],
+    keyword_map: dict[str, list[str]],
 ) -> str | None:
-    """Return the first sport whose keywords appear in the combined market text.
+    """Return the first category whose keywords appear in the market text.
 
-    The function concatenates the lowercased ``title`` and ``question`` into a
-    single search string and then iterates over ``allowed`` sports in sorted
-    order so that the result is deterministic when keyword lists overlap across
-    sports (EC-004).  The first sport for which any keyword is found as a
-    substring of the search text is returned.
+    Iterates over categories in sorted order for deterministic tiebreaking
+    when keyword lists overlap (EC-002).
 
     Args:
         title: Market title string (case-insensitive).
         question: Market question string (case-insensitive).
-        allowed: Set of sport slugs to consider, e.g. ``{"nba", "nfl"}``.
-        keywords: Mapping of sport slug to list of lowercase keyword strings.
-            Typically produced by calling :func:`get_sport_keywords` for each
-            sport, or passed directly as ``DEFAULT_SPORT_KEYWORDS``.
+        categories: Mapping of category_id to config.
+        keyword_map: Mapping of category_id to keyword lists.
 
     Returns:
-        The matching sport slug, or ``None`` if no keyword matched.
+        The matching category_id, or None if no keyword matched.
     """
     search_text = title.lower() + " " + question.lower()
-    for sport in sorted(allowed):
-        for keyword in keywords.get(sport, []):
+    for cat_id in sorted(categories):
+        for keyword in keyword_map.get(cat_id, []):
             if keyword in search_text:
-                return sport
+                return cat_id
     return None

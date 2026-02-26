@@ -346,7 +346,7 @@ async function refreshFlippenings() {
         fetchJSON('/api/flippenings/stats'),
     ]);
 
-    // Stats cards — stats is a list of per-sport rows, aggregate for summary
+    // Stats cards — stats is a list of per-category rows, aggregate for summary
     if (stats && Array.isArray(stats) && stats.length > 0) {
         const total = stats.reduce((s, r) => s + (r.total || 0), 0);
         const wAvg = (field) => {
@@ -375,7 +375,7 @@ async function refreshFlippenings() {
         } else {
             activeTbody.innerHTML = active.map(a => `
                 <tr>
-                    <td>${a.sport || ''}</td>
+                    <td>${a.category || a.sport || ''}</td>
                     <td>${a.side || ''}</td>
                     <td>${formatUSD(a.price)}</td>
                     <td>${a.target_exit ? formatUSD(a.target_exit) : '-'}</td>
@@ -397,7 +397,7 @@ async function refreshFlippenings() {
                 const pnl = h.realized_pnl != null ? (parseFloat(h.realized_pnl) >= 0 ? '+' : '') + parseFloat(h.realized_pnl).toFixed(4) : '-';
                 return `
                     <tr>
-                        <td>${h.sport || ''}</td>
+                        <td>${h.category || h.sport || ''}</td>
                         <td>${h.side || ''}</td>
                         <td>${h.entry_price ? formatUSD(h.entry_price) : '-'}</td>
                         <td>${h.exit_price ? formatUSD(h.exit_price) : '-'}</td>

@@ -3,15 +3,17 @@
 INSERT_BASELINE = """
 INSERT INTO flippening_baselines
     (market_id, token_id, baseline_yes, baseline_no, sport,
-     game_start_time, captured_at, late_join)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     game_start_time, captured_at, late_join,
+     category, category_type, baseline_strategy)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
 INSERT_EVENT = """
 INSERT INTO flippening_events
     (id, market_id, market_title, baseline_yes, spike_price,
-     spike_magnitude, spike_direction, confidence, sport, detected_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     spike_magnitude, spike_direction, confidence, sport, detected_at,
+     category, category_type)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 """
 
 INSERT_SIGNAL = """
@@ -52,6 +54,8 @@ SELECT
     e.market_id,
     e.market_title,
     e.sport,
+    e.category,
+    e.category_type,
     e.baseline_yes,
     e.spike_price,
     e.spike_magnitude,
@@ -71,7 +75,8 @@ JOIN flippening_signals entry
     ON entry.event_id = e.id AND entry.signal_type = 'entry'
 JOIN flippening_signals ex
     ON ex.event_id = e.id AND ex.signal_type = 'exit'
-WHERE ($2::TEXT IS NULL OR e.sport = $2)
+WHERE ($2::TEXT IS NULL OR e.sport = $2 OR e.category = $2)
+  AND ($3::TEXT IS NULL OR e.category_type = $3)
 ORDER BY ex.created_at DESC
 LIMIT $1
 """
@@ -79,6 +84,8 @@ LIMIT $1
 GET_STATS = """
 SELECT
     e.sport,
+    e.category,
+    e.category_type,
     COUNT(*) AS total_signals,
     COUNT(*) FILTER (WHERE ex.exit_reason = 'reversion') AS wins,
     ROUND(
@@ -93,17 +100,19 @@ JOIN flippening_signals entry
     ON entry.event_id = e.id AND entry.signal_type = 'entry'
 JOIN flippening_signals ex
     ON ex.event_id = e.id AND ex.signal_type = 'exit'
-WHERE ($1::TEXT IS NULL OR e.sport = $1)
-  AND ($2::TIMESTAMPTZ IS NULL OR e.detected_at >= $2)
-GROUP BY e.sport
+WHERE ($1::TEXT IS NULL OR e.sport = $1 OR e.category = $1)
+  AND ($2::TEXT IS NULL OR e.category_type = $2)
+  AND ($3::TIMESTAMPTZ IS NULL OR e.detected_at >= $3)
+GROUP BY e.sport, e.category, e.category_type
 ORDER BY total_pnl DESC
 """
 
 GET_RECENT_EVENTS = """
 SELECT id, market_id, market_title, baseline_yes, spike_price,
-       spike_magnitude, spike_direction, confidence, sport, detected_at
+       spike_magnitude, spike_direction, confidence, sport,
+       category, category_type, detected_at
 FROM flippening_events
-WHERE ($2::TEXT IS NULL OR sport = $2)
+WHERE ($2::TEXT IS NULL OR sport = $2 OR category = $2)
 ORDER BY detected_at DESC
 LIMIT $1
 """

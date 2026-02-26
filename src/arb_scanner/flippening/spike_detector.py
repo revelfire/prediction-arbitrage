@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import structlog
 
-from arb_scanner.models.config import FlippeningConfig, SportOverride
+from arb_scanner.models.config import FlippeningConfig
 from arb_scanner.models.flippening import (
     Baseline,
     FlippeningEvent,
@@ -21,7 +21,7 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 
 
 class SpikeDetector:
-    """Detect emotional overreaction spikes in live sports markets.
+    """Detect emotional overreaction spikes in live markets.
 
     Compares current prices to baseline, checks recency and direction,
     then scores confidence using a weighted multi-factor model.
@@ -53,7 +53,8 @@ class SpikeDetector:
         """
         yes_mid = _yes_mid(update)
         deviation = abs(baseline.yes_price - yes_mid)
-        threshold = Decimal(str(self._get_threshold(baseline.sport)))
+        cat_key = baseline.category or baseline.sport
+        threshold = Decimal(str(self._get_threshold(cat_key)))
 
         if deviation < threshold:
             return None
@@ -64,29 +65,12 @@ class SpikeDetector:
         if not self._is_against_favorite(baseline, update):
             return None
 
-        confidence = self._score_confidence(
-            deviation,
-            baseline,
-            update,
-            price_history,
-        )
-        min_conf = self._get_min_confidence(baseline.sport)
+        confidence = self._score_confidence(deviation, baseline, update, price_history)
+        min_conf = self._get_min_confidence(cat_key)
         if confidence < min_conf:
             return None
 
-        if baseline.yes_price >= Decimal("0.50"):
-            direction = (
-                SpikeDirection.FAVORITE_DROP
-                if yes_mid < baseline.yes_price
-                else SpikeDirection.UNDERDOG_RISE
-            )
-        else:
-            direction = (
-                SpikeDirection.UNDERDOG_RISE
-                if yes_mid > baseline.yes_price
-                else SpikeDirection.FAVORITE_DROP
-            )
-
+        direction = _determine_direction(baseline, yes_mid)
         magnitude_pct = deviation / baseline.yes_price if baseline.yes_price else deviation
 
         event = FlippeningEvent(
@@ -98,6 +82,8 @@ class SpikeDetector:
             spike_direction=direction,
             confidence=Decimal(str(round(confidence, 4))),
             sport=baseline.sport,
+            category=baseline.category,
+            category_type=baseline.category_type,
             detected_at=update.timestamp,
         )
         logger.info(
@@ -114,15 +100,7 @@ class SpikeDetector:
         baseline: Baseline,
         history: deque[PriceUpdate],
     ) -> bool:
-        """Check if price was near baseline within the spike window.
-
-        Args:
-            baseline: Pre-spike baseline.
-            history: Recent price history.
-
-        Returns:
-            True if a recent price was close to baseline.
-        """
+        """Check if price was near baseline within the spike window."""
         if not history:
             return False
         latest = history[-1]
@@ -138,20 +116,8 @@ class SpikeDetector:
                 return True
         return False
 
-    def _is_against_favorite(
-        self,
-        baseline: Baseline,
-        update: PriceUpdate,
-    ) -> bool:
-        """Check if the move is against the pre-game favorite.
-
-        Args:
-            baseline: Pre-spike baseline.
-            update: Current price update.
-
-        Returns:
-            True if the spike direction opposes the favorite.
-        """
+    def _is_against_favorite(self, baseline: Baseline, update: PriceUpdate) -> bool:
+        """Check if the move is against the pre-game favorite."""
         yes_mid = _yes_mid(update)
         if baseline.yes_price >= Decimal("0.50"):
             return yes_mid < baseline.yes_price
@@ -166,40 +132,24 @@ class SpikeDetector:
     ) -> float:
         """Score confidence using weighted multi-factor model.
 
-        Args:
-            deviation: Absolute price deviation from baseline.
-            baseline: Pre-spike baseline.
-            update: Current price update.
-            history: Recent price history.
-
         Returns:
             Confidence score clamped to [0.0, 1.0].
         """
         weights = self._config.confidence_weights
         magnitude_score = min(float(deviation) / 0.30, 1.0)
-        fav_strength = (
-            max(
-                float(max(baseline.yes_price, baseline.no_price)) - 0.50,
-                0.0,
-            )
-            / 0.50
-        )
+        fav_strength = max(float(max(baseline.yes_price, baseline.no_price)) - 0.50, 0.0) / 0.50
         speed_score = self._compute_speed_score(baseline, history, update)
-        override = self._config.sport_overrides.get(
-            baseline.sport,
-            SportOverride(),
-        )
-        sport_mod = override.confidence_modifier
+        cat_cfg = self._config.categories.get(baseline.category or baseline.sport)
+        cat_mod = cat_cfg.confidence_modifier if cat_cfg else 1.0
 
         raw = (
             weights.magnitude * magnitude_score
             + weights.strength * fav_strength
             + weights.speed * speed_score
-        ) * sport_mod
+        ) * cat_mod
 
         if baseline.late_join:
             raw *= self._config.late_join_penalty
-
         if update.synthetic_spread:
             raw *= self._config.synthetic_spread_penalty
 
@@ -211,16 +161,7 @@ class SpikeDetector:
         history: deque[PriceUpdate],
         update: PriceUpdate,
     ) -> float:
-        """Compute speed score based on how fast price moved.
-
-        Args:
-            baseline: Pre-spike baseline.
-            history: Recent price history.
-            update: Current price update.
-
-        Returns:
-            Speed score in [0.0, 1.0].
-        """
+        """Compute speed score based on how fast price moved."""
         near_threshold = Decimal("0.05")
         last_near_time = baseline.captured_at
         for upd in reversed(history):
@@ -231,42 +172,50 @@ class SpikeDetector:
         elapsed_min = (update.timestamp - last_near_time).total_seconds() / 60.0
         return min(1.0 / max(elapsed_min, 0.5), 1.0)
 
-    def _get_threshold(self, sport: str) -> float:
-        """Get effective spike threshold for a sport.
+    def _get_threshold(self, category: str) -> float:
+        """Get effective spike threshold for a category.
 
         Args:
-            sport: Sport identifier.
+            category: Category identifier.
 
         Returns:
             Spike threshold percentage.
         """
-        override = self._config.sport_overrides.get(sport)
-        if override and override.spike_threshold_pct is not None:
-            return override.spike_threshold_pct
+        cat_cfg = self._config.categories.get(category)
+        if cat_cfg and cat_cfg.spike_threshold_pct is not None:
+            return cat_cfg.spike_threshold_pct
         return self._config.spike_threshold_pct
 
-    def _get_min_confidence(self, sport: str) -> float:
-        """Get effective minimum confidence for a sport.
+    def _get_min_confidence(self, category: str) -> float:
+        """Get effective minimum confidence for a category.
 
         Args:
-            sport: Sport identifier.
+            category: Category identifier.
 
         Returns:
             Minimum confidence threshold.
         """
-        override = self._config.sport_overrides.get(sport)
-        if override and override.min_confidence is not None:
-            return override.min_confidence
+        cat_cfg = self._config.categories.get(category)
+        if cat_cfg and cat_cfg.min_confidence is not None:
+            return cat_cfg.min_confidence
         return self._config.min_confidence
 
 
+def _determine_direction(baseline: Baseline, yes_mid: Decimal) -> SpikeDirection:
+    """Determine spike direction relative to the favorite."""
+    if baseline.yes_price >= Decimal("0.50"):
+        return (
+            SpikeDirection.FAVORITE_DROP
+            if yes_mid < baseline.yes_price
+            else SpikeDirection.UNDERDOG_RISE
+        )
+    return (
+        SpikeDirection.UNDERDOG_RISE
+        if yes_mid > baseline.yes_price
+        else SpikeDirection.FAVORITE_DROP
+    )
+
+
 def _yes_mid(update: PriceUpdate) -> Decimal:
-    """Calculate YES midpoint price.
-
-    Args:
-        update: Price update.
-
-    Returns:
-        Midpoint of yes_bid and yes_ask.
-    """
+    """Calculate YES midpoint price."""
     return (update.yes_bid + update.yes_ask) / 2

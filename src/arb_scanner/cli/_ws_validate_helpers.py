@@ -19,21 +19,21 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 
 
 async def _discover_token_ids(settings: Settings | None) -> list[str]:
-    """Auto-discover token IDs from sports markets."""
+    """Auto-discover token IDs from category markets."""
     if settings is None:
         return []
     try:
-        from arb_scanner.flippening.sports_filter import classify_sports_markets
+        from arb_scanner.flippening.market_classifier import classify_markets
         from arb_scanner.ingestion.polymarket import PolymarketClient
 
         async with PolymarketClient(settings.venues.polymarket) as poly:
             markets = await poly.fetch_markets()
-        sports, _ = classify_sports_markets(
+        category_markets, _ = classify_markets(
             markets,
-            settings.flippening.sports,
+            settings.flippening.categories,
             settings.flippening,
         )
-        return [sm.token_id for sm in sports[:20] if sm.token_id]
+        return [sm.token_id for sm in category_markets[:20] if sm.token_id]
     except Exception as exc:
         logger.warning("token_auto_discover_failed", error=str(exc))
         return []
