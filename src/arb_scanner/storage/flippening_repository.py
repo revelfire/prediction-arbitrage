@@ -231,6 +231,50 @@ class FlippeningRepository:
         rows = await self._pool.fetch(Q.GET_DISCOVERY_HEALTH, limit)
         return [dict(row) for row in rows]
 
+    async def insert_flip_ticket(
+        self,
+        event: FlippeningEvent,
+        entry: EntrySignal,
+    ) -> None:
+        """Persist a flippening execution ticket.
+
+        Args:
+            event: The flippening event.
+            entry: The entry signal.
+        """
+        leg_1 = json.dumps(
+            {
+                "action": f"BUY {entry.side.upper()}",
+                "market_id": event.market_id,
+                "market_title": event.market_title,
+                "price": str(entry.entry_price),
+                "sport": event.sport,
+            },
+        )
+        leg_2 = json.dumps(
+            {
+                "action": f"SELL {entry.side.upper()} at target",
+                "target_price": str(entry.target_exit_price),
+                "stop_loss": str(entry.stop_loss_price),
+                "max_hold_minutes": entry.max_hold_minutes,
+            },
+        )
+        await self._pool.execute(
+            Q.INSERT_FLIP_TICKET,
+            event.id,
+            leg_1,
+            leg_2,
+            entry.entry_price * entry.suggested_size_usd,
+            entry.expected_profit_pct * entry.suggested_size_usd,
+            "pending",
+            "flippening",
+        )
+        logger.info(
+            "flip_ticket_created",
+            event_id=event.id,
+            side=entry.side,
+        )
+
     async def insert_ws_telemetry(self, snapshot: dict[str, Any]) -> None:
         """Persist a WS telemetry snapshot.
 

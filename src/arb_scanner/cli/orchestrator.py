@@ -24,6 +24,7 @@ from arb_scanner.cli._persist import (
 from arb_scanner.cli.fixtures import build_output, build_scan_log, load_fixture_markets
 from arb_scanner.engine.calculator import calculate_arbs
 from arb_scanner.engine.tickets import generate_ticket
+from arb_scanner.matching.demand_filter import demand_rank, rank_events
 from arb_scanner.matching.embedding import _market_key, generate_embeddings
 from arb_scanner.matching.embedding_prefilter import embedding_rerank
 from arb_scanner.matching.prefilter import prefilter_candidates
@@ -54,10 +55,19 @@ async def run_scan(
     errors: list[str] = []
 
     # --- Stage 1: Fetch markets ---
-    poly_markets, kalshi_markets = await _fetch_markets(config, dry_run, errors)
+    poly_markets, kalshi_raw = await _fetch_markets(config, dry_run, errors)
+
+    # --- Stage 1b: Demand-filter Kalshi by Poly relevance ---
+    kalshi_markets = await _demand_filter(
+        poly_markets,
+        kalshi_raw,
+        config,
+        dry_run,
+    )
     logger.info(
         "markets_fetched",
         polymarket=len(poly_markets),
+        kalshi_raw=len(kalshi_raw),
         kalshi=len(kalshi_markets),
         errors=len(errors),
     )
@@ -147,25 +157,46 @@ async def _fetch_live_markets(
     config: Settings,
     errors: list[str],
 ) -> tuple[list[Market], list[Market]]:
-    """Fetch markets from live venue APIs concurrently."""
+    """Fetch markets using event-driven Kalshi strategy.
+
+    Fetches Polymarket concurrently with Kalshi event discovery.
+    Then demand-ranks events by Poly relevance and fetches markets
+    for the top events only, bypassing Kalshi's parlay-dominated
+    ``/markets`` pagination.
+    """
     from arb_scanner.ingestion.kalshi import KalshiClient
     from arb_scanner.ingestion.polymarket import PolymarketClient
 
-    async def fetch_poly() -> list[Market]:
-        async with PolymarketClient(config.venues.polymarket) as client:
-            return await client.fetch_markets()
+    poly: list[Market] = []
+    kalshi: list[Market] = []
+    try:
+        async with (
+            PolymarketClient(config.venues.polymarket) as poly_client,
+            KalshiClient(config.venues.kalshi) as kalshi_client,
+        ):
+            # Phase 1: Poly markets + Kalshi events in parallel
+            poly_result, events_result = await asyncio.gather(
+                poly_client.fetch_markets(),
+                kalshi_client.fetch_events(),
+                return_exceptions=True,
+            )
+            poly = _handle_venue_result(poly_result, "polymarket", errors)
+            if isinstance(events_result, BaseException):
+                errors.append(f"kalshi events failed: {events_result}")
+                return poly, []
 
-    async def fetch_kalshi() -> list[Market]:
-        async with KalshiClient(config.venues.kalshi) as client:
-            return await client.fetch_markets()
+            events: list[dict[str, str]] = events_result
+            # Phase 2: Demand-rank events by Poly relevance
+            # Cap events (not markets) to limit API calls; each event
+            # yields ~3-10 markets, so 100 events ≈ 500 markets.
+            max_events = min(config.venues.kalshi.max_markets or 200, 100)
+            top_tickers = await rank_events(poly, events, max_events)
 
-    results = await asyncio.gather(
-        fetch_poly(),
-        fetch_kalshi(),
-        return_exceptions=True,
-    )
-    poly = _handle_venue_result(results[0], "polymarket", errors)
-    kalshi = _handle_venue_result(results[1], "kalshi", errors)
+            # Phase 3: Fetch markets for top events
+            kalshi = await kalshi_client.fetch_markets_for_events(top_tickers)
+    except Exception as exc:
+        errors.append(f"fetch failed: {exc}")
+        logger.error("fetch_error", error=str(exc), exc_info=True)
     return poly, kalshi
 
 
@@ -181,6 +212,19 @@ def _handle_venue_result(
         errors.append(msg)
         return []
     return result
+
+
+async def _demand_filter(
+    poly_markets: list[Market],
+    kalshi_markets: list[Market],
+    config: Settings,
+    dry_run: bool,
+) -> list[Market]:
+    """Narrow Kalshi markets to those most relevant to Polymarket."""
+    if dry_run or not poly_markets or not kalshi_markets:
+        return kalshi_markets
+    max_k = config.venues.kalshi.max_markets or len(kalshi_markets)
+    return await demand_rank(poly_markets, kalshi_markets, max_k)
 
 
 async def _match_candidates(
@@ -242,7 +286,7 @@ async def _run_embedding_rerank(
         Tuple of (filtered_pairs, new_embeddings_dict).
     """
     if not config.embedding.enabled:
-        logger.info("embedding.skip", reason="disabled")
+        logger.warning("embedding.skip", reason="disabled")
         return bm25_pairs, {}
 
     if config.embedding.provider == "voyage" and not config.embedding.api_key:
