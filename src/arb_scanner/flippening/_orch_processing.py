@@ -9,6 +9,10 @@ import httpx
 import structlog
 
 from arb_scanner.flippening.game_manager import GameManager
+from arb_scanner.flippening.price_ring_buffer import (
+    PriceTick,
+    get_shared_buffer,
+)
 from arb_scanner.flippening.signal_generator import SignalGenerator
 from arb_scanner.flippening.spike_detector import SpikeDetector
 from arb_scanner.models.config import Settings
@@ -62,6 +66,8 @@ async def process_update(
     if state is None:
         return
 
+    _push_price_tick(update, state)
+
     if state.baseline is not None and state.active_signal is None and event is None:
         event = spike_detector.check_spike(update, state.baseline, state.price_history)
 
@@ -83,6 +89,37 @@ async def process_update(
 
     if exit_sig is not None:
         await handle_exit(exit_sig, state, game_mgr, config, repo, http_client, dry_run)
+
+
+def _push_price_tick(update: PriceUpdate, state: Any) -> None:
+    """Push a PriceTick to the shared ring buffer if available.
+
+    Args:
+        update: Current price update.
+        state: GameState for the market.
+    """
+    buf = get_shared_buffer()
+    if buf is None:
+        return
+    yes_mid = (update.yes_bid + update.yes_ask) / 2
+    baseline_yes = state.baseline.yes_price if state.baseline else None
+    deviation = 0.0
+    if baseline_yes and baseline_yes > 0:
+        deviation = float((yes_mid - baseline_yes) / baseline_yes * 100)
+    tick = PriceTick(
+        market_id=update.market_id,
+        market_title=state.market_title,
+        category=getattr(state, "category", ""),
+        category_type=getattr(state, "category_type", "sport"),
+        yes_mid=yes_mid,
+        baseline_yes=baseline_yes,
+        deviation_pct=deviation,
+        spread=update.spread,
+        timestamp=update.timestamp,
+        book_depth_bids=update.book_depth_bids,
+        book_depth_asks=update.book_depth_asks,
+    )
+    buf.push(tick)
 
 
 async def handle_entry(

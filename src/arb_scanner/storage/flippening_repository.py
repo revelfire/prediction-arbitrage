@@ -261,3 +261,37 @@ class FlippeningRepository:
         """Fetch recent WS telemetry snapshots."""
         rows = await self._pool.fetch(Q.GET_WS_TELEMETRY, limit)
         return [dict(row) for row in rows]
+
+    async def get_discovery_health_history(
+        self,
+        since: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch discovery health snapshots since ``since``."""
+        rows = await self._pool.fetch(Q.SELECT_DISCOVERY_HEALTH_HISTORY, since)
+        return [dict(row) for row in rows]
+
+    async def get_discovery_alerts(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch recent degradation alerts, newest first."""
+        rows = await self._pool.fetch(Q.SELECT_DISCOVERY_ALERTS, limit)
+        return [dict(row) for row in rows]
+
+    async def insert_discovery_alert(
+        self,
+        alert_text: str,
+        category: str,
+    ) -> None:
+        """Persist a discovery degradation alert."""
+        await self._pool.execute(
+            Q.INSERT_DISCOVERY_ALERT,
+            alert_text,
+            category,
+            datetime.now(tz=timezone.utc),
+        )
+
+    async def resolve_discovery_alerts(self, category: str) -> None:
+        """Mark open alerts for a category as resolved."""
+        await self._pool.execute(
+            Q.RESOLVE_DISCOVERY_ALERT,
+            category,
+            datetime.now(tz=timezone.utc),
+        )

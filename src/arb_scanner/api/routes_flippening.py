@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -131,6 +131,49 @@ async def discovery_health(
         return await repo.get_discovery_health(limit=limit)
     except Exception as exc:
         logger.error("discovery_health_failed", error=str(exc))
+        raise HTTPException(503, "Database unavailable") from exc
+
+
+@router.get("/api/flippenings/discovery-health/history")
+async def discovery_health_history(
+    hours: int = Query(24, ge=1, le=720),
+    repo: FlippeningRepository = Depends(get_flip_repo),
+) -> list[dict[str, Any]]:
+    """Fetch discovery health snapshots for the given time window.
+
+    Args:
+        hours: Lookback window in hours (max 30 days).
+        repo: Injected FlippeningRepository.
+
+    Returns:
+        List of discovery health snapshot dicts ordered chronologically.
+    """
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+    try:
+        return await repo.get_discovery_health_history(since=since)
+    except Exception as exc:
+        logger.error("discovery_health_history_failed", error=str(exc))
+        raise HTTPException(503, "Database unavailable") from exc
+
+
+@router.get("/api/flippenings/discovery-health/alerts")
+async def discovery_health_alerts(
+    limit: int = Query(20, ge=1, le=100),
+    repo: FlippeningRepository = Depends(get_flip_repo),
+) -> list[dict[str, Any]]:
+    """Fetch recent discovery degradation alerts.
+
+    Args:
+        limit: Maximum number of alerts to return.
+        repo: Injected FlippeningRepository.
+
+    Returns:
+        List of alert dicts ordered by created_at descending.
+    """
+    try:
+        return await repo.get_discovery_alerts(limit=limit)
+    except Exception as exc:
+        logger.error("discovery_alerts_failed", error=str(exc))
         raise HTTPException(503, "Database unavailable") from exc
 
 

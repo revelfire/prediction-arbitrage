@@ -10,6 +10,10 @@ import structlog
 
 from arb_scanner.flippening._orch_alerts import handle_discovery_health
 from arb_scanner.flippening._orch_processing import process_update
+from arb_scanner.flippening.price_ring_buffer import (
+    PriceRingBuffer,
+    set_shared_buffer,
+)
 from arb_scanner.flippening._orch_repo import (
     create_repo,
     create_tick_repo,
@@ -77,6 +81,9 @@ async def run_flip_watch(
         repo = await create_repo(config)
         tick_repo = await create_tick_repo(config)
     tick_buffer = TickBuffer(tick_repo, flip_cfg)
+
+    price_buffer = PriceRingBuffer()
+    set_shared_buffer(price_buffer)
 
     http_client = httpx.AsyncClient(base_url="https://clob.polymarket.com", timeout=10.0)
     try:
