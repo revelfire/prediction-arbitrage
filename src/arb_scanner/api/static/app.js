@@ -34,9 +34,16 @@ function shortTime(iso) {
 async function fetchJSON(url) {
     try {
         const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            const detail = body ? `: ${body.substring(0, 120)}` : '';
+            setStatus(`API error ${resp.status} on ${url}${detail}`);
+            console.error(`Fetch failed: ${url} HTTP ${resp.status}`, body);
+            return null;
+        }
         return await resp.json();
     } catch (err) {
+        setStatus(`Network error: ${err.message}`);
         console.error(`Fetch failed: ${url}`, err);
         return null;
     }
@@ -80,10 +87,13 @@ function switchTab(tabName) {
 // --- Opportunities Tab ---
 async function refreshOpportunities() {
     const data = await fetchJSON('/api/opportunities?limit=50');
-    if (!data) return;
-
     const tbody = el('opps-tbody');
     if (!tbody) return;
+
+    if (!data) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load opportunities (check status bar)</td></tr>';
+        return;
+    }
 
     if (data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No opportunities found</td></tr>';
