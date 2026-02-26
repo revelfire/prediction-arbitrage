@@ -28,13 +28,22 @@ class TestParseWsMessage:
     """Tests for parse_ws_message helper."""
 
     def test_valid_price_change(self) -> None:
-        """Parses a price_change event into PriceUpdate with synthetic_spread."""
+        """Parses a price_change with price_changes array."""
         msg = json.dumps(
             {
                 "event_type": "price_change",
                 "market": "mkt-1",
-                "asset_id": "tok-1",
-                "price": "0.65",
+                "timestamp": "1234567890",
+                "price_changes": [
+                    {
+                        "asset_id": "tok-1",
+                        "price": "0.65",
+                        "size": "100",
+                        "side": "BUY",
+                        "best_bid": "0.64",
+                        "best_ask": "0.66",
+                    },
+                ],
             }
         )
         update = parse_ws_message(msg)
@@ -43,7 +52,49 @@ class TestParseWsMessage:
         assert update.token_id == "tok-1"
         assert update.yes_bid == Decimal("0.64")
         assert update.yes_ask == Decimal("0.66")
+        assert update.synthetic_spread is False
+
+    def test_price_change_fallback_to_price(self) -> None:
+        """Falls back to synthetic spread when best_bid/ask missing."""
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+                "price_changes": [
+                    {"asset_id": "tok-1", "price": "0.65", "size": "100", "side": "BUY"},
+                ],
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.64")
+        assert update.yes_ask == Decimal("0.66")
         assert update.synthetic_spread is True
+
+    def test_price_change_empty_array_fails(self) -> None:
+        """Empty price_changes array fails gracefully."""
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+                "price_changes": [],
+            }
+        )
+        assert parse_ws_message(msg) is None
+
+    def test_price_change_no_price_changes_key(self) -> None:
+        """price_change without price_changes key fails."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+            }
+        )
+        assert parse_ws_message(msg, telemetry=t) is None
+        assert t._failure_reasons.get("empty_price_changes") == 1
 
     def test_valid_book_event(self) -> None:
         """Parses a book snapshot into PriceUpdate with real spread."""
@@ -62,23 +113,69 @@ class TestParseWsMessage:
         assert update.yes_ask == Decimal("0.65")
         assert update.synthetic_spread is False
 
-    def test_missing_asset_id_returns_none(self) -> None:
-        """Message without asset_id returns None."""
-        msg = json.dumps({"event_type": "price_change", "market": "m1", "price": "0.5"})
+    def test_book_missing_asset_id(self) -> None:
+        """Book without asset_id returns None."""
+        msg = json.dumps(
+            {
+                "event_type": "book",
+                "market": "m1",
+                "bids": [],
+                "asks": [],
+            }
+        )
         assert parse_ws_message(msg) is None
 
-    def test_missing_price_returns_none(self) -> None:
-        """price_change without price returns None."""
-        msg = json.dumps({"event_type": "price_change", "market": "m1", "asset_id": "t1"})
+    def test_last_trade_price(self) -> None:
+        """Parses last_trade_price into synthetic spread."""
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "mkt-1",
+                "asset_id": "tok-1",
+                "price": "0.70",
+                "side": "BUY",
+                "size": "50",
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.69")
+        assert update.yes_ask == Decimal("0.71")
+        assert update.synthetic_spread is True
+
+    def test_best_bid_ask_event(self) -> None:
+        """Parses best_bid_ask into PriceUpdate."""
+        msg = json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "market": "mkt-1",
+                "asset_id": "tok-1",
+                "best_bid": "0.73",
+                "best_ask": "0.77",
+                "spread": "0.04",
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.73")
+        assert update.yes_ask == Decimal("0.77")
+        assert update.synthetic_spread is False
+
+    def test_best_bid_ask_missing_asset_id(self) -> None:
+        """best_bid_ask without asset_id fails."""
+        msg = json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "market": "mkt-1",
+                "best_bid": "0.73",
+                "best_ask": "0.77",
+            }
+        )
         assert parse_ws_message(msg) is None
 
     def test_invalid_json_returns_none(self) -> None:
         """Non-JSON message returns None."""
         assert parse_ws_message("not json") is None
-
-    def test_non_dict_returns_none(self) -> None:
-        """JSON array returns None."""
-        assert parse_ws_message("[1, 2, 3]") is None
 
     def test_pong_ignored(self) -> None:
         """PONG plaintext responses are ignored."""
@@ -118,7 +215,12 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps(
-            {"event_type": "price_change", "market": "m", "asset_id": "t", "price": "0.5"}
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
         )
         parse_ws_message(msg, telemetry=t)
         assert t.parsed_ok == 1
@@ -128,7 +230,13 @@ class TestParseWsMessage:
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        msg = json.dumps({"event_type": "price_change", "market": "m", "price": "0.5"})
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "m",
+                "price_changes": [{"price": "0.5"}],
+            }
+        )
         parse_ws_message(msg, telemetry=t)
         assert t._failure_reasons.get("missing_asset_id") == 1
 
@@ -138,7 +246,12 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps(
-            {"event_type": "price_change", "market": "m", "asset_id": "t", "price": "1.5"}
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "1.5",
+            }
         )
         parse_ws_message(msg, telemetry=t)
         assert t._failure_reasons.get("invalid_price") == 1
@@ -146,7 +259,12 @@ class TestParseWsMessage:
     def test_bytes_message_parsed(self) -> None:
         """Bytes messages are decoded and parsed."""
         msg = json.dumps(
-            {"event_type": "price_change", "market": "m", "asset_id": "t", "price": "0.5"}
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
         ).encode()
         update = parse_ws_message(msg)
         assert update is not None
@@ -167,7 +285,12 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps(
-            {"event_type": "price_change", "market": "m", "asset_id": "t", "price": "0.5"}
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
         )
         parse_ws_message(msg, telemetry=t)
         assert len(t.known_schemas) == 1
@@ -176,7 +299,12 @@ class TestParseWsMessage:
         """JSON arrays with event dicts are parsed (first valid event)."""
         msg = json.dumps(
             [
-                {"event_type": "price_change", "market": "m", "asset_id": "t", "price": "0.5"},
+                {
+                    "event_type": "last_trade_price",
+                    "market": "m",
+                    "asset_id": "t",
+                    "price": "0.5",
+                }
             ]
         )
         update = parse_ws_message(msg)

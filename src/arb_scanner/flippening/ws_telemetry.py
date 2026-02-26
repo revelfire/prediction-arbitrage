@@ -11,13 +11,21 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.ws_telemetry",
 )
 
-_EXPECTED_FIELDS = frozenset({"asset_id", "event_type"})
+_EXPECTED_FIELDS = frozenset({"asset_id", "event_type", "price_changes"})
 _MARKET_FIELDS = frozenset({"market"})
 
 _BOOK_EVENT = "book"
 _PRICE_CHANGE_EVENT = "price_change"
 _TRADE_EVENT = "last_trade_price"
-_PRICE_EVENTS = frozenset({_BOOK_EVENT, _PRICE_CHANGE_EVENT, _TRADE_EVENT})
+_BEST_BID_ASK_EVENT = "best_bid_ask"
+_PRICE_EVENTS = frozenset(
+    {
+        _BOOK_EVENT,
+        _PRICE_CHANGE_EVENT,
+        _TRADE_EVENT,
+        _BEST_BID_ASK_EVENT,
+    }
+)
 
 
 def classify_ws_message(data: dict[str, object]) -> str:

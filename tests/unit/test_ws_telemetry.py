@@ -37,6 +37,10 @@ class TestClassifyWsMessage:
         msg = {"event_type": "last_trade_price", "asset_id": "tok1", "price": "0.5"}
         assert classify_ws_message(msg) == "price_update"
 
+    def test_price_update_best_bid_ask(self) -> None:
+        msg = {"event_type": "best_bid_ask", "market": "0x1", "asset_id": "tok1"}
+        assert classify_ws_message(msg) == "price_update"
+
     def test_unknown(self) -> None:
         assert classify_ws_message({"foo": "bar"}) == "unknown"
 
@@ -153,6 +157,13 @@ class TestWsTelemetrySchemas:
         t.record_schema(keys)
         assert keys in t.known_schemas
         assert t._schema_total_count == 1
+        assert t._schema_match_count == 1
+
+    def test_schema_match_price_changes_field(self) -> None:
+        t = WsTelemetry()
+        # price_change schema has price_changes + market (no top-level asset_id)
+        keys = frozenset({"event_type", "market", "price_changes", "timestamp"})
+        t.record_schema(keys)
         assert t._schema_match_count == 1
 
     def test_schema_match_rate_with_mixed(self) -> None:

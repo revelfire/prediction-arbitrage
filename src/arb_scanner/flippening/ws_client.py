@@ -87,6 +87,7 @@ class WebSocketPriceStream:
                         {
                             "assets_ids": self._subscribed_tokens,
                             "type": "market",
+                            "custom_feature_enabled": True,
                         }
                     )
                     await ws.send(sub_msg)

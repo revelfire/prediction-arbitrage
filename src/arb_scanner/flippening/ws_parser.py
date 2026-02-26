@@ -1,7 +1,8 @@
 """WebSocket message parsing for Polymarket CLOB market channel.
 
-Handles event types: book (orderbook snapshot), price_change,
-last_trade_price. Also handles PONG heartbeats and JSON arrays.
+Handles event types: book (orderbook snapshot), price_change (nested
+price_changes array), last_trade_price, best_bid_ask. Also handles
+PONG heartbeats and JSON arrays.
 """
 
 from __future__ import annotations
@@ -25,9 +26,6 @@ def parse_ws_message(
     telemetry: WsTelemetry | None = None,
 ) -> PriceUpdate | None:
     """Parse a WebSocket message into a PriceUpdate.
-
-    Handles Polymarket market-channel events: book, price_change,
-    last_trade_price. PONG heartbeats are plaintext and ignored.
 
     Args:
         raw: Raw WebSocket message data.
@@ -64,15 +62,7 @@ def _parse_first_event(
     events: list[object],
     telemetry: WsTelemetry | None,
 ) -> PriceUpdate | None:
-    """Parse the first usable event from a JSON array.
-
-    Args:
-        events: List of event dicts from WebSocket.
-        telemetry: Optional telemetry tracker.
-
-    Returns:
-        PriceUpdate from the first parseable event, or None.
-    """
+    """Parse the first usable event from a JSON array."""
     for item in events:
         if isinstance(item, dict):
             result = _parse_event_dict(item, telemetry)
@@ -87,15 +77,7 @@ def _parse_event_dict(
     data: dict[str, object],
     telemetry: WsTelemetry | None,
 ) -> PriceUpdate | None:
-    """Parse a single event dict into a PriceUpdate.
-
-    Args:
-        data: Parsed JSON dict from WebSocket.
-        telemetry: Optional telemetry tracker.
-
-    Returns:
-        PriceUpdate or None if not a price event.
-    """
+    """Parse a single event dict into a PriceUpdate."""
     if telemetry:
         telemetry.record_schema(frozenset(data.keys()))
 
@@ -107,36 +89,38 @@ def _parse_event_dict(
             telemetry.record_ignored()
         return None
 
-    token_id = str(data.get("asset_id", ""))
-    market_id = str(data.get("market", ""))
-    if not token_id:
-        if telemetry:
-            telemetry.record_failed("missing_asset_id")
-        return None
-
     event_type = str(data.get("event_type", ""))
+    market_id = str(data.get("market", ""))
+
     if event_type == "book":
-        return _parse_book_event(data, market_id, token_id, telemetry)
-    return _parse_price_event(data, market_id, token_id, telemetry)
+        return _parse_book_event(data, market_id, telemetry)
+    if event_type == "price_change":
+        return _parse_price_change(data, market_id, telemetry)
+    if event_type == "best_bid_ask":
+        return _parse_best_bid_ask(data, market_id, telemetry)
+    if event_type == "last_trade_price":
+        return _parse_last_trade(data, market_id, telemetry)
+
+    if telemetry:
+        telemetry.record_failed("unhandled_event_type")
+    return None
 
 
 def _parse_book_event(
     data: dict[str, object],
     market_id: str,
-    token_id: str,
     telemetry: WsTelemetry | None,
 ) -> PriceUpdate | None:
     """Extract best bid/ask from a book snapshot event.
 
-    Args:
-        data: Book event dict with bids/asks arrays.
-        market_id: Market (condition) identifier.
-        token_id: Asset token identifier.
-        telemetry: Optional telemetry tracker.
-
-    Returns:
-        PriceUpdate or None on failure.
+    Book format: {event_type, asset_id, market, bids, asks, timestamp, hash}
     """
+    token_id = str(data.get("asset_id", ""))
+    if not token_id:
+        if telemetry:
+            telemetry.record_failed("missing_asset_id")
+        return None
+
     bids = data.get("bids", [])
     asks = data.get("asks", [])
     if not isinstance(bids, list) or not isinstance(asks, list):
@@ -167,23 +151,126 @@ def _parse_book_event(
     return result
 
 
-def _parse_price_event(
+def _parse_price_change(
     data: dict[str, object],
     market_id: str,
-    token_id: str,
     telemetry: WsTelemetry | None,
 ) -> PriceUpdate | None:
-    """Parse price_change or last_trade_price into PriceUpdate.
+    """Parse price_change event with nested price_changes array.
 
-    Args:
-        data: Event dict with price field.
-        market_id: Market identifier.
-        token_id: Asset token identifier.
-        telemetry: Optional telemetry tracker.
-
-    Returns:
-        PriceUpdate with synthetic spread, or None.
+    Format: {event_type, market, timestamp,
+             price_changes: [{asset_id, price, size, side,
+                              best_bid, best_ask, hash}]}
     """
+    changes = data.get("price_changes")
+    if not isinstance(changes, list) or not changes:
+        if telemetry:
+            telemetry.record_failed("empty_price_changes")
+        return None
+
+    first = changes[0]
+    if not isinstance(first, dict):
+        if telemetry:
+            telemetry.record_failed("invalid_price_change_entry")
+        return None
+
+    token_id = str(first.get("asset_id", ""))
+    if not token_id:
+        if telemetry:
+            telemetry.record_failed("missing_asset_id")
+        return None
+
+    best_bid = _safe_dec(first.get("best_bid"))
+    best_ask = _safe_dec(first.get("best_ask"))
+
+    if best_bid is not None and best_ask is not None:
+        result = PriceUpdate(
+            market_id=market_id,
+            token_id=token_id,
+            yes_bid=best_bid,
+            yes_ask=best_ask,
+            no_bid=max(Decimal("1") - best_ask, Decimal("0")),
+            no_ask=min(Decimal("1") - best_bid, Decimal("1")),
+            timestamp=datetime.now(tz=UTC),
+        )
+        if telemetry:
+            telemetry.record_parsed()
+        return result
+
+    price = _safe_dec(first.get("price"))
+    if price is None or price < Decimal("0") or price > Decimal("1"):
+        if telemetry:
+            telemetry.record_failed("invalid_price")
+        return None
+
+    result = PriceUpdate(
+        market_id=market_id,
+        token_id=token_id,
+        yes_bid=max(price - Decimal("0.01"), Decimal("0")),
+        yes_ask=min(price + Decimal("0.01"), Decimal("1")),
+        no_bid=max(Decimal("1") - price - Decimal("0.01"), Decimal("0")),
+        no_ask=min(Decimal("1") - price + Decimal("0.01"), Decimal("1")),
+        timestamp=datetime.now(tz=UTC),
+        synthetic_spread=True,
+    )
+    if telemetry:
+        telemetry.record_parsed()
+    return result
+
+
+def _parse_best_bid_ask(
+    data: dict[str, object],
+    market_id: str,
+    telemetry: WsTelemetry | None,
+) -> PriceUpdate | None:
+    """Parse best_bid_ask event.
+
+    Format: {event_type, market, asset_id, best_bid, best_ask,
+             spread, timestamp}
+    """
+    token_id = str(data.get("asset_id", ""))
+    if not token_id:
+        if telemetry:
+            telemetry.record_failed("missing_asset_id")
+        return None
+
+    best_bid = _safe_dec(data.get("best_bid"))
+    best_ask = _safe_dec(data.get("best_ask"))
+    if best_bid is None or best_ask is None:
+        if telemetry:
+            telemetry.record_failed("missing_best_bid_ask")
+        return None
+
+    result = PriceUpdate(
+        market_id=market_id,
+        token_id=token_id,
+        yes_bid=best_bid,
+        yes_ask=best_ask,
+        no_bid=max(Decimal("1") - best_ask, Decimal("0")),
+        no_ask=min(Decimal("1") - best_bid, Decimal("1")),
+        timestamp=datetime.now(tz=UTC),
+    )
+    if telemetry:
+        telemetry.record_parsed()
+    return result
+
+
+def _parse_last_trade(
+    data: dict[str, object],
+    market_id: str,
+    telemetry: WsTelemetry | None,
+) -> PriceUpdate | None:
+    """Parse last_trade_price event into synthetic spread.
+
+    Format: {event_type, asset_id, market, price, side, size,
+             fee_rate_bps, timestamp}
+    """
+    token_id = str(data.get("asset_id", ""))
+    if not token_id:
+        if telemetry:
+            telemetry.record_failed("missing_asset_id")
+        return None
+
     price = _safe_dec(data.get("price"))
     if price is None or price < Decimal("0") or price > Decimal("1"):
         if telemetry:
@@ -209,15 +296,7 @@ def parse_orderbook(
     token_id: str,
     data: dict[str, object],
 ) -> PriceUpdate | None:
-    """Parse a CLOB REST order book response into a PriceUpdate.
-
-    Args:
-        token_id: The token identifier.
-        data: Raw order book JSON.
-
-    Returns:
-        PriceUpdate or None if unparseable.
-    """
+    """Parse a CLOB REST order book response into a PriceUpdate."""
     try:
         bids = data.get("bids", [])
         asks = data.get("asks", [])
@@ -249,14 +328,7 @@ def parse_orderbook(
 
 
 def _safe_dec(value: object) -> Decimal | None:
-    """Safely convert a value to Decimal.
-
-    Args:
-        value: Raw value to convert.
-
-    Returns:
-        Decimal or None on failure.
-    """
+    """Safely convert a value to Decimal."""
     if value is None:
         return None
     try:
