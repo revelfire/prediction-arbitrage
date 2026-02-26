@@ -56,12 +56,6 @@ class MatchCache:
                 poly_event_id=poly_event_id,
                 kalshi_event_id=kalshi_event_id,
             )
-        else:
-            logger.debug(
-                "cache.miss",
-                poly_event_id=poly_event_id,
-                kalshi_event_id=kalshi_event_id,
-            )
         return result
 
     async def set(self, match_result: MatchResult) -> None:

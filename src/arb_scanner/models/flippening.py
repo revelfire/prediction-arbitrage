@@ -47,6 +47,9 @@ class PriceUpdate(BaseModel):
     no_bid: Decimal
     no_ask: Decimal
     timestamp: datetime
+    synthetic_spread: bool = False
+    book_depth_bids: int = 0
+    book_depth_asks: int = 0
 
     @field_validator("yes_bid", "yes_ask", "no_bid", "no_ask")
     @classmethod
@@ -55,6 +58,11 @@ class PriceUpdate(BaseModel):
         if v < Decimal("0") or v > Decimal("1"):
             raise ValueError(f"Price must be in [0.0, 1.0], got {v}")
         return v
+
+    @property
+    def spread(self) -> Decimal:
+        """YES bid-ask spread."""
+        return self.yes_ask - self.yes_bid
 
 
 class Baseline(BaseModel):
@@ -85,6 +93,7 @@ class SportsMarket(BaseModel):
     sport: str
     game_start_time: datetime | None = None
     token_id: str
+    classification_method: str = "primary"
 
 
 class FlippeningEvent(BaseModel):

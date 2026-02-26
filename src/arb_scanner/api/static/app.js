@@ -97,27 +97,26 @@ async function refreshOpportunities() {
 
     if (data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No opportunities found</td></tr>';
-        return;
+    } else {
+        tbody.innerHTML = data.map(o => `
+            <tr class="clickable" onclick="loadPairDetail('${o.poly_event_id}', '${o.kalshi_event_id}')">
+                <td title="${o.poly_event_id}">${(o.poly_event_id || '').substring(0, 12)}...</td>
+                <td>${o.buy_venue || 'N/A'}</td>
+                <td>${o.sell_venue || 'N/A'}</td>
+                <td><strong>${formatPct(o.net_spread_pct)}</strong></td>
+                <td>${formatUSD(o.max_size)}</td>
+                <td>${o.depth_risk ? '\u26a0\ufe0f' : '\u2713'}</td>
+                <td>${o.annualized_return ? formatPct(o.annualized_return) : 'N/A'}</td>
+                <td>${shortTime(o.detected_at)}</td>
+            </tr>
+        `).join('');
     }
-
-    tbody.innerHTML = data.map(o => `
-        <tr class="clickable" onclick="loadPairDetail('${o.poly_event_id}', '${o.kalshi_event_id}')">
-            <td title="${o.poly_event_id}">${(o.poly_event_id || '').substring(0, 12)}...</td>
-            <td>${o.buy_venue || 'N/A'}</td>
-            <td>${o.sell_venue || 'N/A'}</td>
-            <td><strong>${formatPct(o.net_spread_pct)}</strong></td>
-            <td>${formatUSD(o.max_size)}</td>
-            <td>${o.depth_risk ? '\u26a0\ufe0f' : '\u2713'}</td>
-            <td>${o.annualized_return ? formatPct(o.annualized_return) : 'N/A'}</td>
-            <td>${shortTime(o.detected_at)}</td>
-        </tr>
-    `).join('');
 
     // Also load pair summaries
     const summaries = await fetchJSON('/api/pairs/summaries?hours=24&top=10');
     const sumBody = el('summaries-tbody');
-    if (summaries && sumBody) {
-        if (summaries.length === 0) {
+    if (sumBody) {
+        if (!summaries || summaries.length === 0) {
             sumBody.innerHTML = '<tr><td colspan="6" class="empty-state">No pair data</td></tr>';
         } else {
             sumBody.innerHTML = summaries.map(s => `

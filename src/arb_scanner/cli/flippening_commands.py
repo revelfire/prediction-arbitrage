@@ -26,6 +26,8 @@ def register(app: typer.Typer) -> None:
     app.command(name="flip-watch")(flip_watch)
     app.command(name="flip-history")(flip_history)
     app.command(name="flip-stats")(flip_stats)
+    app.command(name="flip-discover")(flip_discover)
+    app.command(name="flip-ws-validate")(flip_ws_validate)
 
 
 def flip_watch(
@@ -230,3 +232,76 @@ def _render_stats(rows: list[dict[str, Any]]) -> None:
         sys.stdout.write(f"  Avg P&L:  {float(avg_pnl):+.4f}\n")
         avg_hold = row.get("avg_hold", 0)
         sys.stdout.write(f"  Avg hold: {float(avg_hold):.0f} min\n")
+
+
+def flip_discover(
+    sports: str = typer.Option("", "--sports", help="Comma-separated sport filter."),
+    verbose: bool = typer.Option(False, "--verbose", help="Show all matched markets."),
+    fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """One-shot sports market discovery diagnostic."""
+    from arb_scanner.cli._flip_discover_helpers import (
+        render_discover_table,
+        run_discover,
+    )
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.error("config_load_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    sport_filter = [s.strip().lower() for s in sports.split(",") if s.strip()] if sports else None
+    allowed = sport_filter or config.flippening.sports
+
+    try:
+        result = asyncio.run(run_discover(config, allowed))
+    except Exception as exc:
+        logger.error("flip_discover_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    if fmt == "json":
+        sys.stdout.write(json.dumps(result, indent=2, default=str) + "\n")
+    else:
+        render_discover_table(result, verbose=verbose)
+
+
+def flip_ws_validate(
+    tokens: str = typer.Option("", "--tokens", help="Comma-separated token IDs."),
+    count: int = typer.Option(100, "--count", help="Max messages to capture."),
+    timeout: int = typer.Option(60, "--timeout", help="Max seconds to wait."),
+    fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
+    save: str = typer.Option("", "--save", help="Save raw messages as JSONL."),
+) -> None:
+    """Validate WebSocket message schema against parser expectations."""
+    from arb_scanner.cli._ws_validate_helpers import (
+        render_ws_validate_table,
+        run_ws_validate,
+        save_jsonl,
+    )
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.error("config_load_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    token_ids = [t.strip() for t in tokens.split(",") if t.strip()] if tokens else None
+
+    try:
+        report = asyncio.run(
+            run_ws_validate(config.flippening, token_ids, count, timeout),
+        )
+    except Exception as exc:
+        logger.error("ws_validate_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    if save:
+        n = save_jsonl(report.get("raw_messages", []), save)
+        sys.stdout.write(f"Saved {n} messages to {save}\n")
+
+    report_out = {k: v for k, v in report.items() if k != "raw_messages"}
+    if fmt == "json":
+        sys.stdout.write(json.dumps(report_out, indent=2, default=str) + "\n")
+    else:
+        render_ws_validate_table(report_out)

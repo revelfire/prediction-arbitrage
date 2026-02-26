@@ -11,6 +11,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 import httpx
 import structlog
 
+from arb_scanner.flippening.ws_telemetry import WsTelemetry, classify_ws_message
 from arb_scanner.models.config import FlippeningConfig
 from arb_scanner.models.flippening import PriceUpdate
 from arb_scanner.utils.rate_limiter import RateLimiter
@@ -57,12 +58,16 @@ class WebSocketPriceStream:
         self,
         ws_url: str = _DEFAULT_WS_URL,
         reconnect_max_seconds: int = 60,
+        telemetry: WsTelemetry | None = None,
+        telemetry_interval_seconds: int = 60,
     ) -> None:
         """Initialise WebSocket stream.
 
         Args:
             ws_url: WebSocket endpoint URL.
             reconnect_max_seconds: Max backoff for reconnect.
+            telemetry: Optional shared telemetry tracker.
+            telemetry_interval_seconds: Seconds between telemetry logs.
         """
         self._ws_url = ws_url
         self._reconnect_max = reconnect_max_seconds
@@ -70,6 +75,8 @@ class WebSocketPriceStream:
         self._queue: asyncio.Queue[PriceUpdate] = asyncio.Queue()
         self._reader_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._telemetry = telemetry
+        self._telemetry_interval = telemetry_interval_seconds
 
     async def subscribe(self, token_ids: list[str]) -> None:
         """Connect and subscribe to token price updates.
@@ -106,9 +113,11 @@ class WebSocketPriceStream:
                         await ws.send(msg)
 
                     async for raw_msg in ws:
-                        update = _parse_ws_message(raw_msg)
+                        update = _parse_ws_message(raw_msg, self._telemetry)
                         if update is not None:
                             await self._queue.put(update)
+                        if self._telemetry:
+                            self._telemetry.should_log(self._telemetry_interval)
 
             except asyncio.CancelledError:
                 break
@@ -254,6 +263,7 @@ class PollingPriceStream:
 async def create_price_stream(
     config: FlippeningConfig,
     clob_base_url: str = "https://clob.polymarket.com",
+    telemetry: WsTelemetry | None = None,
 ) -> PriceStream:
     """Create the best available price stream.
 
@@ -262,6 +272,7 @@ async def create_price_stream(
     Args:
         config: Flippening configuration.
         clob_base_url: CLOB API base URL for polling fallback.
+        telemetry: Optional telemetry tracker for the WS stream.
 
     Returns:
         A PriceStream implementation.
@@ -271,6 +282,8 @@ async def create_price_stream(
 
         ws = WebSocketPriceStream(
             reconnect_max_seconds=config.ws_reconnect_max_seconds,
+            telemetry=telemetry,
+            telemetry_interval_seconds=config.ws_telemetry_interval_seconds,
         )
         logger.info("price_stream_mode", mode="websocket")
         return ws
@@ -288,40 +301,98 @@ async def create_price_stream(
     return stream
 
 
-def _parse_ws_message(raw: str | bytes) -> PriceUpdate | None:
+def _parse_ws_message(
+    raw: str | bytes,
+    telemetry: WsTelemetry | None = None,
+) -> PriceUpdate | None:
     """Parse a WebSocket message into a PriceUpdate.
 
     Args:
         raw: Raw WebSocket message data.
+        telemetry: Optional telemetry tracker.
 
     Returns:
         PriceUpdate or None if unparseable.
     """
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
         data = json.loads(raw)
-        if not isinstance(data, dict):
-            return None
-
-        market_id = str(data.get("market", data.get("condition_id", "")))
-        token_id = str(data.get("asset_id", ""))
-        if not market_id or not token_id:
-            return None
-
-        price = _safe_dec(data.get("price"))
-        if price is None:
-            return None
-
-        return PriceUpdate(
-            market_id=market_id,
-            token_id=token_id,
-            yes_bid=max(price - Decimal("0.01"), Decimal("0")),
-            yes_ask=min(price + Decimal("0.01"), Decimal("1")),
-            no_bid=max(Decimal("1") - price - Decimal("0.01"), Decimal("0")),
-            no_ask=min(Decimal("1") - price + Decimal("0.01"), Decimal("1")),
-            timestamp=datetime.now(tz=UTC),
-        )
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        text = str(raw)[:500].lower()
+        if "ping" in text or "pong" in text or text.strip() == "":
+            if telemetry:
+                telemetry.record_ignored()
+        else:
+            if telemetry:
+                telemetry.record_ignored()
         return None
+
+    if not isinstance(data, dict):
+        if telemetry:
+            telemetry.record_ignored()
+        return None
+
+    if telemetry:
+        telemetry.record_schema(frozenset(data.keys()))
+
+    msg_type = classify_ws_message(data)
+
+    if msg_type == "heartbeat" or msg_type == "subscription_ack":
+        if telemetry:
+            telemetry.record_ignored()
+        return None
+
+    if msg_type == "error":
+        logger.warning("ws_error_message", data=str(data)[:500])
+        if telemetry:
+            telemetry.record_ignored()
+        return None
+
+    if msg_type == "unknown":
+        if telemetry:
+            telemetry.record_ignored()
+        return None
+
+    market_id = str(data.get("market", data.get("condition_id", "")))
+    token_id = str(data.get("asset_id", ""))
+    if not market_id:
+        if telemetry:
+            telemetry.record_failed("missing_market_id")
+        logger.debug("ws_parse_fail", reason="missing_market_id", raw=str(raw)[:500])
+        return None
+    if not token_id:
+        if telemetry:
+            telemetry.record_failed("missing_token_id")
+        logger.debug("ws_parse_fail", reason="missing_token_id", raw=str(raw)[:500])
+        return None
+
+    price = _safe_dec(data.get("price"))
+    if price is None:
+        if telemetry:
+            telemetry.record_failed("missing_price")
+        logger.debug("ws_parse_fail", reason="missing_price", raw=str(raw)[:500])
+        return None
+
+    if price < Decimal("0") or price > Decimal("1"):
+        if telemetry:
+            telemetry.record_failed("price_out_of_range")
+        logger.debug("ws_parse_fail", reason="price_out_of_range", raw=str(raw)[:500])
+        return None
+
+    result = PriceUpdate(
+        market_id=market_id,
+        token_id=token_id,
+        yes_bid=max(price - Decimal("0.01"), Decimal("0")),
+        yes_ask=min(price + Decimal("0.01"), Decimal("1")),
+        no_bid=max(Decimal("1") - price - Decimal("0.01"), Decimal("0")),
+        no_ask=min(Decimal("1") - price + Decimal("0.01"), Decimal("1")),
+        timestamp=datetime.now(tz=UTC),
+        synthetic_spread=True,
+    )
+    if telemetry:
+        telemetry.record_parsed()
+    return result
 
 
 def _parse_orderbook(

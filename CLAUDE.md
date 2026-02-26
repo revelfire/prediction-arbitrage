@@ -121,7 +121,7 @@ docker compose down               # Stop all services
 docker compose down -v            # Stop and delete database volume
 ```
 
-Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode, `full` profile), `scan` (one-shot, `tools` profile).
+Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode), `flip-watch` (flippening engine, live sports), `scan` (one-shot, `tools` profile).
 
 Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ARBITRAGE_SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
 

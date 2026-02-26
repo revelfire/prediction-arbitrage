@@ -151,6 +151,13 @@ class SportOverride(BaseModel):
     min_confidence: float | None = None
 
 
+class ManualOverride(BaseModel):
+    """Manual market override for sports discovery."""
+
+    market_id: str
+    sport: str
+
+
 class FlippeningConfig(BaseModel):
     """Configuration for the flippening mean reversion engine."""
 
@@ -177,6 +184,17 @@ class FlippeningConfig(BaseModel):
     polling_interval_seconds: float = 5.0
     confidence_weights: ConfidenceWeights = ConfidenceWeights()
     sport_overrides: dict[str, SportOverride] = {}
+    manual_market_ids: list[ManualOverride] = []
+    excluded_market_ids: list[str] = []
+    sport_keywords: dict[str, list[str]] = {}
+    min_hit_rate_pct: float = 0.01
+    discovery_alert_cooldown_minutes: int = 60
+    ws_telemetry_interval_seconds: int = 60
+    ws_schema_match_pct: float = 0.50
+    orderbook_cache_ttl_seconds: float = 10.0
+    orderbook_cache_max_size: int = 200
+    synthetic_spread_penalty: float = 0.85
+    ws_telemetry_persist_interval_seconds: int = 300
 
 
 class Settings(BaseModel):
