@@ -12,6 +12,8 @@ let discHitrateChart = null;
 let discMethodChart = null;
 let tickerSource = null;
 let tickerSparklines = {};
+let wsThroughputChart = null;
+let wsSchemaTrendChart = null;
 
 // --- Helpers ---
 function formatPct(val) {
@@ -656,6 +658,195 @@ function renderDiscoveryUnclassified(snapshots) {
     tbody.innerHTML = '<tr><td colspan="2" class="empty-state">Run a live scan to see unclassified markets</td></tr>';
 }
 
+// --- WS Health Tab ---
+async function refreshWsHealth() {
+    const [latest, history, events] = await Promise.all([
+        fetchJSON('/api/flippening/ws-telemetry'),
+        fetchJSON('/api/flippening/ws-telemetry/history?hours=1'),
+        fetchJSON('/api/flippening/ws-telemetry/events?limit=50'),
+    ]);
+    renderWsStatusBanner(latest);
+    renderWsMetrics(latest);
+    renderWsSchemaGauge(latest);
+    renderWsSchemaTrend(history);
+    renderWsThroughputChart(history);
+    renderWsEventsTable(events);
+}
+
+function renderWsStatusBanner(data) {
+    const banner = el('ws-status-banner');
+    const label = el('ws-status-label');
+    if (!banner || !label) return;
+    banner.className = 'ws-status-banner';
+    if (!data) {
+        banner.classList.add('ws-idle');
+        label.textContent = 'Idle - Start flip-watch to see telemetry';
+        return;
+    }
+    const state = data.connection_state || 'unknown';
+    if (state === 'connected') {
+        banner.classList.add('ws-connected');
+        label.textContent = 'Connected - Messages flowing';
+    } else if (state === 'disconnected') {
+        banner.classList.add('ws-disconnected');
+        label.textContent = 'Disconnected - Reconnecting...';
+    } else if (state === 'stalled') {
+        banner.classList.add('ws-stalled');
+        label.textContent = 'Stalled - No messages received';
+    } else {
+        banner.classList.add('ws-idle');
+        label.textContent = 'Idle - Start flip-watch to see telemetry';
+    }
+}
+
+function renderWsMetrics(data) {
+    el('ws-total-received').textContent = data ? (data.messages_received || 0) : '-';
+    el('ws-total-parsed').textContent = data ? (data.messages_parsed || 0) : '-';
+    el('ws-total-failed').textContent = data ? (data.messages_failed || 0) : '-';
+    const hitRate = data && data.book_cache_hit_rate != null
+        ? (parseFloat(data.book_cache_hit_rate) * 100).toFixed(1) + '%'
+        : '-';
+    el('ws-cache-hit-rate').textContent = hitRate;
+}
+
+function renderWsSchemaGauge(data) {
+    const canvas = el('ws-schema-gauge');
+    const pctEl = el('ws-schema-pct');
+    if (!canvas || !pctEl) return;
+    const rate = data ? parseFloat(data.schema_match_rate || 1.0) : 1.0;
+    const pct = rate * 100;
+    pctEl.textContent = pct.toFixed(1) + '%';
+    if (pct > 90) pctEl.style.color = '#66bb6a';
+    else if (pct >= 50) pctEl.style.color = '#ffa726';
+    else pctEl.style.color = '#e94560';
+    drawGaugeArc(canvas, rate);
+}
+
+function drawGaugeArc(canvas, fraction) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h - 10;
+    const r = Math.min(cx, cy) - 10;
+    ctx.clearRect(0, 0, w, h);
+    // Background arc
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, Math.PI, 0, false);
+    ctx.lineWidth = 14;
+    ctx.strokeStyle = '#2a2a4a';
+    ctx.stroke();
+    // Value arc
+    const endAngle = Math.PI + (Math.PI * Math.min(fraction, 1.0));
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, Math.PI, endAngle, false);
+    ctx.lineWidth = 14;
+    if (fraction > 0.9) ctx.strokeStyle = '#66bb6a';
+    else if (fraction >= 0.5) ctx.strokeStyle = '#ffa726';
+    else ctx.strokeStyle = '#e94560';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+}
+
+function renderWsSchemaTrend(history) {
+    if (!history || history.length === 0) return;
+    const sorted = [...history].sort((a, b) => new Date(a.snapshot_time) - new Date(b.snapshot_time));
+    const ctx = el('ws-schema-trend-chart');
+    if (!ctx) return;
+    if (wsSchemaTrendChart) wsSchemaTrendChart.destroy();
+    wsSchemaTrendChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: sorted.map(h => new Date(h.snapshot_time).toLocaleTimeString()),
+            datasets: [{
+                label: 'Schema Match %',
+                data: sorted.map(h => parseFloat(h.schema_match_rate) * 100),
+                borderColor: '#66bb6a', backgroundColor: 'rgba(102, 187, 106, 0.1)',
+                fill: true, tension: 0.3, pointRadius: 1,
+            }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0', maxTicksLimit: 10 }, grid: { color: '#2a2a4a' } },
+                y: { min: 0, max: 100, ticks: { color: '#a0a0b0', callback: v => v + '%' }, grid: { color: '#2a2a4a' } },
+            },
+        },
+    });
+}
+
+function renderWsThroughputChart(history) {
+    if (!history || history.length < 2) return;
+    const sorted = [...history].sort((a, b) => new Date(a.snapshot_time) - new Date(b.snapshot_time));
+    const labels = [];
+    const received = [];
+    const parsed = [];
+    const avgData = [];
+    for (let i = 1; i < sorted.length; i++) {
+        labels.push(new Date(sorted[i].snapshot_time).toLocaleTimeString());
+        const dr = sorted[i].messages_received - sorted[i - 1].messages_received;
+        const dp = sorted[i].messages_parsed - sorted[i - 1].messages_parsed;
+        received.push(Math.max(dr, 0));
+        parsed.push(Math.max(dp, 0));
+    }
+    // Rolling average (window of 6 = ~30s at 5s interval)
+    const win = 6;
+    for (let i = 0; i < received.length; i++) {
+        const start = Math.max(0, i - win + 1);
+        const slice = received.slice(start, i + 1);
+        avgData.push(slice.reduce((s, v) => s + v, 0) / slice.length);
+    }
+    const ctx = el('ws-throughput-chart');
+    if (!ctx) return;
+    if (wsThroughputChart) wsThroughputChart.destroy();
+    wsThroughputChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'Received', data: received, borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)', fill: true, tension: 0.3, pointRadius: 1 },
+                { label: 'Parsed', data: parsed, borderColor: '#66bb6a', backgroundColor: 'rgba(102,187,106,0.1)', fill: true, tension: 0.3, pointRadius: 1 },
+                { label: '30s Avg', data: avgData, borderColor: '#ffd54f', borderDash: [5, 3], fill: false, tension: 0.3, pointRadius: 0 },
+            ],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0', maxTicksLimit: 12 }, grid: { color: '#2a2a4a' } },
+                y: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' }, beginAtZero: true },
+            },
+        },
+    });
+}
+
+function wsEventClass(evtType) {
+    if (evtType === 'stall_detected') return 'ws-event-stall';
+    if (evtType === 'stall_reconnect') return 'ws-event-reconnect';
+    if (evtType === 'ws_disconnected') return 'ws-event-disconnect';
+    if (evtType === 'ws_connected') return 'ws-event-connect';
+    return '';
+}
+
+function renderWsEventsTable(events) {
+    const tbody = el('ws-events-tbody');
+    if (!tbody) return;
+    if (!events || events.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No stall or reconnect events</td></tr>';
+        return;
+    }
+    tbody.innerHTML = events.map(e => `
+        <tr>
+            <td>${formatTime(e.event_time)}</td>
+            <td class="${wsEventClass(e.event_type)}">${e.event_type}</td>
+            <td>${e.prev_state || '-'}</td>
+            <td>${e.new_state || '-'}</td>
+            <td>${e.messages_received_at_event || 0}</td>
+        </tr>
+    `).join('');
+}
+
 // --- Scan Trigger ---
 async function triggerScan() {
     const btn = el('scan-btn');
@@ -684,6 +875,7 @@ async function refreshActiveTab() {
         case 'tickets': await refreshTickets(); break;
         case 'flippenings': await refreshFlippenings(); break;
         case 'discovery': await refreshDiscovery(); break;
+        case 'wshealth': await refreshWsHealth(); break;
     }
 }
 
