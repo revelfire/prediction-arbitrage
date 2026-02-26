@@ -55,6 +55,12 @@ async def run_scan(
 
     # --- Stage 1: Fetch markets ---
     poly_markets, kalshi_markets = await _fetch_markets(config, dry_run, errors)
+    logger.info(
+        "markets_fetched",
+        polymarket=len(poly_markets),
+        kalshi=len(kalshi_markets),
+        errors=len(errors),
+    )
 
     # Persist immediately: markets, snapshots, and initial scan log
     if not dry_run:
@@ -69,22 +75,36 @@ async def run_scan(
         await persist_scan_log(config, partial_log)
 
     # --- Stage 2: Match candidates ---
-    candidates = await _match_candidates(
-        poly_markets,
-        kalshi_markets,
-        config,
-        dry_run,
-        errors,
-    )
+    candidates: list[tuple[Market, Market, MatchResult]] = []
+    try:
+        candidates = await _match_candidates(
+            poly_markets,
+            kalshi_markets,
+            config,
+            dry_run,
+            errors,
+        )
+    except Exception as exc:
+        msg = f"matching stage failed: {exc}"
+        logger.error("matching_stage_failed", error=str(exc), exc_info=True)
+        errors.append(msg)
 
     # --- Stage 3: Calculate arbs ---
-    opps, tickets = _calculate_and_ticket(candidates, config)
+    opps: list[ArbOpportunity] = []
+    tickets: list[ExecutionTicket] = []
+    if candidates:
+        try:
+            opps, tickets = _calculate_and_ticket(candidates, config)
+        except Exception as exc:
+            msg = f"arb calculation failed: {exc}"
+            logger.error("arb_calc_failed", error=str(exc), exc_info=True)
+            errors.append(msg)
 
     # Persist opportunities + tickets
-    if not dry_run:
+    if not dry_run and opps:
         await persist_opportunities(config, opps, tickets)
 
-    # --- Stage 4: Finalize scan log ---
+    # --- Stage 4: Finalize scan log (always runs) ---
     completed_at = datetime.now(tz=UTC)
     n_poly, n_kalshi, n_cand = len(poly_markets), len(kalshi_markets), len(candidates)
     scan_log = build_scan_log(
@@ -97,7 +117,12 @@ async def run_scan(
         len(opps),
         errors,
     )
-    logger.info("scan_complete", scan_id=scan_id, opportunities=len(opps))
+    logger.info(
+        "scan_complete",
+        scan_id=scan_id,
+        opportunities=len(opps),
+        errors=len(errors),
+    )
 
     if not dry_run:
         await persist_scan_log(config, scan_log)
@@ -167,6 +192,12 @@ async def _match_candidates(
 ) -> list[tuple[Market, Market, MatchResult]]:
     """Run BM25 prefilter, embedding rerank, cache lookup, and semantic matching."""
     bm25_pairs = await prefilter_candidates(poly_markets, kalshi_markets)
+    logger.info(
+        "bm25_prefilter",
+        poly_count=len(poly_markets),
+        kalshi_count=len(kalshi_markets),
+        candidate_pairs=len(bm25_pairs),
+    )
     if not bm25_pairs:
         return []
 

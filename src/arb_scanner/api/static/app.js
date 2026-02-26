@@ -249,16 +249,20 @@ async function refreshHealth() {
                 tbody.innerHTML = scans.map(s => {
                     const duration = s.completed_at && s.started_at
                         ? ((new Date(s.completed_at) - new Date(s.started_at)) / 1000).toFixed(1) + 's'
-                        : 'N/A';
-                    const errCount = Array.isArray(s.errors) ? s.errors.length : 0;
+                        : '<span style="color: var(--warning, orange)">incomplete</span>';
+                    const errs = Array.isArray(s.errors) ? s.errors : (typeof s.errors === 'string' ? JSON.parse(s.errors || '[]') : []);
+                    const errCount = errs.length;
+                    const errTip = errCount > 0 ? errs.map(e => e.substring(0, 100)).join('\n') : '';
+                    const poly = s.poly_markets_fetched || 0;
+                    const kalshi = s.kalshi_markets_fetched || 0;
                     return `
                         <tr>
                             <td>${shortTime(s.started_at)}</td>
                             <td>${duration}</td>
-                            <td>${(s.poly_markets_fetched || 0) + (s.kalshi_markets_fetched || 0)}</td>
+                            <td title="Poly: ${poly}, Kalshi: ${kalshi}">${poly + kalshi}</td>
                             <td>${s.candidate_pairs || 0}</td>
                             <td>${s.opportunities_found || 0}</td>
-                            <td>${errCount > 0 ? '<span style="color: var(--danger)">' + errCount + '</span>' : '0'}</td>
+                            <td${errCount > 0 ? ' title="' + errTip.replace(/"/g, '&quot;') + '" style="color: var(--danger, #e94560); cursor: help"' : ''}>${errCount}</td>
                         </tr>
                     `;
                 }).join('');
