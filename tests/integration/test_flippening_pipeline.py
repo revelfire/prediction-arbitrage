@@ -340,7 +340,7 @@ class TestFullPipeline:
             yes_ask="1.00",
             ts=_NOW + timedelta(minutes=20),
         )
-        _, exit_sig = game_mgr.process(resolve)
+        _, exit_sig, _ = game_mgr.process(resolve)
         assert exit_sig is not None
         assert exit_sig.exit_reason == ExitReason.RESOLUTION
         assert exit_sig.exit_price == Decimal("1.00")

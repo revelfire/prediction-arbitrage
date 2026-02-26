@@ -29,6 +29,9 @@ _DRIFT_RATE_THRESHOLD = Decimal("0.02")  # 2 pts/min
 _DRIFT_DURATION_MINUTES = 5
 _PRICE_HISTORY_MAXLEN = 200
 
+#: Drift info returned when baseline updates: (market_id, old_yes, new_yes, ts)
+DriftInfo = tuple[str, Decimal, Decimal, datetime]
+
 
 @dataclass
 class GameState:
@@ -162,22 +165,22 @@ class GameManager:
     def process(
         self,
         update: PriceUpdate,
-    ) -> tuple[FlippeningEvent | None, ExitSignal | None]:
+    ) -> tuple[FlippeningEvent | None, ExitSignal | None, DriftInfo | None]:
         """Process a price update for its corresponding game.
 
         Advances lifecycle, updates price history, and returns any
-        detected flippening event or exit signal.
+        detected flippening event, exit signal, or drift info.
 
         Args:
             update: Real-time price update.
 
         Returns:
-            Tuple of (flippening_event, exit_signal). Either or both
-            may be None.
+            Tuple of (flippening_event, exit_signal, drift_info).
+            Any element may be None.
         """
         state = self._games.get(update.market_id)
         if state is None or state.phase == GamePhase.COMPLETED:
-            return None, None
+            return None, None, None
 
         state.price_history.append(update)
 
@@ -193,14 +196,14 @@ class GameManager:
         if was_live and current_phase == GamePhase.COMPLETED:
             exit_sig = self._check_resolution(state, update)
             if exit_sig is not None:
-                return None, exit_sig
+                return None, exit_sig, None
 
         if current_phase != GamePhase.LIVE or state.baseline is None:
-            return None, None
+            return None, None, None
 
-        self._update_drift(state, update)
+        drift = self._update_drift(state, update)
 
-        return None, None
+        return None, None, drift
 
     def get_state(self, market_id: str) -> GameState | None:
         """Get the current state for a game.
@@ -284,7 +287,7 @@ class GameManager:
         self,
         state: GameState,
         update: PriceUpdate,
-    ) -> None:
+    ) -> DriftInfo | None:
         """Track gradual baseline drift and update if appropriate.
 
         Gradual drift (< 2 pts/min sustained over 5+ minutes) updates
@@ -293,9 +296,12 @@ class GameManager:
         Args:
             state: Game state with drift accumulator.
             update: Current price update.
+
+        Returns:
+            DriftInfo tuple if drift occurred, None otherwise.
         """
         if state.baseline is None:
-            return
+            return None
         yes_mid = (update.yes_bid + update.yes_ask) / 2
         state.drift_accumulator.append((update.timestamp, yes_mid))
 
@@ -303,18 +309,19 @@ class GameManager:
         state.drift_accumulator = [(t, p) for t, p in state.drift_accumulator if t >= cutoff]
 
         if len(state.drift_accumulator) < 2:
-            return
+            return None
 
         first_t, first_p = state.drift_accumulator[0]
         last_t, last_p = state.drift_accumulator[-1]
         elapsed_min = (last_t - first_t).total_seconds() / 60.0
         if elapsed_min < _DRIFT_DURATION_MINUTES:
-            return
+            return None
 
         total_drift = abs(last_p - first_p)
         drift_per_min = total_drift / Decimal(str(max(elapsed_min, 0.01)))
 
         if drift_per_min < _DRIFT_RATE_THRESHOLD:
+            old_yes = state.baseline.yes_price
             no_mid = (update.no_bid + update.no_ask) / 2
             state.baseline = Baseline(
                 market_id=state.baseline.market_id,
@@ -332,6 +339,8 @@ class GameManager:
                 market_id=state.market_id,
                 new_yes=float(yes_mid),
             )
+            return (state.market_id, old_yes, yes_mid, update.timestamp)
+        return None
 
     def _check_resolution(
         self,

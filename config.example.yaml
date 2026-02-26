@@ -12,6 +12,8 @@ venues:
     rate_limit_per_sec: 5  # Kalshi Basic tier: 10 reads/sec, keep headroom
     min_volume_24h: 100
     max_markets: 500
+    exclude_ticker_prefixes:  # Skip multi-game parlays that can't match single-event Poly markets
+      - "KXMVESPORTSMULTIGAME"
 
 claude:
   model: "claude-sonnet-4-20250514"
@@ -108,6 +110,10 @@ flippening:
   # orderbook_cache_max_size: 200
   # synthetic_spread_penalty: 0.85
   # ws_telemetry_persist_interval_seconds: 300
+  # capture_ticks: true
+  # tick_retention_days: 90
+  # tick_buffer_size: 100
+  # tick_flush_interval_seconds: 5.0
 
 storage:
   database_url: "${DATABASE_URL}"

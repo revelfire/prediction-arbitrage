@@ -33,6 +33,7 @@ class KalshiVenueConfig(BaseModel):
     rate_limit_per_sec: int = 10
     min_volume_24h: Decimal = Decimal("0")
     max_markets: int = 0
+    exclude_ticker_prefixes: list[str] = ["KXMVESPORTSMULTIGAME"]
 
 
 class VenuesConfig(BaseModel):
@@ -195,6 +196,10 @@ class FlippeningConfig(BaseModel):
     orderbook_cache_max_size: int = 200
     synthetic_spread_penalty: float = 0.85
     ws_telemetry_persist_interval_seconds: int = 300
+    capture_ticks: bool = True
+    tick_retention_days: int = 90
+    tick_buffer_size: int = 100
+    tick_flush_interval_seconds: float = 5.0
 
 
 class Settings(BaseModel):
