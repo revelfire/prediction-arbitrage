@@ -114,7 +114,9 @@ class Repository:
             return {}
 
         query = Q.GET_CACHED_EMBEDDINGS_384 if dimensions == 384 else Q.GET_CACHED_EMBEDDINGS_512
-        rows = await self._pool.fetch(query, pairs)
+        venues = [p[0] for p in pairs]
+        event_ids = [p[1] for p in pairs]
+        rows = await self._pool.fetch(query, venues, event_ids)
         result: dict[str, list[float]] = {}
         for row in rows:
             col = "title_embedding_384" if dimensions == 384 else "title_embedding"

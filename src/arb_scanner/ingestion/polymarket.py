@@ -17,6 +17,7 @@ from arb_scanner.utils.retry import async_retry
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="ingestion.polymarket")
 
 _PAGE_LIMIT = 100
+_MAX_PAGES = 100  # Safety cap: never paginate beyond 10K markets
 
 
 class PolymarketClient(BaseVenueClient):
@@ -74,7 +75,8 @@ class PolymarketClient(BaseVenueClient):
 
         Applies server-side volume filtering and sorts by volume
         descending so the most liquid markets are fetched first.
-        Stops early when ``max_markets`` is reached (0 = unlimited).
+        Stops early when ``max_markets`` is reached (0 = unlimited)
+        or after ``_MAX_PAGES`` pages as a safety net.
 
         Returns:
             Normalised :class:`Market` list.
@@ -82,8 +84,10 @@ class PolymarketClient(BaseVenueClient):
         max_markets = self._cfg.max_markets
         markets: list[Market] = []
         offset = 0
+        pages = 0
         while True:
             page = await self._fetch_gamma_page(offset)
+            pages += 1
             if not page:
                 break
             for raw in page:
@@ -93,10 +97,10 @@ class PolymarketClient(BaseVenueClient):
             if max_markets and len(markets) >= max_markets:
                 markets = markets[:max_markets]
                 break
-            if len(page) < _PAGE_LIMIT:
+            if len(page) < _PAGE_LIMIT or pages >= _MAX_PAGES:
                 break
             offset += _PAGE_LIMIT
-        logger.info("polymarket_fetch_complete", total=len(markets))
+        logger.info("polymarket_fetch_complete", total=len(markets), pages=pages)
         return markets
 
     @async_retry(max_retries=3)

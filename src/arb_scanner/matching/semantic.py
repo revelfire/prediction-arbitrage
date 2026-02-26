@@ -5,6 +5,7 @@ determine contract equivalence, resolution risks, and arb safety.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from anthropic import AsyncAnthropic
@@ -76,6 +77,22 @@ def _build_user_prompt(pairs: list[tuple[Market, Market, float]]) -> str:
     return header + "\n".join(sections)
 
 
+_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)```\s*$", re.DOTALL)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Strip markdown code fences from a JSON response.
+
+    Args:
+        text: Raw text that may be wrapped in ```json ... ```.
+
+    Returns:
+        The inner content with fences removed, or original text.
+    """
+    m = _FENCE_RE.search(text.strip())
+    return m.group(1).strip() if m else text.strip()
+
+
 def _parse_match_results(
     raw_text: str,
     pairs: list[tuple[Market, Market, float]],
@@ -93,8 +110,9 @@ def _parse_match_results(
     """
     now = datetime.now(tz=timezone.utc)
     expires = now + timedelta(hours=ttl_hours)
+    cleaned = _strip_markdown_fences(raw_text)
     try:
-        data = json.loads(raw_text)
+        data = json.loads(cleaned)
         items: list[object] = data if isinstance(data, list) else [data]
         return [_dict_to_match_result(d, now, expires) for d in items if isinstance(d, dict)]
     except (json.JSONDecodeError, KeyError, ValueError):

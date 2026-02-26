@@ -123,7 +123,7 @@ docker compose down -v            # Stop and delete database volume
 
 Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode, `full` profile), `scan` (one-shot, `tools` profile).
 
-Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
+Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ARBITRAGE_SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
 
 For local development without Docker, just start the database: `docker compose up -d db` then use `uv run` commands directly against `DATABASE_URL=postgresql://arb_scanner:changeme@localhost:5432/arb_scanner`.
 

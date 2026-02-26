@@ -49,6 +49,7 @@ class ClaudeConfig(BaseModel):
     api_key: str = ""
     batch_size: int = 5
     match_cache_ttl_hours: int = 24
+    max_semantic_pairs: int = 50
 
 
 class EmbeddingConfig(BaseModel):

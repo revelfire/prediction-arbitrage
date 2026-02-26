@@ -142,12 +142,12 @@ GET_CACHED_EMBEDDINGS_384 = """
 SELECT venue, event_id, title_embedding_384
 FROM markets
 WHERE title_embedding_384 IS NOT NULL
-  AND (venue, event_id) = ANY($1::record[]);
+  AND (venue, event_id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]));
 """
 
 GET_CACHED_EMBEDDINGS_512 = """
 SELECT venue, event_id, title_embedding
 FROM markets
 WHERE title_embedding IS NOT NULL
-  AND (venue, event_id) = ANY($1::record[]);
+  AND (venue, event_id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]));
 """

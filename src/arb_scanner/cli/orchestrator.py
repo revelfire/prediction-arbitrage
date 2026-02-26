@@ -211,6 +211,18 @@ async def _match_candidates(
         await persist_embeddings(embeddings, config)
 
     uncached = filtered_pairs if dry_run else await _filter_cached(filtered_pairs, config)
+
+    # Cap semantic evaluation to avoid excessive Claude API calls.
+    # Pairs are sorted by BM25 score descending; top-N are best matches.
+    max_pairs = config.claude.max_semantic_pairs
+    if max_pairs and len(uncached) > max_pairs:
+        logger.info(
+            "semantic.capped",
+            before=len(uncached),
+            after=max_pairs,
+        )
+        uncached = uncached[:max_pairs]
+
     match_results = await _run_semantic(uncached, config, errors)
 
     if not dry_run:
