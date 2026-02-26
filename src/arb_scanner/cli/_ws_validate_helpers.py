@@ -11,11 +11,32 @@ from typing import Any
 import structlog
 
 from arb_scanner.flippening.ws_telemetry import WsTelemetry, classify_ws_message
-from arb_scanner.models.config import FlippeningConfig
+from arb_scanner.models.config import FlippeningConfig, Settings
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="cli.ws_validate",
 )
+
+
+async def _discover_token_ids(settings: Settings | None) -> list[str]:
+    """Auto-discover token IDs from category markets."""
+    if settings is None:
+        return []
+    try:
+        from arb_scanner.flippening.market_classifier import classify_markets
+        from arb_scanner.ingestion.polymarket import PolymarketClient
+
+        async with PolymarketClient(settings.venues.polymarket) as poly:
+            markets = await poly.fetch_markets()
+        category_markets, _ = classify_markets(
+            markets,
+            settings.flippening.categories,
+            settings.flippening,
+        )
+        return [sm.token_id for sm in category_markets[:20] if sm.token_id]
+    except Exception as exc:
+        logger.warning("token_auto_discover_failed", error=str(exc))
+        return []
 
 
 async def run_ws_validate(
@@ -23,18 +44,14 @@ async def run_ws_validate(
     token_ids: list[str] | None,
     count: int,
     timeout: int,
+    settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Connect to WS, capture messages, and produce a report.
+    """Connect to WS, capture messages, and produce a report."""
+    if not token_ids:
+        token_ids = await _discover_token_ids(settings)
+        if token_ids:
+            logger.info("auto_discovered_tokens", count=len(token_ids))
 
-    Args:
-        config: Flippening configuration.
-        token_ids: Optional specific tokens to subscribe.
-        count: Max messages to capture.
-        timeout: Max seconds to wait.
-
-    Returns:
-        Report dict with type distribution, schemas, and samples.
-    """
     telemetry = WsTelemetry()
     raw_messages: list[str] = []
     type_counts: Counter[str] = Counter()

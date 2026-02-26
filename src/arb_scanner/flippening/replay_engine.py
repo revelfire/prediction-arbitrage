@@ -90,17 +90,17 @@ class ReplayEngine:
             drifts,
         )
 
-    async def replay_sport(
+    async def replay_category(
         self,
-        sport: str,
+        category: str,
         since: datetime,
         until: datetime,
         overrides: dict[str, Any] | None = None,
     ) -> list[ReplaySignal]:
-        """Replay all markets for a sport in the time range.
+        """Replay all markets for a category in the time range.
 
         Args:
-            sport: Sport identifier (e.g. "nba").
+            category: Category identifier (e.g. "nba", "btc_threshold").
             since: Start of time range.
             until: End of time range.
             overrides: Optional config field overrides.
@@ -108,13 +108,23 @@ class ReplayEngine:
         Returns:
             Concatenated list of signals from all markets.
         """
-        market_ids = await self._tick_repo.get_market_ids(sport, since, until)
+        market_ids = await self._tick_repo.get_market_ids(category, since, until)
         signals: list[ReplaySignal] = []
         for mid in market_ids:
             signals.extend(
                 await self.replay_market(mid, since, until, overrides),
             )
         return signals
+
+    async def replay_sport(
+        self,
+        sport: str,
+        since: datetime,
+        until: datetime,
+        overrides: dict[str, Any] | None = None,
+    ) -> list[ReplaySignal]:
+        """Replay all markets for a sport (alias for replay_category)."""
+        return await self.replay_category(sport, since, until, overrides)
 
     async def _load_baseline(self, market_id: str) -> Baseline | None:
         """Load the most recent baseline for a market."""
@@ -127,6 +137,9 @@ class ReplayEngine:
             yes_price=row["baseline_yes"],
             no_price=row["baseline_no"],
             sport=row["sport"],
+            category=row.get("category", row["sport"]),
+            category_type=row.get("category_type", "sport"),
+            baseline_strategy=row.get("baseline_strategy", "first_price"),
             game_start_time=row["game_start_time"],
             captured_at=row["captured_at"],
             late_join=row["late_join"],
@@ -179,6 +192,9 @@ class ReplayEngine:
                         yes_price=d["new_yes"],
                         no_price=current_baseline.no_price,
                         sport=current_baseline.sport,
+                        category=current_baseline.category,
+                        category_type=current_baseline.category_type,
+                        baseline_strategy=current_baseline.baseline_strategy,
                         game_start_time=current_baseline.game_start_time,
                         captured_at=d["drifted_at"],
                         late_join=current_baseline.late_join,

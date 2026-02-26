@@ -54,21 +54,35 @@ class SignalGenerator:
         Returns:
             EntrySignal with entry price, targets, and sizing.
         """
+        cat_cfg = self._config.categories.get(event.category or event.sport)
+        reversion_pct = (
+            cat_cfg.reversion_target_pct
+            if cat_cfg and cat_cfg.reversion_target_pct is not None
+            else self._config.reversion_target_pct
+        )
+        stop_pct = (
+            cat_cfg.stop_loss_pct
+            if cat_cfg and cat_cfg.stop_loss_pct is not None
+            else self._config.stop_loss_pct
+        )
+        max_hold = (
+            cat_cfg.max_hold_minutes
+            if cat_cfg and cat_cfg.max_hold_minutes is not None
+            else self._config.max_hold_minutes
+        )
+
         side = _determine_side(event, baseline)
         entry_price = current_ask
         baseline_price = baseline.yes_price if side == "yes" else baseline.no_price
-        reversion_amt = (baseline_price - entry_price) * Decimal(
-            str(self._config.reversion_target_pct),
-        )
+        reversion_amt = (baseline_price - entry_price) * Decimal(str(reversion_pct))
         target_exit = entry_price + reversion_amt
-        stop_loss = entry_price * (Decimal("1") - Decimal(str(self._config.stop_loss_pct)))
+        stop_loss = entry_price * (Decimal("1") - Decimal(str(stop_pct)))
 
         raw_size = Decimal(str(self._config.base_position_usd)) * event.confidence
         suggested_size = min(
             raw_size.quantize(Decimal("0.01")),
             Decimal(str(self._config.max_position_usd)),
         )
-
         expected_profit_pct = (
             (target_exit - entry_price) / entry_price if entry_price else Decimal("0")
         )
@@ -81,7 +95,7 @@ class SignalGenerator:
             stop_loss_price=stop_loss,
             suggested_size_usd=suggested_size,
             expected_profit_pct=expected_profit_pct,
-            max_hold_minutes=self._config.max_hold_minutes,
+            max_hold_minutes=max_hold,
             created_at=event.detected_at,
         )
         logger.info(
@@ -114,38 +128,19 @@ class SignalGenerator:
 
         if current_bid >= entry.target_exit_price:
             return _build_exit(
-                entry,
-                ExitReason.REVERSION,
-                current_bid,
-                elapsed_min,
-                update.timestamp,
+                entry, ExitReason.REVERSION, current_bid, elapsed_min, update.timestamp
             )
-
         if current_bid <= entry.stop_loss_price:
             return _build_exit(
-                entry,
-                ExitReason.STOP_LOSS,
-                current_bid,
-                elapsed_min,
-                update.timestamp,
+                entry, ExitReason.STOP_LOSS, current_bid, elapsed_min, update.timestamp
             )
-
         if elapsed_min >= entry.max_hold_minutes:
             return _build_exit(
-                entry,
-                ExitReason.TIMEOUT,
-                current_bid,
-                elapsed_min,
-                update.timestamp,
+                entry, ExitReason.TIMEOUT, current_bid, elapsed_min, update.timestamp
             )
-
         return None
 
-    def create_ticket(
-        self,
-        entry: EntrySignal,
-        event: FlippeningEvent,
-    ) -> ExecutionTicket:
+    def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket:
         """Create an execution ticket for the flippening trade.
 
         Args:
@@ -183,19 +178,8 @@ class SignalGenerator:
         )
 
 
-def _determine_side(
-    event: FlippeningEvent,
-    baseline: Baseline,
-) -> str:
-    """Determine which side to buy.
-
-    Args:
-        event: Detected spike event.
-        baseline: Pre-spike baseline.
-
-    Returns:
-        "yes" or "no".
-    """
+def _determine_side(event: FlippeningEvent, baseline: Baseline) -> str:
+    """Determine which side to buy."""
     if event.spike_direction == SpikeDirection.FAVORITE_DROP and baseline.yes_price >= Decimal(
         "0.50"
     ):
@@ -216,18 +200,7 @@ def _build_exit(
     elapsed_min: float,
     timestamp: object,
 ) -> ExitSignal:
-    """Build an ExitSignal with P&L calculations.
-
-    Args:
-        entry: Active entry signal.
-        reason: Why the exit was triggered.
-        exit_price: Price at exit.
-        elapsed_min: Minutes held.
-        timestamp: Exit timestamp.
-
-    Returns:
-        ExitSignal with realized P&L.
-    """
+    """Build an ExitSignal with P&L calculations."""
     from datetime import datetime
 
     pnl = exit_price - entry.entry_price

@@ -66,13 +66,16 @@ class PriceUpdate(BaseModel):
 
 
 class Baseline(BaseModel):
-    """Pre-game baseline odds captured at game start."""
+    """Pre-event baseline odds captured at event start or via rolling window."""
 
     market_id: str
     token_id: str
     yes_price: Decimal
     no_price: Decimal
     sport: str
+    category: str = ""
+    category_type: str = "sport"
+    baseline_strategy: str = "first_price"
     game_start_time: datetime | None = None
     captured_at: datetime
     late_join: bool = False
@@ -86,14 +89,20 @@ class Baseline(BaseModel):
         return v
 
 
-class SportsMarket(BaseModel):
-    """A Polymarket market identified as a sports event."""
+class CategoryMarket(BaseModel):
+    """A Polymarket market classified into a market category."""
 
     market: Market
-    sport: str
+    sport: str = ""
+    category: str
+    category_type: str = "sport"
     game_start_time: datetime | None = None
     token_id: str
     classification_method: str = "primary"
+
+
+# Backward-compat alias
+SportsMarket = CategoryMarket
 
 
 class FlippeningEvent(BaseModel):
@@ -108,6 +117,8 @@ class FlippeningEvent(BaseModel):
     spike_direction: SpikeDirection
     confidence: Decimal
     sport: str
+    category: str = ""
+    category_type: str = "sport"
     detected_at: datetime
 
     @field_validator("confidence")

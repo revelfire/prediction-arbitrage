@@ -51,6 +51,7 @@ def _sm(event_id: str = "m1", start: datetime | None = None) -> SportsMarket:
     return SportsMarket(
         market=_market(event_id),
         sport="nba",
+        category="nba",
         game_start_time=start or _NOW - timedelta(minutes=30),
         token_id="tok-1",
     )
@@ -259,12 +260,14 @@ class TestFullPipeline:
         sm1 = SportsMarket(
             market=m1,
             sport="nba",
+            category="nba",
             game_start_time=_NOW - timedelta(minutes=30),
             token_id="tok-1",
         )
         sm2 = SportsMarket(
             market=m2,
             sport="nba",
+            category="nba",
             game_start_time=_NOW - timedelta(minutes=20),
             token_id="tok-2",
         )

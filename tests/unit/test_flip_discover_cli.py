@@ -18,24 +18,30 @@ runner = CliRunner()
 
 _DISCOVER_RESULT: dict[str, Any] = {
     "total_scanned": 500,
-    "sports_found": 12,
+    "markets_found": 12,
     "hit_rate": 0.024,
-    "by_sport": {"nba": 7, "nfl": 5},
+    "by_category": {"nba": 7, "nfl": 5},
+    "by_category_type": {"sport": 12},
     "overrides_applied": 1,
     "exclusions_applied": 0,
     "unclassified_candidates": 3,
+    "unclassified_sample": [],
     "matched": [
         {
             "event_id": "abc123def456",
             "title": "Lakers vs Celtics",
-            "sport": "nba",
+            "category": "nba",
+            "category_type": "sport",
             "classification_method": "slug",
+            "token_id": "tok-1",
         },
         {
             "event_id": "xyz789uvw012",
             "title": "Chiefs vs Eagles",
-            "sport": "nfl",
+            "category": "nfl",
+            "category_type": "sport",
             "classification_method": "tag",
+            "token_id": "tok-2",
         },
     ],
 }
@@ -166,9 +172,9 @@ class TestFlipDiscoverJson:
         parsed = json.loads(result.output)
         expected_keys = {
             "total_scanned",
-            "sports_found",
+            "markets_found",
             "hit_rate",
-            "by_sport",
+            "by_category",
             "overrides_applied",
             "exclusions_applied",
             "unclassified_candidates",
@@ -189,7 +195,7 @@ class TestFlipDiscoverJson:
         parsed = json.loads(result.output)
         first = parsed["matched"][0]
         assert "event_id" in first
-        assert "sport" in first
+        assert "category" in first
         assert "classification_method" in first
         assert "title" in first
 
@@ -207,8 +213,9 @@ class TestRunDiscover:
         import asyncio
 
         from arb_scanner.cli._flip_discover_helpers import run_discover
-        from arb_scanner.flippening.sports_filter import DiscoveryHealthSnapshot
-        from arb_scanner.models.flippening import SportsMarket
+        from arb_scanner.flippening.market_classifier import DiscoveryHealthSnapshot
+        from arb_scanner.models.config import CategoryConfig
+        from arb_scanner.models.flippening import CategoryMarket
         from arb_scanner.models.market import Market
 
         mock_market = MagicMock(spec=Market)
@@ -216,16 +223,19 @@ class TestRunDiscover:
         mock_market.title = "Lakers vs Celtics"
         mock_market.raw_data = {"groupItemTitle": "Lakers vs Celtics"}
 
-        mock_sm = MagicMock(spec=SportsMarket)
+        mock_sm = MagicMock(spec=CategoryMarket)
         mock_sm.market = mock_market
-        mock_sm.sport = "nba"
+        mock_sm.category = "nba"
+        mock_sm.category_type = "sport"
         mock_sm.classification_method = "slug"
+        mock_sm.token_id = "tok_abc123"
 
         mock_health = DiscoveryHealthSnapshot(
             total_scanned=100,
-            sports_found=5,
+            markets_found=5,
             hit_rate=0.05,
-            by_sport={"nba": 5},
+            by_category={"nba": 5},
+            by_category_type={"sport": 5},
             overrides_applied=0,
             exclusions_applied=0,
             unclassified_candidates=2,
@@ -233,11 +243,12 @@ class TestRunDiscover:
 
         mock_config = MagicMock()
         mock_config.flippening = MagicMock()
+        categories = {"nba": CategoryConfig(category_type="sport")}
 
         with (
             patch("arb_scanner.cli._flip_discover_helpers.PolymarketClient") as mock_client_cls,
             patch(
-                "arb_scanner.cli._flip_discover_helpers.classify_sports_markets",
+                "arb_scanner.cli._flip_discover_helpers.classify_markets",
                 return_value=([mock_sm], mock_health),
             ),
         ):
@@ -247,13 +258,12 @@ class TestRunDiscover:
             mock_client.__aexit__ = AsyncMock(return_value=None)
             mock_client_cls.return_value = mock_client
 
-            result = asyncio.run(run_discover(mock_config, ["nba"]))
+            result = asyncio.run(run_discover(mock_config, categories))
 
         assert result["total_scanned"] == 100
-        assert result["sports_found"] == 5
-        assert result["by_sport"] == {"nba": 5}
+        assert result["markets_found"] == 5
+        assert result["by_category"] == {"nba": 5}
         assert len(result["matched"]) == 1
-        # event_id is truncated to 12 chars: "abc123def456xyz"[:12] == "abc123def456"
         assert result["matched"][0]["event_id"] == "abc123def456"
 
 

@@ -32,14 +32,16 @@ def register(app: typer.Typer) -> None:
 def flip_replay(
     market_id: str = typer.Option("", "--market-id", help="Specific market to replay."),
     sport: str = typer.Option("", "--sport", help="Replay all markets for a sport."),
+    category: str = typer.Option("", "--category", help="Replay all markets for a category."),
     since: str = typer.Option("", "--since", help="Start time (ISO 8601)."),
     until: str = typer.Option("", "--until", help="End time (ISO 8601)."),
     override: list[str] = typer.Option([], "--override", help="Config overrides (key=value)."),
     fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
 ) -> None:
     """Replay stored ticks through spike/signal pipeline."""
-    if not market_id and not sport:
-        raise typer.BadParameter("Provide --market-id or --sport.")
+    cat_val = category.strip().lower() or sport.strip().lower() or ""
+    if not market_id and not cat_val:
+        raise typer.BadParameter("Provide --market-id, --sport, or --category.")
 
     from arb_scanner.cli._replay_helpers import (
         parse_overrides,
@@ -56,7 +58,7 @@ def flip_replay(
             run_replay(
                 config,
                 market_id.strip() or None,
-                sport.strip().lower() or None,
+                cat_val or None,
                 since_dt,
                 until_dt,
                 overrides,
@@ -73,26 +75,24 @@ def flip_replay(
 
 
 def flip_evaluate(
-    sport: str = typer.Option(..., "--sport", help="Sport to evaluate."),
+    sport: str = typer.Option("", "--sport", help="Sport to evaluate."),
+    category: str = typer.Option("", "--category", help="Category to evaluate."),
     since: str = typer.Option("", "--since", help="Start time (ISO 8601)."),
     until: str = typer.Option("", "--until", help="End time (ISO 8601)."),
     fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
 ) -> None:
-    """Evaluate replay results for a sport."""
+    """Evaluate replay results for a category."""
+    cat_val = category.strip().lower() or sport.strip().lower()
+    if not cat_val:
+        raise typer.BadParameter("Provide --sport or --category.")
+
     from arb_scanner.cli._replay_helpers import render_evaluate_table, run_evaluate
 
     config = _load_config_or_exit()
     since_dt, until_dt = _parse_time_range(since, until)
 
     try:
-        evaluation = asyncio.run(
-            run_evaluate(
-                config,
-                sport.strip().lower(),
-                since_dt,
-                until_dt,
-            )
-        )
+        evaluation = asyncio.run(run_evaluate(config, cat_val, since_dt, until_dt))
     except Exception as exc:
         logger.error("flip_evaluate_failed", error=str(exc))
         raise typer.Exit(code=1) from exc
@@ -108,12 +108,17 @@ def flip_sweep(
     min_val: float = typer.Option(..., "--min", help="Minimum value."),
     max_val: float = typer.Option(..., "--max", help="Maximum value."),
     step: float = typer.Option(..., "--step", help="Step size."),
-    sport: str = typer.Option(..., "--sport", help="Sport to sweep."),
+    sport: str = typer.Option("", "--sport", help="Sport to sweep."),
+    category: str = typer.Option("", "--category", help="Category to sweep."),
     since: str = typer.Option("", "--since", help="Start time (ISO 8601)."),
     until: str = typer.Option("", "--until", help="End time (ISO 8601)."),
     fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
 ) -> None:
     """Sweep a config parameter and evaluate each value."""
+    cat_val = category.strip().lower() or sport.strip().lower()
+    if not cat_val:
+        raise typer.BadParameter("Provide --sport or --category.")
+
     from arb_scanner.cli._replay_helpers import render_sweep_table, run_sweep
 
     config = _load_config_or_exit()
@@ -123,7 +128,7 @@ def flip_sweep(
         result = asyncio.run(
             run_sweep(
                 config,
-                sport.strip().lower(),
+                cat_val,
                 since_dt,
                 until_dt,
                 param.strip(),

@@ -29,6 +29,9 @@ def _baseline_row(
         "baseline_yes": Decimal(yes),
         "baseline_no": Decimal(no),
         "sport": "nba",
+        "category": "nba",
+        "category_type": "sport",
+        "baseline_strategy": "first_price",
         "game_start_time": _ts(-30),
         "captured_at": _ts(-5),
         "late_join": False,
@@ -58,6 +61,7 @@ def _make_record(data: dict[str, Any]) -> MagicMock:
     """Create a mock asyncpg.Record with dict-like access."""
     record = MagicMock()
     record.__getitem__ = lambda self, key: data[key]
+    record.get = lambda key, default=None: data.get(key, default)
     record.keys = lambda: data.keys()
     return record
 

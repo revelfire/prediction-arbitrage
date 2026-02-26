@@ -124,10 +124,10 @@ class TickRepository:
         since: datetime,
         until: datetime,
     ) -> list[str]:
-        """Get distinct market IDs with ticks for a sport in a time range.
+        """Get distinct market IDs with ticks for a sport/category in a time range.
 
         Args:
-            sport: Sport identifier (e.g. "nba").
+            sport: Sport or category identifier (e.g. "nba").
             since: Start of time range.
             until: End of time range.
 

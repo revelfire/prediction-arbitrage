@@ -35,6 +35,7 @@ def _event() -> FlippeningEvent:
         spike_direction=SpikeDirection.FAVORITE_DROP,
         confidence=Decimal("0.82"),
         sport="nba",
+        category="nba",
         detected_at=_NOW,
     )
 

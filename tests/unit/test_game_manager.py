@@ -45,6 +45,7 @@ def _sports_market(
     return SportsMarket(
         market=_market(event_id),
         sport="nba",
+        category="nba",
         game_start_time=start_time,
         token_id="tok-1",
     )

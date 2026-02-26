@@ -23,7 +23,7 @@ src/arb_scanner/
 ├── ingestion/       # Async API clients: PolymarketClient, KalshiClient
 ├── matching/        # Pre-filter (BM25 + pgvector), embedding.py (Voyage AI client), embedding_prefilter.py (cosine rerank), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
-├── flippening/      # Mean reversion engine for live sports markets (spike detection, signal generation, WebSocket streaming, replay/backtesting)
+├── flippening/      # Mean reversion engine for live markets (spike detection, signal generation, WebSocket streaming, replay/backtesting, category-based market classification)
 ├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository, flippening_repository, tick_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), trend alert detector + dispatch, stdout reporter
 ├── api/             # FastAPI REST API + static dashboard (serve command), flippening endpoints
@@ -68,13 +68,15 @@ uv run arb-scanner match-audit   # Dump cached contract matches for review
 uv run arb-scanner history --pair POLY/KALSHI  # Spread history for a pair
 uv run arb-scanner stats         # Aggregated analytics and scanner health
 uv run arb-scanner alerts         # List recent trend alerts
-uv run arb-scanner flip-watch     # Live mean reversion monitor for sports markets
-uv run arb-scanner flip-watch --sports nba,nfl --dry-run  # Dry run with sport filter
+uv run arb-scanner flip-watch     # Live mean reversion monitor
+uv run arb-scanner flip-watch --categories nba,nfl --dry-run  # Dry run with category filter
+uv run arb-scanner flip-watch --categories btc_threshold,oscars  # Non-sport categories
 uv run arb-scanner flip-history   # Show completed flippening signals
-uv run arb-scanner flip-stats     # Aggregated flippening performance by sport
-uv run arb-scanner flip-replay --sport nba --since 2026-02-01T00:00:00Z  # Replay stored ticks
-uv run arb-scanner flip-evaluate --sport nba  # Evaluate replay win rate, P&L, drawdown
-uv run arb-scanner flip-sweep --param spike_threshold_pct --min 0.05 --max 0.20 --step 0.01 --sport nba  # Parameter sweep
+uv run arb-scanner flip-history --category nba --category-type sport  # Filter by category
+uv run arb-scanner flip-stats     # Aggregated flippening performance
+uv run arb-scanner flip-replay --category nba --since 2026-02-01T00:00:00Z  # Replay stored ticks
+uv run arb-scanner flip-evaluate --category nba  # Evaluate replay win rate, P&L, drawdown
+uv run arb-scanner flip-sweep --param spike_threshold_pct --min 0.05 --max 0.20 --step 0.01 --category nba  # Parameter sweep
 uv run arb-scanner flip-tick-prune --days 90  # Delete old price ticks
 uv run arb-scanner serve          # Start web dashboard at http://localhost:8000
 uv run arb-scanner serve --no-db # Dashboard preview without PostgreSQL
@@ -142,6 +144,7 @@ For local development without Docker, just start the database: `docker compose u
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 013-event-market-reversion: Generalized flippening engine from sports-only to any market category (entertainment, politics, crypto, economics, corporate). New `CategoryConfig` model replaces per-sport overrides with per-category config (baseline strategy, event window, discovery keywords/slugs/tags). Three baseline strategies: `first_price` (sports), `rolling_window` (crypto), `pre_event_snapshot` (awards/debates). `FlippeningConfig.migrate_sports_to_categories` auto-converts legacy `sports` list to `categories` at load time. New modules: `market_classifier.py` (replaces `sports_filter.py`), `category_keywords.py` (replaces `sport_keywords.py`), `baseline_strategy.py`, `drift_tracker.py`. Orchestrator split into 5 modules (`_orch_processing.py`, `_orch_alerts.py`, `_orch_telemetry.py`, `_orch_repo.py`). CLI: `--categories` on `flip-watch`, `--category`/`--category-type` on history/stats/replay. Migration 017 adds `category`, `category_type`, `baseline_strategy` columns. `SportsMarket` aliased to `CategoryMarket` for backward compatibility. 745 tests passing, 77% coverage.
 - 012-backtesting-replay: Added tick capture, replay engine, and parameter tuning for the flippening engine. TickBuffer captures live price ticks to PostgreSQL (non-blocking, fire-and-forget). ReplayEngine replays stored ticks through production SpikeDetector + SignalGenerator with config overrides. ReplayEvaluator computes win rate, avg P&L, max drawdown, profit factor. sweep_parameter iterates config values via Decimal arithmetic. GameManager.process() returns 3-tuple (event, exit_sig, drift_info) to expose baseline drifts. New CLI commands: `flip-replay`, `flip-evaluate`, `flip-sweep`, `flip-tick-prune`. Replay CLI extracted to `cli/replay_commands.py`. Migration 016 (flippening_price_ticks, flippening_baseline_drifts tables). Models in `models/replay.py` (ReplaySignal, ReplayEvaluation, SweepResult).
 - 008-flippening-engine: Added mean reversion engine for live sports markets. `flippening/` subpackage with SpikeDetector (threshold + confidence scoring), SignalGenerator (entry/exit/ticket), GameManager (lifecycle + baseline drift EC-006), WebSocket price streaming (with polling fallback), alert formatting (Slack/Discord). Sports filter classifies Polymarket markets by sport slug/tags. FlippeningConfig with per-sport overrides, confidence weights, late-join penalty. New CLI commands (`flip-watch`, `flip-history`, `flip-stats`), 3 REST API endpoints, Flippenings dashboard tab. Edge cases: late join penalty (EC-001), multiple flippenings blocked while signal active (EC-002), game resolution exit (EC-003), WS disconnect handling (EC-004), no-markets retry (EC-005), baseline drift detection (EC-006). Migration 012 (flippening_baselines, flippening_events, flippening_signals tables).
 - 007-local-embeddings: Replaced Voyage AI as default embedding provider with local ONNX model (BAAI/bge-small-en-v1.5 via fastembed, 384-dim). No API key needed for embeddings. Added embedding cache read path — previously-seen markets skip regeneration by loading from pgvector. Voyage AI remains available as `provider: voyage` fallback. New `title_embedding_384` column (migration 011).

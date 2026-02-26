@@ -139,6 +139,7 @@ class TestSportsMarket:
         sm = SportsMarket(
             market=m,
             sport="nba",
+            category="nba",
             token_id="tok-abc",
             game_start_time=_NOW,
         )
