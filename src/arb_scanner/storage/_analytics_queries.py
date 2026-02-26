@@ -38,9 +38,10 @@ ORDER BY 1 DESC;
 GET_SCAN_HEALTH = """
 SELECT date_trunc('hour', started_at)                            AS hour,
        COUNT(*)                                                  AS scan_count,
-       AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))      AS avg_duration_s,
-       SUM(llm_evaluations)                                      AS total_llm_calls,
-       SUM(opportunities_found)                                  AS total_opps,
+       COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - started_at))), 0)
+                                                                 AS avg_duration_s,
+       COALESCE(SUM(llm_evaluations), 0)                        AS total_llm_calls,
+       COALESCE(SUM(opportunities_found), 0)                    AS total_opps,
        SUM(jsonb_array_length(COALESCE(errors::jsonb, '[]'::jsonb)))
                                                                  AS total_errors
 FROM scan_logs

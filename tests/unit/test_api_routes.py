@@ -299,11 +299,11 @@ class TestHealthRoutes:
         mock_analytics_repo.get_recent_scan_logs.assert_awaited_once_with(20)
 
     def test_health_db_error(self, client: TestClient, mock_analytics_repo: AsyncMock) -> None:
-        """GET /api/health returns 503 when repo raises."""
+        """GET /api/health returns 500 when repo raises."""
         mock_analytics_repo.get_scan_health.side_effect = RuntimeError("DB down")
 
         resp = client.get("/api/health")
-        assert resp.status_code == 503
+        assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------

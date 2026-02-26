@@ -35,7 +35,7 @@ async def health_metrics(
         return [s.model_dump() for s in summaries]
     except Exception as exc:
         logger.error("health_fetch_failed", error=str(exc))
-        raise HTTPException(503, "Database unavailable") from exc
+        raise HTTPException(500, f"Health query failed: {exc}") from exc
 
 
 @router.get("/api/health/scans")

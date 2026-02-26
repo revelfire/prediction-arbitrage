@@ -317,8 +317,8 @@ def _row_to_scan_health(row: asyncpg.Record) -> ScanHealthSummary:
     return ScanHealthSummary(
         hour=row["hour"],
         scan_count=int(row["scan_count"]),
-        avg_duration_s=float(row["avg_duration_s"]),
-        total_llm_calls=int(row["total_llm_calls"]),
-        total_opps=int(row["total_opps"]),
-        total_errors=int(row["total_errors"]),
+        avg_duration_s=float(row["avg_duration_s"] or 0),
+        total_llm_calls=int(row["total_llm_calls"] or 0),
+        total_opps=int(row["total_opps"] or 0),
+        total_errors=int(row["total_errors"] or 0),
     )
