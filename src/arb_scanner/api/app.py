@@ -88,3 +88,18 @@ def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
     app.include_router(ws_telemetry_router)
 
     return app
+
+
+def create_app_from_env() -> FastAPI:
+    """Factory for uvicorn --reload mode (reads config from env).
+
+    Returns:
+        Configured FastAPI instance.
+    """
+    import os
+
+    from arb_scanner.config.loader import load_config
+
+    no_db = os.environ.get("ARB_NO_DB", "0") == "1"
+    config = load_config()
+    return create_app(config, no_db=no_db)

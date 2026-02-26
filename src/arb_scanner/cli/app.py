@@ -301,6 +301,7 @@ def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the dashboard server."),
     port: int = typer.Option(8000, "--port", help="Port for the dashboard server."),
     no_db: bool = typer.Option(False, "--no-db", help="Start without database (UI preview only)."),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)."),
 ) -> None:
     """Start the web dashboard and API server."""
     try:
@@ -309,10 +310,22 @@ def serve(
         logger.error("config_load_failed", error=str(exc))
         raise typer.Exit(code=1) from exc
 
-    from arb_scanner.api.app import create_app
-
-    api_app = create_app(config, no_db=no_db)
-
     import uvicorn
 
-    uvicorn.run(api_app, host=host, port=port)
+    if reload:
+        import os
+
+        os.environ.setdefault("ARB_NO_DB", "1" if no_db else "0")
+        uvicorn.run(
+            "arb_scanner.api.app:create_app_from_env",
+            host=host,
+            port=port,
+            reload=True,
+            reload_dirs=["src"],
+            factory=True,
+        )
+    else:
+        from arb_scanner.api.app import create_app
+
+        api_app = create_app(config, no_db=no_db)
+        uvicorn.run(api_app, host=host, port=port)
