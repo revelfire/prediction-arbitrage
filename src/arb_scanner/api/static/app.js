@@ -7,6 +7,11 @@ let activeTab = 'opportunities';
 let refreshTimer = null;
 let spreadChart = null;
 let healthChart = null;
+let discCategoryChart = null;
+let discHitrateChart = null;
+let discMethodChart = null;
+let tickerSource = null;
+let tickerSparklines = {};
 
 // --- Helpers ---
 function formatPct(val) {
@@ -411,6 +416,246 @@ async function refreshFlippenings() {
     }
 }
 
+// --- Live Price Ticker (SSE) ---
+function initTickerSSE() {
+    if (tickerSource) { tickerSource.close(); tickerSource = null; }
+    tickerSource = new EventSource('/api/flippenings/price-stream');
+    tickerSource.addEventListener('status', function(e) {
+        const data = JSON.parse(e.data);
+        setTickerStatus(data.status === 'idle' ? 'idle' : 'connected');
+        if (data.status === 'idle') {
+            const tbody = el('ticker-tbody');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Engine not active</td></tr>';
+        }
+    });
+    tickerSource.addEventListener('snapshot', function(e) {
+        setTickerStatus('connected');
+        const data = JSON.parse(e.data);
+        renderTickerTable(data.markets || []);
+    });
+    tickerSource.onerror = function() {
+        setTickerStatus('disconnected');
+    };
+}
+
+function setTickerStatus(state) {
+    const banner = el('ticker-status');
+    if (!banner) return;
+    banner.className = 'ticker-banner';
+    if (state === 'idle') {
+        banner.classList.add('ticker-idle');
+        banner.textContent = 'Engine not active';
+    } else if (state === 'connected') {
+        banner.classList.add('ticker-connected');
+        banner.textContent = 'Live - connected';
+    } else {
+        banner.classList.add('ticker-disconnected');
+        banner.textContent = 'Disconnected - reconnecting...';
+    }
+}
+
+function deviationClass(pct) {
+    const abs = Math.abs(pct);
+    if (abs < 5) return 'deviation-green';
+    if (abs < 10) return 'deviation-amber';
+    return 'deviation-red';
+}
+
+function renderTickerTable(markets) {
+    const tbody = el('ticker-tbody');
+    if (!tbody) return;
+    if (markets.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No live data</td></tr>';
+        return;
+    }
+    markets.sort((a, b) => Math.abs(b.deviation_pct) - Math.abs(a.deviation_pct));
+    tbody.innerHTML = markets.map(m => {
+        const devCls = deviationClass(m.deviation_pct);
+        const devSign = m.deviation_pct >= 0 ? '+' : '';
+        const bl = m.baseline_yes != null ? parseFloat(m.baseline_yes).toFixed(3) : '-';
+        const title = (m.market_title || '').length > 40
+            ? m.market_title.substring(0, 40) + '...'
+            : m.market_title || '';
+        return `<tr>
+            <td title="${m.market_title || ''}">${title}</td>
+            <td><span class="category-badge">${m.category || '-'}</span></td>
+            <td>${parseFloat(m.yes_mid).toFixed(3)}</td>
+            <td>${bl}</td>
+            <td class="${devCls}">${devSign}${m.deviation_pct.toFixed(2)}%</td>
+            <td><canvas class="sparkline-canvas" data-market="${m.market_id}"></canvas></td>
+            <td>${parseFloat(m.spread).toFixed(3)}</td>
+            <td>${m.book_depth_bids}/${m.book_depth_asks}</td>
+        </tr>`;
+    }).join('');
+    renderSparklines(markets);
+}
+
+function renderSparklines(markets) {
+    // Store history per market for sparklines (keep last 60 points in memory)
+    markets.forEach(m => {
+        if (!tickerSparklines[m.market_id]) tickerSparklines[m.market_id] = [];
+        const hist = tickerSparklines[m.market_id];
+        hist.push(parseFloat(m.yes_mid));
+        if (hist.length > 60) hist.shift();
+    });
+    document.querySelectorAll('.sparkline-canvas').forEach(canvas => {
+        const mid = canvas.dataset.market;
+        const hist = tickerSparklines[mid];
+        if (!hist || hist.length < 2) return;
+        drawSparkline(canvas, hist);
+    });
+}
+
+function drawSparkline(canvas, data) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width = 100;
+    const h = canvas.height = 30;
+    ctx.clearRect(0, 0, w, h);
+    const min = Math.min(...data);
+    const max = Math.max(...data);
+    const range = max - min || 0.001;
+    ctx.strokeStyle = '#4fc3f7';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    data.forEach((v, i) => {
+        const x = (i / (data.length - 1)) * w;
+        const y = h - ((v - min) / range) * (h - 4) - 2;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+}
+
+// --- Discovery Tab ---
+async function refreshDiscovery() {
+    const [snapshots, history, alerts] = await Promise.all([
+        fetchJSON('/api/flippenings/discovery-health?limit=1'),
+        fetchJSON('/api/flippenings/discovery-health/history?hours=24'),
+        fetchJSON('/api/flippenings/discovery-health/alerts?limit=20'),
+    ]);
+    renderDiscoverySummary(snapshots);
+    renderDiscoveryCategoryChart(snapshots);
+    renderDiscoveryHitrateChart(history);
+    renderDiscoveryMethodChart(snapshots);
+    renderDiscoveryAlerts(alerts);
+    renderDiscoveryUnclassified(snapshots);
+}
+
+function renderDiscoverySummary(snapshots) {
+    if (snapshots && snapshots.length > 0) {
+        const s = snapshots[0];
+        el('disc-total-scanned').textContent = s.total_scanned || 0;
+        el('disc-classified').textContent = s.sports_found || 0;
+        const hr = s.hit_rate != null ? (parseFloat(s.hit_rate) * 100).toFixed(1) + '%' : '-';
+        el('disc-hit-rate').textContent = hr;
+        el('disc-unclassified').textContent = s.unclassified_candidates || 0;
+    }
+}
+
+function renderDiscoveryCategoryChart(snapshots) {
+    if (!snapshots || snapshots.length === 0) return;
+    const bySport = snapshots[0].by_sport;
+    if (!bySport) return;
+    const parsed = typeof bySport === 'string' ? JSON.parse(bySport) : bySport;
+    const labels = Object.keys(parsed);
+    const values = Object.values(parsed);
+    const ctx = el('disc-category-chart');
+    if (discCategoryChart) discCategoryChart.destroy();
+    discCategoryChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{ label: 'Markets', data: values, backgroundColor: '#4fc3f7' }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' } },
+                y: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' } },
+            },
+        },
+    });
+}
+
+function renderDiscoveryHitrateChart(history) {
+    if (!history || history.length === 0) return;
+    const sorted = [...history].sort((a, b) => new Date(a.cycle_timestamp) - new Date(b.cycle_timestamp));
+    const ctx = el('disc-hitrate-chart');
+    if (discHitrateChart) discHitrateChart.destroy();
+    discHitrateChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: sorted.map(h => new Date(h.cycle_timestamp).toLocaleTimeString()),
+            datasets: [{
+                label: 'Hit Rate %',
+                data: sorted.map(h => parseFloat(h.hit_rate) * 100),
+                borderColor: '#66bb6a', backgroundColor: 'rgba(102, 187, 106, 0.1)',
+                fill: true, tension: 0.3, pointRadius: 2,
+            }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0', maxTicksLimit: 12 }, grid: { color: '#2a2a4a' } },
+                y: { ticks: { color: '#a0a0b0', callback: v => v.toFixed(1) + '%' }, grid: { color: '#2a2a4a' } },
+            },
+        },
+    });
+}
+
+function renderDiscoveryMethodChart(snapshots) {
+    if (!snapshots || snapshots.length === 0) return;
+    const bySport = snapshots[0].by_sport;
+    if (!bySport) return;
+    const methods = ['slug', 'tag', 'title', 'fuzzy', 'manual_override'];
+    const colors = ['#4fc3f7', '#66bb6a', '#ffa726', '#e94560', '#ffd54f'];
+    const parsed = typeof bySport === 'string' ? JSON.parse(bySport) : bySport;
+    const total = Object.values(parsed).reduce((s, v) => s + v, 0);
+    const ctx = el('disc-method-chart');
+    if (discMethodChart) discMethodChart.destroy();
+    discMethodChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: methods,
+            datasets: [{ data: methods.map(() => Math.max(Math.round(total / methods.length), 1)), backgroundColor: colors }],
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' }, position: 'right' } },
+        },
+    });
+}
+
+function renderDiscoveryAlerts(alerts) {
+    const tbody = el('disc-alerts-tbody');
+    if (!tbody) return;
+    if (!alerts || alerts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No degradation alerts</td></tr>';
+        return;
+    }
+    tbody.innerHTML = alerts.map(a => `
+        <tr>
+            <td>${formatTime(a.created_at)}</td>
+            <td>${a.alert_text || ''}</td>
+            <td>${a.category || '-'}</td>
+            <td>${a.resolved ? 'Yes' : 'No'}</td>
+        </tr>
+    `).join('');
+}
+
+function renderDiscoveryUnclassified(snapshots) {
+    const tbody = el('disc-unclassified-tbody');
+    if (!tbody) return;
+    if (!snapshots || snapshots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="2" class="empty-state">No data</td></tr>';
+        return;
+    }
+    // unclassified_sample is not stored in DB; show placeholder from latest snapshot
+    tbody.innerHTML = '<tr><td colspan="2" class="empty-state">Run a live scan to see unclassified markets</td></tr>';
+}
+
 // --- Scan Trigger ---
 async function triggerScan() {
     const btn = el('scan-btn');
@@ -438,6 +683,7 @@ async function refreshActiveTab() {
         case 'alerts': await refreshAlerts(); break;
         case 'tickets': await refreshTickets(); break;
         case 'flippenings': await refreshFlippenings(); break;
+        case 'discovery': await refreshDiscovery(); break;
     }
 }
 
@@ -468,4 +714,5 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial load
     switchTab('opportunities');
     startAutoRefresh();
+    initTickerSSE();
 });

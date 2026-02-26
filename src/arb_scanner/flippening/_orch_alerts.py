@@ -129,6 +129,8 @@ async def handle_discovery_health(
             logger.exception("discovery_health_persist_failed")
 
     alerts = check_degradation(health, prev_health, config.flippening, categories)
+    if not dry_run and repo is not None:
+        await _persist_alerts(repo, alerts, categories, health)
     if alerts and not dry_run:
         for msg in alerts:
             logger.warning("discovery_degradation", alert=msg)
@@ -151,3 +153,54 @@ async def handle_discovery_health(
                 discord_url=notif.discord_webhook,
                 client=client,
             )
+
+
+async def _persist_alerts(
+    repo: Any,
+    alerts: list[str],
+    categories: dict[str, CategoryConfig],
+    health: DiscoveryHealthSnapshot,
+) -> None:
+    """Persist new degradation alerts and resolve recovered categories.
+
+    Args:
+        repo: FlippeningRepository instance.
+        alerts: Alert messages from check_degradation.
+        categories: Active category configs.
+        health: Current discovery health snapshot.
+    """
+    for msg in alerts:
+        cat = _extract_category_from_alert(msg, categories)
+        try:
+            await repo.insert_discovery_alert(msg, cat)
+        except Exception:
+            logger.exception("discovery_alert_insert_failed")
+    for cat_id in categories:
+        if health.by_category.get(cat_id, 0) > 0:
+            try:
+                await repo.resolve_discovery_alerts(cat_id)
+            except Exception:
+                logger.exception("discovery_alert_resolve_failed")
+
+
+def _extract_category_from_alert(
+    msg: str,
+    categories: dict[str, CategoryConfig],
+) -> str:
+    """Extract category name from an alert message string.
+
+    Args:
+        msg: The alert message.
+        categories: Active category configs for matching.
+
+    Returns:
+        Matched category id or empty string.
+    """
+    for cat_id in categories:
+        if cat_id in msg:
+            return cat_id
+    if "hit rate" in msg.lower():
+        return "hit_rate"
+    if "dropped to 0" in msg.lower():
+        return "markets_zero"
+    return ""
