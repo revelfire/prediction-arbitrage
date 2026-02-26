@@ -123,6 +123,12 @@ ORDER BY cycle_timestamp DESC
 LIMIT $1;
 """
 
+INSERT_FLIP_TICKET = """
+INSERT INTO execution_tickets (
+    arb_id, leg_1, leg_2, expected_cost, expected_profit, status, ticket_type
+) VALUES ($1, $2, $3, $4, $5, $6, $7);
+"""
+
 INSERT_WS_TELEMETRY = """
 INSERT INTO ws_telemetry (
     snapshot_time, messages_received, messages_parsed,

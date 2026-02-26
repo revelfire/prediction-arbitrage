@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 from types import TracebackType
+from typing import Self
 
 import httpx
 import structlog
@@ -44,7 +45,7 @@ class BaseVenueClient(abc.ABC):
     # Async context manager
     # ------------------------------------------------------------------
 
-    async def __aenter__(self) -> BaseVenueClient:
+    async def __aenter__(self) -> Self:
         """Open the underlying ``httpx.AsyncClient``."""
         self._client = httpx.AsyncClient(
             base_url=self._base_url,

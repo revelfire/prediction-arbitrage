@@ -14,7 +14,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from arb_scanner.ingestion.kalshi import KalshiClient, _process_orderbook
+from arb_scanner.ingestion._kalshi_parse import process_orderbook as _process_orderbook
+from arb_scanner.ingestion.kalshi import KalshiClient
 from arb_scanner.models.config import KalshiVenueConfig
 from arb_scanner.models.market import Venue
 

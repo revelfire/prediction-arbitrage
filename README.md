@@ -1,3 +1,22 @@
+  011 — CI/CD Pipeline (highest operational priority)
+  No GitHub Actions workflow exists. The 5 quality gates (ruff, format, mypy, pytest, coverage) run only locally. A basic CI would run them on every push/PR, with nightly
+  live API tests gated by secrets. Docker image build on main merge. This is the biggest gap between "works on my machine" and "production-ready."
+
+  012 — Backtesting / Historical Replay (highest product priority for flippening)
+  The flippening engine generates signals but there's no way to evaluate whether the thresholds/weights are optimal. Replay recorded price streams against the spike detector
+  with different configs, compute per-sport win rates, unlock Kelly Criterion position sizing. The data is already in flippening_events and flippening_signals tables — this
+  is analysis tooling on top of existing data.
+
+  013 — Real-Time Dashboard Streaming
+  Dashboard polls every 30s via REST. For flippenings that spike and revert within 8 minutes, this is too slow. Server-sent events or WebSocket push from FastAPI to the
+  browser for live PriceUpdate and FlippeningEvent data would make the Active Flippenings tab actually useful in real time.
+
+  014 — Additional Venue Support
+  Only Polymarket + Kalshi today. Adding a third venue (Manifold, PredictIt, Metaculus) creates 3-way arb triangles and stress-tests the matching architecture. Manifold is
+  easiest — open API, no auth.
+
+
+
 # Prediction Market Arbitrage Scanner
 
 Cross-venue arbitrage scanner for Polymarket and Kalshi prediction markets. Poll-based, CLI-only, no auto-trading. Detects mispricings across venues, calculates net profit after venue-specific fees, and alerts via webhook. Uses Claude for semantic contract matching to determine whether markets on different venues resolve equivalently.

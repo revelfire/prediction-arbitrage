@@ -145,7 +145,7 @@ class TestProcess:
         """Unknown market returns no events."""
         gm = GameManager(_CONFIG)
         update = _update(market_id="unknown")
-        event, exit_sig = gm.process(update)
+        event, exit_sig, _ = gm.process(update)
         assert event is None
         assert exit_sig is None
 
@@ -165,7 +165,7 @@ class TestProcess:
             yes_ask="1.00",
             ts=_NOW + timedelta(minutes=20),
         )
-        _, exit_sig = gm.process(resolution_update)
+        _, exit_sig, _ = gm.process(resolution_update)
 
         assert exit_sig is not None
         assert exit_sig.exit_reason == ExitReason.RESOLUTION

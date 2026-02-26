@@ -12,20 +12,20 @@ from arb_scanner.models.config import Settings
 
 logger = structlog.get_logger()
 
-_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_ENV_VAR_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?\}")
 
 _DEFAULT_CONFIG_PATH = "config.yaml"
 
 
 def _interpolate_env_vars(value: object) -> object:
-    """Recursively interpolate ${ENV_VAR} patterns in configuration values.
+    """Recursively interpolate ``${VAR}`` and ``${VAR:default}`` patterns.
 
-    Replaces occurrences of ${VAR_NAME} with the corresponding environment
-    variable value, defaulting to an empty string if not set.
+    Replaces occurrences with the corresponding environment variable value.
+    Falls back to the inline default (after ``:``) or empty string.
     """
     if isinstance(value, str):
         return _ENV_VAR_PATTERN.sub(
-            lambda m: os.environ.get(m.group(1), ""),
+            lambda m: os.environ.get(m.group(1), m.group(2) or ""),
             value,
         )
     if isinstance(value, dict):
@@ -43,9 +43,9 @@ def load_config(path: str | None = None) -> Settings:
     2. ``ARB_SCANNER_CONFIG`` environment variable
     3. Default ``config.yaml`` in the current working directory
 
-    Environment variable references of the form ``${VAR}`` in string values
-    are replaced with the corresponding ``os.environ`` value (empty string
-    if the variable is not set).
+    Environment variable references of the form ``${VAR}`` or
+    ``${VAR:default}`` in string values are replaced with the corresponding
+    ``os.environ`` value, falling back to the default (or empty string).
     """
     config_path = path or os.environ.get("ARB_SCANNER_CONFIG", _DEFAULT_CONFIG_PATH)
     resolved = Path(config_path)

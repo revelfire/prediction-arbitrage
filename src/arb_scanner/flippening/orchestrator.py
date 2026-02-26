@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ from arb_scanner.flippening.game_manager import GameManager
 from arb_scanner.flippening.orderbook_cache import OrderBookCache
 from arb_scanner.flippening.signal_generator import SignalGenerator
 from arb_scanner.flippening.spike_detector import SpikeDetector
+from arb_scanner.flippening.tick_buffer import TickBuffer
 from arb_scanner.flippening.sports_filter import (
     DiscoveryHealthSnapshot,
     check_degradation,
@@ -32,6 +34,7 @@ from arb_scanner.models.flippening import (
     ExitSignal,
     FlippeningEvent,
     PriceUpdate,
+    SpikeDirection,
 )
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
@@ -73,8 +76,11 @@ async def run_flip_watch(
     )
 
     repo: Any = None
+    tick_repo: Any = None
     if not dry_run:
         repo = await _create_repo(config)
+        tick_repo = await _create_tick_repo(config)
+    tick_buffer = TickBuffer(tick_repo, flip_cfg)
 
     http_client = httpx.AsyncClient(
         base_url="https://clob.polymarket.com",
@@ -117,12 +123,16 @@ async def run_flip_watch(
 
         last_discovery = asyncio.get_event_loop().time()
         last_persist = asyncio.get_event_loop().time()
+        last_tick_flush = asyncio.get_event_loop().time()
         stall_count = 0
         last_stall_received = telemetry.cum_received
         last_drift_alert = 0.0
         try:
             async for update in stream:
                 enriched = await book_cache.enrich(update, http_client)
+                needs_flush = tick_buffer.append(enriched)
+                if needs_flush:
+                    await tick_buffer.flush()
                 await _process_update(
                     enriched,
                     game_mgr,
@@ -132,8 +142,12 @@ async def run_flip_watch(
                     repo,
                     http_client,
                     dry_run,
+                    tick_repo=tick_repo,
                 )
                 now = asyncio.get_event_loop().time()
+                if now - last_tick_flush > flip_cfg.tick_flush_interval_seconds:
+                    await tick_buffer.flush()
+                    last_tick_flush = now
                 if now - last_discovery > _DISCOVERY_INTERVAL_SECONDS:
                     prev_health = await _periodic_discovery(
                         config,
@@ -165,6 +179,7 @@ async def run_flip_watch(
         except (KeyboardInterrupt, asyncio.CancelledError):
             logger.info("flip_watch_shutting_down")
         finally:
+            await tick_buffer.flush()
             await stream.close()
     finally:
         await http_client.aclose()
@@ -179,6 +194,7 @@ async def _process_update(
     repo: Any,
     http_client: httpx.AsyncClient,
     dry_run: bool,
+    tick_repo: Any = None,
 ) -> None:
     """Process a single price update through the pipeline.
 
@@ -191,8 +207,16 @@ async def _process_update(
         repo: FlippeningRepository (None if dry_run).
         http_client: Shared HTTP client for webhooks.
         dry_run: Whether to skip persistence and alerts.
+        tick_repo: TickRepository for drift persistence (None if dry_run).
     """
-    event, exit_sig = game_mgr.process(update)
+    event, exit_sig, drift_info = game_mgr.process(update)
+
+    if drift_info is not None and tick_repo is not None and not dry_run:
+        try:
+            market_id, old_yes, new_yes, drifted_at = drift_info
+            await tick_repo.insert_drift(market_id, old_yes, new_yes, drifted_at)
+        except Exception:
+            logger.warning("drift_persist_failed")
 
     state = game_mgr.get_state(update.market_id)
     if state is None:
@@ -318,11 +342,8 @@ async def _handle_exit(
             baseline_yes=state.baseline.yes_price if state.baseline else exit_sig.exit_price,
             spike_price=entry.entry_price,
             spike_magnitude_pct=abs(exit_sig.realized_pnl_pct),
-            spike_direction=__import__(
-                "arb_scanner.models.flippening",
-                fromlist=["SpikeDirection"],
-            ).SpikeDirection.FAVORITE_DROP,
-            confidence=__import__("decimal").Decimal("0"),
+            spike_direction=SpikeDirection.FAVORITE_DROP,
+            confidence=Decimal("0"),
             sport=state.sport,
             detected_at=entry.created_at,
         )
@@ -353,6 +374,7 @@ async def _persist_entry(
         await repo.insert_baseline(baseline)
         await repo.insert_event(event)
         await repo.insert_signal(entry)
+        await repo.insert_flip_ticket(event, entry)
     except Exception:
         logger.exception("persist_entry_failed")
 
@@ -523,6 +545,27 @@ async def _create_repo(config: Settings) -> Any:
         return FlippeningRepository(db.pool)
     except Exception:
         logger.exception("repo_creation_failed")
+        return None
+
+
+async def _create_tick_repo(config: Settings) -> Any:
+    """Create TickRepository from config.
+
+    Args:
+        config: Application settings with storage config.
+
+    Returns:
+        TickRepository instance or None.
+    """
+    try:
+        from arb_scanner.storage.db import Database
+        from arb_scanner.storage.tick_repository import TickRepository
+
+        db = Database(config.storage.database_url)
+        await db.connect()
+        return TickRepository(db.pool)
+    except Exception:
+        logger.exception("tick_repo_creation_failed")
         return None
 
 

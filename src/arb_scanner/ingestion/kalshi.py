@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from operator import attrgetter
 
 import structlog
 
+from arb_scanner.ingestion._kalshi_parse import parse_market, process_orderbook
 from arb_scanner.ingestion.base import BaseVenueClient
 from arb_scanner.models.config import KalshiVenueConfig
-from arb_scanner.models.market import Market, Venue
+from arb_scanner.models.market import Market
 from arb_scanner.utils.retry import async_retry
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="ingestion.kalshi")
 
 _PAGE_LIMIT = 200
 _MAX_PAGES = 100  # Safety cap: never paginate beyond 20K markets
+_MAX_EVENT_PAGES = 30  # Events are much fewer than markets
+_MAX_EVENT_MARKET_PAGES = 5  # Per-event market pagination cap
 
 
 class KalshiClient(BaseVenueClient):
@@ -42,32 +43,87 @@ class KalshiClient(BaseVenueClient):
     # Public API
     # ------------------------------------------------------------------
 
+    async def fetch_events(self) -> list[dict[str, str]]:
+        """Fetch open events for demand-driven market discovery.
+
+        Returns:
+            List of dicts with ``event_ticker``, ``title``, ``category``.
+        """
+        events: list[dict[str, str]] = []
+        cursor: str | None = None
+        pages = 0
+        while True:
+            page, cursor = await self._fetch_events_page(cursor)
+            pages += 1
+            for raw in page:
+                ticker = str(raw.get("event_ticker", ""))
+                title = str(raw.get("title", ""))
+                category = str(raw.get("category", ""))
+                if ticker and title:
+                    events.append({"event_ticker": ticker, "title": title, "category": category})
+            if not cursor or pages >= _MAX_EVENT_PAGES:
+                break
+        logger.info("kalshi_events_fetched", total=len(events), pages=pages)
+        return events
+
+    async def fetch_markets_for_events(
+        self,
+        event_tickers: list[str],
+    ) -> list[Market]:
+        """Fetch markets for specific events, applying volume filter.
+
+        Args:
+            event_tickers: Event tickers to fetch markets for.
+
+        Returns:
+            Normalised :class:`Market` list sorted by volume descending.
+        """
+        min_vol = self._cfg.min_volume_24h
+        markets: list[Market] = []
+        for ticker in event_tickers:
+            raw_list = await self._fetch_event_markets(ticker)
+            for raw in raw_list:
+                market = parse_market(raw)
+                if market is None:
+                    continue
+                if min_vol and market.volume_24h < min_vol:
+                    continue
+                markets.append(market)
+        markets.sort(key=attrgetter("volume_24h"), reverse=True)
+        logger.info(
+            "kalshi_event_markets_fetched",
+            events=len(event_tickers),
+            markets=len(markets),
+        )
+        return markets
+
     async def fetch_markets(self) -> list[Market]:
         """Fetch open Kalshi markets via cursor-based pagination.
 
-        Applies client-side volume filtering (``min_volume_24h``) and
-        caps results at ``max_markets`` (0 = unlimited).  Results are
-        sorted by 24h volume descending so the most liquid markets
-        appear first when capped.
-
-        Pagination stops early when enough qualifying markets are
-        collected (3x ``max_markets`` to allow sorting headroom) or
-        after ``_MAX_PAGES`` pages as a safety net.
+        Applies client-side volume filtering and ticker prefix exclusion.
+        Used as a fallback when event-driven fetch is not available.
 
         Returns:
             Normalised :class:`Market` list.
         """
         min_vol = self._cfg.min_volume_24h
         max_markets = self._cfg.max_markets
-        collect_target = max_markets * 3 if max_markets else 0
+        collect_target = max_markets * 5 if max_markets else 0
+        exclude = tuple(self._cfg.exclude_ticker_prefixes)
         markets: list[Market] = []
+        excluded = 0
         cursor: str | None = None
         pages = 0
         while True:
             page, cursor = await self._fetch_markets_page(cursor)
             pages += 1
             for raw in page:
-                market = _parse_kalshi_market(raw)
+                if exclude:
+                    ticker = str(raw.get("ticker", ""))
+                    if ticker.startswith(exclude):
+                        excluded += 1
+                        continue
+                market = parse_market(raw)
                 if market is not None:
                     if min_vol and market.volume_24h < min_vol:
                         continue
@@ -76,10 +132,13 @@ class KalshiClient(BaseVenueClient):
                 break
             if not cursor or pages >= _MAX_PAGES:
                 break
-        if max_markets:
-            markets.sort(key=attrgetter("volume_24h"), reverse=True)
-            markets = markets[:max_markets]
-        logger.info("kalshi_fetch_complete", total=len(markets), pages=pages)
+        markets.sort(key=attrgetter("volume_24h"), reverse=True)
+        logger.info(
+            "kalshi_fetch_complete",
+            total=len(markets),
+            excluded=excluded,
+            pages=pages,
+        )
         return markets
 
     @async_retry(max_retries=3)
@@ -103,11 +162,37 @@ class KalshiClient(BaseVenueClient):
             resp = await self.client.get(f"/markets/{ticker}/orderbook")
             resp.raise_for_status()
             data: dict[str, object] = resp.json()
-        return _process_orderbook(data)
+        return process_orderbook(data)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @async_retry(max_retries=3)
+    async def _fetch_events_page(
+        self,
+        cursor: str | None,
+    ) -> tuple[list[dict[str, object]], str | None]:
+        """Fetch one page of open events.
+
+        Args:
+            cursor: Pagination cursor, *None* for the first page.
+
+        Returns:
+            Tuple of (event dicts, next cursor or *None* if done).
+        """
+        params: dict[str, str | int] = {"status": "open", "limit": _PAGE_LIMIT}
+        if cursor:
+            params["cursor"] = cursor
+        async with self.rate_limiter.acquire():
+            resp = await self.client.get("/events", params=params)
+            resp.raise_for_status()
+            body: dict[str, object] = resp.json()
+        raw_events = body.get("events")
+        page: list[dict[str, object]] = raw_events if isinstance(raw_events, list) else []
+        next_cursor_raw = body.get("cursor")
+        next_cursor = str(next_cursor_raw) if next_cursor_raw else None
+        return page, next_cursor
 
     @async_retry(max_retries=3)
     async def _fetch_markets_page(
@@ -135,156 +220,38 @@ class KalshiClient(BaseVenueClient):
         next_cursor = str(next_cursor_raw) if next_cursor_raw else None
         return page, next_cursor
 
+    @async_retry(max_retries=3)
+    async def _fetch_event_markets(
+        self,
+        event_ticker: str,
+    ) -> list[dict[str, object]]:
+        """Fetch all markets for a single event.
 
-# ------------------------------------------------------------------
-# Module-level parsing helpers
-# ------------------------------------------------------------------
+        Args:
+            event_ticker: The event ticker to query markets for.
 
-
-def _safe_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
-    """Convert *value* to :class:`Decimal`, returning *default* on failure.
-
-    Args:
-        value: Raw value to convert.
-        default: Fallback decimal.
-
-    Returns:
-        Parsed Decimal.
-    """
-    if value is None:
-        return default
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
-        return default
-
-
-def _clamp(value: Decimal) -> Decimal:
-    """Clamp *value* into [0, 1].
-
-    Args:
-        value: Decimal to clamp.
-
-    Returns:
-        Clamped Decimal.
-    """
-    return max(Decimal("0"), min(Decimal("1"), value))
-
-
-def _parse_kalshi_market(raw: dict[str, object]) -> Market | None:
-    """Parse a single Kalshi API market dict into a :class:`Market`.
-
-    Uses ONLY ``*_dollars`` fields (4-decimal strings).
-
-    Args:
-        raw: Single market dict from the ``/markets`` response.
-
-    Returns:
-        A validated :class:`Market`, or *None* on missing data.
-    """
-    try:
-        ticker = str(raw.get("ticker", ""))
-        title = str(raw.get("title", ""))
-        if not ticker or not title:
-            return None
-
-        yes_bid = _clamp(_safe_decimal(raw.get("yes_bid_dollars")))
-        yes_ask = _clamp(_safe_decimal(raw.get("yes_ask_dollars")))
-        no_bid = _clamp(_safe_decimal(raw.get("no_bid_dollars")))
-        no_ask = _clamp(_safe_decimal(raw.get("no_ask_dollars")))
-
-        if yes_bid > yes_ask:
-            yes_bid, yes_ask = yes_ask, yes_bid
-        if no_bid > no_ask:
-            no_bid, no_ask = no_ask, no_bid
-
-        rules = _build_rules(raw)
-        expiry = _parse_expiry(raw.get("expiration_time"))
-        volume_raw = raw.get("volume_dollars_24h_fp") or raw.get("volume_fp", "0")
-        volume = _safe_decimal(volume_raw)
-
-        return Market(
-            venue=Venue.KALSHI,
-            event_id=ticker,
-            title=title,
-            description=str(raw.get("subtitle", "") or ""),
-            resolution_criteria=rules,
-            yes_bid=yes_bid,
-            yes_ask=yes_ask,
-            no_bid=no_bid,
-            no_ask=no_ask,
-            volume_24h=volume,
-            expiry=expiry,
-            fees_pct=Decimal("0.07"),
-            fee_model="per_contract",
-            last_updated=datetime.now(tz=UTC),
-            raw_data=raw,
-        )
-    except Exception:
-        logger.warning("kalshi_parse_error", raw_keys=list(raw.keys()))
-        return None
-
-
-def _build_rules(raw: dict[str, object]) -> str:
-    """Combine ``rules_primary`` and ``rules_secondary`` fields.
-
-    Args:
-        raw: Market dict.
-
-    Returns:
-        Combined resolution criteria string.
-    """
-    primary = str(raw.get("rules_primary", "") or "")
-    secondary = str(raw.get("rules_secondary", "") or "")
-    parts = [p for p in (primary, secondary) if p]
-    return " ".join(parts)
-
-
-def _parse_expiry(value: object) -> datetime | None:
-    """Parse an ISO-format expiration timestamp.
-
-    Args:
-        value: Raw datetime string.
-
-    Returns:
-        Parsed datetime or *None*.
-    """
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _process_orderbook(data: dict[str, object]) -> dict[str, object]:
-    """Process Kalshi's bids-only order book into a richer structure.
-
-    Kalshi returns only bids, sorted ascending (best bid = last element).
-    Asks are computed: ``YES_ask = 1.00 - highest_NO_bid``.
-
-    Args:
-        data: Raw order-book response.
-
-    Returns:
-        Processed order-book dict.
-    """
-    raw_yes = data.get("yes", [])
-    raw_no = data.get("no", [])
-    yes_bids: list[list[object]] = raw_yes if isinstance(raw_yes, list) else []
-    no_bids: list[list[object]] = raw_no if isinstance(raw_no, list) else []
-
-    yes_best = _safe_decimal(yes_bids[-1][0]) if yes_bids else Decimal("0")
-    no_best = _safe_decimal(no_bids[-1][0]) if no_bids else Decimal("0")
-
-    yes_ask = _clamp(Decimal("1") - no_best)
-    no_ask = _clamp(Decimal("1") - yes_best)
-
-    return {
-        "yes_bids": yes_bids,
-        "no_bids": no_bids,
-        "yes_best_bid": str(yes_best),
-        "no_best_bid": str(no_best),
-        "yes_ask": str(yes_ask),
-        "no_ask": str(no_ask),
-    }
+        Returns:
+            List of raw market dicts for the event.
+        """
+        all_markets: list[dict[str, object]] = []
+        cursor: str | None = None
+        for _ in range(_MAX_EVENT_MARKET_PAGES):
+            params: dict[str, str | int] = {
+                "status": "open",
+                "event_ticker": event_ticker,
+                "limit": _PAGE_LIMIT,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            async with self.rate_limiter.acquire():
+                resp = await self.client.get("/markets", params=params)
+                resp.raise_for_status()
+                body: dict[str, object] = resp.json()
+            raw = body.get("markets")
+            page: list[dict[str, object]] = raw if isinstance(raw, list) else []
+            all_markets.extend(page)
+            next_cursor_raw = body.get("cursor")
+            cursor = str(next_cursor_raw) if next_cursor_raw else None
+            if not cursor:
+                break
+        return all_markets

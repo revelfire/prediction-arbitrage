@@ -23,11 +23,11 @@ src/arb_scanner/
 ├── ingestion/       # Async API clients: PolymarketClient, KalshiClient
 ├── matching/        # Pre-filter (BM25 + pgvector), embedding.py (Voyage AI client), embedding_prefilter.py (cosine rerank), Claude semantic matcher, cache layer
 ├── engine/          # Arb calculator, combinatorial checker (stretch)
-├── flippening/      # Mean reversion engine for live sports markets (spike detection, signal generation, WebSocket streaming)
-├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository, flippening_repository
+├── flippening/      # Mean reversion engine for live sports markets (spike detection, signal generation, WebSocket streaming, replay/backtesting)
+├── storage/         # PostgreSQL + pgvector repository, migrations, analytics_repository, flippening_repository, tick_repository
 ├── notifications/   # Webhook dispatcher (Slack/Discord), trend alert detector + dispatch, stdout reporter
 ├── api/             # FastAPI REST API + static dashboard (serve command), flippening endpoints
-├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts, flip-watch/history/stats commands
+├── cli/             # Typer app: scan, watch, report, match-audit, history, stats, alerts, flip-watch/history/stats/replay/evaluate/sweep commands
 └── utils/           # Retry logic, rate limiter, async helpers
 ```
 
@@ -72,6 +72,10 @@ uv run arb-scanner flip-watch     # Live mean reversion monitor for sports marke
 uv run arb-scanner flip-watch --sports nba,nfl --dry-run  # Dry run with sport filter
 uv run arb-scanner flip-history   # Show completed flippening signals
 uv run arb-scanner flip-stats     # Aggregated flippening performance by sport
+uv run arb-scanner flip-replay --sport nba --since 2026-02-01T00:00:00Z  # Replay stored ticks
+uv run arb-scanner flip-evaluate --sport nba  # Evaluate replay win rate, P&L, drawdown
+uv run arb-scanner flip-sweep --param spike_threshold_pct --min 0.05 --max 0.20 --step 0.01 --sport nba  # Parameter sweep
+uv run arb-scanner flip-tick-prune --days 90  # Delete old price ticks
 uv run arb-scanner serve          # Start web dashboard at http://localhost:8000
 uv run arb-scanner serve --no-db # Dashboard preview without PostgreSQL
 uv run arb-scanner migrate       # Apply pending SQL migrations
@@ -138,6 +142,7 @@ For local development without Docker, just start the database: `docker compose u
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 012-backtesting-replay: Added tick capture, replay engine, and parameter tuning for the flippening engine. TickBuffer captures live price ticks to PostgreSQL (non-blocking, fire-and-forget). ReplayEngine replays stored ticks through production SpikeDetector + SignalGenerator with config overrides. ReplayEvaluator computes win rate, avg P&L, max drawdown, profit factor. sweep_parameter iterates config values via Decimal arithmetic. GameManager.process() returns 3-tuple (event, exit_sig, drift_info) to expose baseline drifts. New CLI commands: `flip-replay`, `flip-evaluate`, `flip-sweep`, `flip-tick-prune`. Replay CLI extracted to `cli/replay_commands.py`. Migration 016 (flippening_price_ticks, flippening_baseline_drifts tables). Models in `models/replay.py` (ReplaySignal, ReplayEvaluation, SweepResult).
 - 008-flippening-engine: Added mean reversion engine for live sports markets. `flippening/` subpackage with SpikeDetector (threshold + confidence scoring), SignalGenerator (entry/exit/ticket), GameManager (lifecycle + baseline drift EC-006), WebSocket price streaming (with polling fallback), alert formatting (Slack/Discord). Sports filter classifies Polymarket markets by sport slug/tags. FlippeningConfig with per-sport overrides, confidence weights, late-join penalty. New CLI commands (`flip-watch`, `flip-history`, `flip-stats`), 3 REST API endpoints, Flippenings dashboard tab. Edge cases: late join penalty (EC-001), multiple flippenings blocked while signal active (EC-002), game resolution exit (EC-003), WS disconnect handling (EC-004), no-markets retry (EC-005), baseline drift detection (EC-006). Migration 012 (flippening_baselines, flippening_events, flippening_signals tables).
 - 007-local-embeddings: Replaced Voyage AI as default embedding provider with local ONNX model (BAAI/bge-small-en-v1.5 via fastembed, 384-dim). No API key needed for embeddings. Added embedding cache read path — previously-seen markets skip regeneration by loading from pgvector. Voyage AI remains available as `provider: voyage` fallback. New `title_embedding_384` column (migration 011).
 - 006-dashboard-web-ui: Added FastAPI REST API with 11 endpoints wrapping existing repository methods. Vanilla JS dashboard with dark-theme UI, Chart.js spread/health charts, tab-based layout (Opportunities, Health, Alerts, Tickets). DashboardConfig for host/port. `serve` CLI command starts uvicorn. Ticket approve/expire from dashboard. Auto-refresh every 30s.

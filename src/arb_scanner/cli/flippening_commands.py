@@ -23,11 +23,14 @@ def register(app: typer.Typer) -> None:
     Args:
         app: The main CLI Typer application instance.
     """
+    from arb_scanner.cli.replay_commands import register as register_replay
+
     app.command(name="flip-watch")(flip_watch)
     app.command(name="flip-history")(flip_history)
     app.command(name="flip-stats")(flip_stats)
     app.command(name="flip-discover")(flip_discover)
     app.command(name="flip-ws-validate")(flip_ws_validate)
+    register_replay(app)
 
 
 def flip_watch(
