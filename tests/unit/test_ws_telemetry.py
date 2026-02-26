@@ -25,16 +25,23 @@ class TestClassifyWsMessage:
     def test_error_type(self) -> None:
         assert classify_ws_message({"type": "error", "message": "bad"}) == "error"
 
-    def test_price_update_with_price(self) -> None:
-        msg = {"market": "0x1", "asset_id": "tok1", "price": "0.65"}
+    def test_price_update_book(self) -> None:
+        msg = {"event_type": "book", "market": "0x1", "asset_id": "tok1", "bids": [], "asks": []}
         assert classify_ws_message(msg) == "price_update"
 
-    def test_price_update_with_asset_id_only(self) -> None:
-        msg = {"asset_id": "tok1", "outcome": "Yes"}
+    def test_price_update_price_change(self) -> None:
+        msg = {"event_type": "price_change", "market": "0x1", "asset_id": "tok1", "price": "0.65"}
+        assert classify_ws_message(msg) == "price_update"
+
+    def test_price_update_last_trade(self) -> None:
+        msg = {"event_type": "last_trade_price", "asset_id": "tok1", "price": "0.5"}
         assert classify_ws_message(msg) == "price_update"
 
     def test_unknown(self) -> None:
         assert classify_ws_message({"foo": "bar"}) == "unknown"
+
+    def test_unknown_event_type(self) -> None:
+        assert classify_ws_message({"event_type": "something_new"}) == "unknown"
 
     def test_case_insensitive_type(self) -> None:
         assert classify_ws_message({"type": "HEARTBEAT"}) == "heartbeat"

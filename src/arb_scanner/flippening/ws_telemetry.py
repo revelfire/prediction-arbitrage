@@ -11,9 +11,13 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.ws_telemetry",
 )
 
-_PRICE_UPDATE_KEYS = frozenset({"market", "condition_id", "asset_id", "price"})
-_EXPECTED_FIELDS = frozenset({"asset_id", "price"})
-_MARKET_FIELDS = frozenset({"market", "condition_id"})
+_EXPECTED_FIELDS = frozenset({"asset_id", "event_type"})
+_MARKET_FIELDS = frozenset({"market"})
+
+_BOOK_EVENT = "book"
+_PRICE_CHANGE_EVENT = "price_change"
+_TRADE_EVENT = "last_trade_price"
+_PRICE_EVENTS = frozenset({_BOOK_EVENT, _PRICE_CHANGE_EVENT, _TRADE_EVENT})
 
 
 def classify_ws_message(data: dict[str, object]) -> str:
@@ -25,15 +29,16 @@ def classify_ws_message(data: dict[str, object]) -> str:
     Returns:
         One of: heartbeat, subscription_ack, error, price_update, unknown.
     """
+    event_type = str(data.get("event_type", "")).lower()
+    if event_type in _PRICE_EVENTS:
+        return "price_update"
     msg_type = str(data.get("type", "")).lower()
     if msg_type in ("heartbeat", "ping"):
         return "heartbeat"
     if msg_type in ("subscribe", "subscribed"):
         return "subscription_ack"
-    if msg_type == "error":
+    if msg_type == "error" or event_type == "error":
         return "error"
-    if "price" in data or "asset_id" in data:
-        return "price_update"
     return "unknown"
 
 
