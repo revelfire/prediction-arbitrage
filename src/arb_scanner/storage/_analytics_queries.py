@@ -76,6 +76,7 @@ FROM execution_tickets t
 JOIN arb_opportunities o ON t.arb_id = o.id
 WHERE t.created_at >= $1
   AND ($2::timestamptz IS NULL OR t.created_at < $2)
+  AND t.expected_profit > 0
 ORDER BY t.created_at DESC
 LIMIT $3;
 """

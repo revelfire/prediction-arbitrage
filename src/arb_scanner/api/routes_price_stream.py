@@ -22,6 +22,7 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 router = APIRouter()
 
 _POLL_INTERVAL_SECONDS = 1.0
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 def _tick_to_dict(tick: PriceTick) -> dict[str, object]:
@@ -88,15 +89,21 @@ def _format_sse(event: str, data: str) -> str:
 async def _stream_prices() -> AsyncGenerator[str, None]:
     """Generate SSE events from the shared price ring buffer.
 
+    Sends heartbeat events when no data changes to keep the
+    connection alive and let the client know the stream is healthy.
+
     Yields:
         Formatted SSE message strings.
     """
     prev_ts: dict[str, str] = {}
+    last_send = 0.0
 
     while True:
+        now = asyncio.get_event_loop().time()
         buf = get_shared_buffer()
         if buf is None or buf.market_count() == 0:
             yield _format_sse("status", json.dumps({"status": "idle"}))
+            last_send = now
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
             continue
 
@@ -106,6 +113,13 @@ async def _stream_prices() -> AsyncGenerator[str, None]:
         if changed:
             yield _format_sse("snapshot", _build_snapshot(latest))
             prev_ts = {mid: t.timestamp.isoformat() for mid, t in latest.items()}
+            last_send = now
+        elif now - last_send >= _HEARTBEAT_INTERVAL_SECONDS:
+            yield _format_sse(
+                "heartbeat",
+                json.dumps({"ts": _now_iso()}),
+            )
+            last_send = now
 
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 

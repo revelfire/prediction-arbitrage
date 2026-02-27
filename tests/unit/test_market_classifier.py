@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from arb_scanner.flippening.category_keywords import fuzzy_match_category, get_category_keywords
 from arb_scanner.flippening.market_classifier import (
     DiscoveryHealthSnapshot,
     _category_zero_count,
@@ -286,3 +287,43 @@ class TestRateLimiting:
     def test_after_cooldown_fires(self) -> None:
         _last_alert_time["test"] = datetime.now(tz=UTC) - timedelta(minutes=61)
         assert _should_alert("test", 60) is True
+
+
+class TestFuzzyAmbiguousKeywords:
+    """Ambiguous surnames removed from default keywords to prevent misclassification."""
+
+    def test_soccer_team_not_classified_as_ufc(self) -> None:
+        """Deportivo Pereira (soccer) must not match UFC keywords."""
+        cats = {
+            "ufc": CategoryConfig(category_type="sport", discovery_slugs=["ufc-"]),
+        }
+        keyword_map = {cid: get_category_keywords(c, cid) for cid, c in cats.items()}
+        result = fuzzy_match_category(
+            "Millonarios FC vs. Deportivo Pereira: O/U 1.5",
+            "",
+            cats,
+            keyword_map,
+        )
+        assert result is None
+
+    def test_ufc_slug_still_matches(self) -> None:
+        """UFC markets with explicit slugs still classify correctly."""
+        cats = {
+            "ufc": CategoryConfig(category_type="sport", discovery_slugs=["ufc-"]),
+        }
+        raw: dict[str, object] = {"groupSlug": "ufc-309-pereira-vs-adesanya"}
+        assert _detect_category(raw, cats) == ("ufc", "slug")
+
+    def test_explicit_ufc_keyword_still_matches(self) -> None:
+        """Markets with 'ufc' in the title still match via keyword."""
+        cats = {
+            "ufc": CategoryConfig(category_type="sport", discovery_slugs=["ufc-"]),
+        }
+        keyword_map = {cid: get_category_keywords(c, cid) for cid, c in cats.items()}
+        result = fuzzy_match_category(
+            "UFC 309: Main Card Predictions",
+            "",
+            cats,
+            keyword_map,
+        )
+        assert result == "ufc"

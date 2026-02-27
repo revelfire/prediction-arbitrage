@@ -14,64 +14,173 @@ import pytest
 from arb_scanner.flippening.ws_client import (
     PollingPriceStream,
     WebSocketPriceStream,
-    _parse_orderbook,
-    _parse_ws_message,
-    _safe_dec,
     create_price_stream,
+)
+from arb_scanner.flippening.ws_parser import (
+    _safe_dec,
+    parse_orderbook,
+    parse_ws_message,
 )
 from arb_scanner.models.config import FlippeningConfig
 
 
 class TestParseWsMessage:
-    """Tests for _parse_ws_message helper."""
+    """Tests for parse_ws_message helper."""
 
-    def test_valid_message(self) -> None:
-        """Parses a valid WS message into PriceUpdate with synthetic_spread."""
+    def test_valid_price_change(self) -> None:
+        """Parses a price_change with price_changes array."""
         msg = json.dumps(
             {
+                "event_type": "price_change",
                 "market": "mkt-1",
-                "asset_id": "tok-1",
-                "price": "0.65",
+                "timestamp": "1234567890",
+                "price_changes": [
+                    {
+                        "asset_id": "tok-1",
+                        "price": "0.65",
+                        "size": "100",
+                        "side": "BUY",
+                        "best_bid": "0.64",
+                        "best_ask": "0.66",
+                    },
+                ],
             }
         )
-        update = _parse_ws_message(msg)
+        update = parse_ws_message(msg)
         assert update is not None
         assert update.market_id == "mkt-1"
         assert update.token_id == "tok-1"
         assert update.yes_bid == Decimal("0.64")
         assert update.yes_ask == Decimal("0.66")
+        assert update.synthetic_spread is False
+
+    def test_price_change_fallback_to_price(self) -> None:
+        """Falls back to synthetic spread when best_bid/ask missing."""
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+                "price_changes": [
+                    {"asset_id": "tok-1", "price": "0.65", "size": "100", "side": "BUY"},
+                ],
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.64")
+        assert update.yes_ask == Decimal("0.66")
         assert update.synthetic_spread is True
 
-    def test_missing_market_returns_none(self) -> None:
-        """Message without market/condition_id returns None."""
-        msg = json.dumps({"asset_id": "tok-1", "price": "0.5"})
-        assert _parse_ws_message(msg) is None
+    def test_price_change_empty_array_fails(self) -> None:
+        """Empty price_changes array fails gracefully."""
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+                "price_changes": [],
+            }
+        )
+        assert parse_ws_message(msg) is None
 
-    def test_missing_price_returns_none(self) -> None:
-        """Message without price returns None."""
-        msg = json.dumps({"market": "m1", "asset_id": "t1"})
-        assert _parse_ws_message(msg) is None
+    def test_price_change_no_price_changes_key(self) -> None:
+        """price_change without price_changes key fails."""
+        from arb_scanner.flippening.ws_telemetry import WsTelemetry
+
+        t = WsTelemetry()
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "mkt-1",
+            }
+        )
+        assert parse_ws_message(msg, telemetry=t) is None
+        assert t._failure_reasons.get("empty_price_changes") == 1
+
+    def test_valid_book_event(self) -> None:
+        """Parses a book snapshot into PriceUpdate with real spread."""
+        msg = json.dumps(
+            {
+                "event_type": "book",
+                "market": "mkt-1",
+                "asset_id": "tok-1",
+                "bids": [{"price": "0.60", "size": "100"}],
+                "asks": [{"price": "0.65", "size": "80"}],
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.60")
+        assert update.yes_ask == Decimal("0.65")
+        assert update.synthetic_spread is False
+
+    def test_book_missing_asset_id(self) -> None:
+        """Book without asset_id returns None."""
+        msg = json.dumps(
+            {
+                "event_type": "book",
+                "market": "m1",
+                "bids": [],
+                "asks": [],
+            }
+        )
+        assert parse_ws_message(msg) is None
+
+    def test_last_trade_price(self) -> None:
+        """Parses last_trade_price into synthetic spread."""
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "mkt-1",
+                "asset_id": "tok-1",
+                "price": "0.70",
+                "side": "BUY",
+                "size": "50",
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.69")
+        assert update.yes_ask == Decimal("0.71")
+        assert update.synthetic_spread is True
+
+    def test_best_bid_ask_event(self) -> None:
+        """Parses best_bid_ask into PriceUpdate."""
+        msg = json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "market": "mkt-1",
+                "asset_id": "tok-1",
+                "best_bid": "0.73",
+                "best_ask": "0.77",
+                "spread": "0.04",
+            }
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.yes_bid == Decimal("0.73")
+        assert update.yes_ask == Decimal("0.77")
+        assert update.synthetic_spread is False
+
+    def test_best_bid_ask_missing_asset_id(self) -> None:
+        """best_bid_ask without asset_id fails."""
+        msg = json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "market": "mkt-1",
+                "best_bid": "0.73",
+                "best_ask": "0.77",
+            }
+        )
+        assert parse_ws_message(msg) is None
 
     def test_invalid_json_returns_none(self) -> None:
         """Non-JSON message returns None."""
-        assert _parse_ws_message("not json") is None
+        assert parse_ws_message("not json") is None
 
-    def test_non_dict_returns_none(self) -> None:
-        """JSON array returns None."""
-        assert _parse_ws_message("[1, 2, 3]") is None
-
-    def test_uses_condition_id_fallback(self) -> None:
-        """Falls back to condition_id when market not present."""
-        msg = json.dumps(
-            {
-                "condition_id": "cond-1",
-                "asset_id": "tok-2",
-                "price": "0.40",
-            }
-        )
-        update = _parse_ws_message(msg)
-        assert update is not None
-        assert update.market_id == "cond-1"
+    def test_pong_ignored(self) -> None:
+        """PONG plaintext responses are ignored."""
+        assert parse_ws_message("PONG") is None
+        assert parse_ws_message(b"PONG") is None
 
     def test_heartbeat_ignored_with_telemetry(self) -> None:
         """Heartbeat messages are classified as ignored."""
@@ -79,7 +188,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "heartbeat"})
-        assert _parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) is None
         assert t.ignored == 1
 
     def test_subscription_ack_ignored(self) -> None:
@@ -88,7 +197,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "subscribed"})
-        assert _parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) is None
         assert t.ignored == 1
 
     def test_error_msg_ignored(self) -> None:
@@ -97,7 +206,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "error", "message": "bad"})
-        assert _parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) is None
         assert t.ignored == 1
 
     def test_telemetry_tracks_parsed(self) -> None:
@@ -105,50 +214,59 @@ class TestParseWsMessage:
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"})
-        _parse_ws_message(msg, telemetry=t)
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
+        )
+        parse_ws_message(msg, telemetry=t)
         assert t.parsed_ok == 1
 
-    def test_telemetry_failure_missing_market_id(self) -> None:
-        """Missing market_id tracked as failure."""
+    def test_telemetry_failure_missing_asset_id(self) -> None:
+        """Missing asset_id tracked as failure."""
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        msg = json.dumps({"asset_id": "t", "price": "0.5"})
-        _parse_ws_message(msg, telemetry=t)
-        assert t._failure_reasons.get("missing_market_id") == 1
+        msg = json.dumps(
+            {
+                "event_type": "price_change",
+                "market": "m",
+                "price_changes": [{"price": "0.5"}],
+            }
+        )
+        parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("missing_asset_id") == 1
 
-    def test_telemetry_failure_missing_token_id(self) -> None:
-        """Missing token_id tracked as failure."""
+    def test_telemetry_failure_invalid_price(self) -> None:
+        """Price > 1.0 tracked as invalid_price failure."""
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        msg = json.dumps({"market": "m", "price": "0.5"})
-        _parse_ws_message(msg, telemetry=t)
-        assert t._failure_reasons.get("missing_token_id") == 1
-
-    def test_telemetry_failure_missing_price(self) -> None:
-        """Missing price tracked as failure."""
-        from arb_scanner.flippening.ws_telemetry import WsTelemetry
-
-        t = WsTelemetry()
-        msg = json.dumps({"market": "m", "asset_id": "t"})
-        _parse_ws_message(msg, telemetry=t)
-        assert t._failure_reasons.get("missing_price") == 1
-
-    def test_telemetry_failure_price_out_of_range(self) -> None:
-        """Price > 1.0 tracked as out_of_range failure."""
-        from arb_scanner.flippening.ws_telemetry import WsTelemetry
-
-        t = WsTelemetry()
-        msg = json.dumps({"market": "m", "asset_id": "t", "price": "1.5"})
-        _parse_ws_message(msg, telemetry=t)
-        assert t._failure_reasons.get("price_out_of_range") == 1
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "1.5",
+            }
+        )
+        parse_ws_message(msg, telemetry=t)
+        assert t._failure_reasons.get("invalid_price") == 1
 
     def test_bytes_message_parsed(self) -> None:
         """Bytes messages are decoded and parsed."""
-        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"}).encode()
-        update = _parse_ws_message(msg)
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
+        ).encode()
+        update = parse_ws_message(msg)
         assert update is not None
         assert update.market_id == "m"
 
@@ -157,7 +275,7 @@ class TestParseWsMessage:
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        _parse_ws_message(b"ping", telemetry=t)
+        parse_ws_message(b"ping", telemetry=t)
         assert t.ignored == 1
         assert t.parse_failed == 0
 
@@ -166,13 +284,36 @@ class TestParseWsMessage:
         from arb_scanner.flippening.ws_telemetry import WsTelemetry
 
         t = WsTelemetry()
-        msg = json.dumps({"market": "m", "asset_id": "t", "price": "0.5"})
-        _parse_ws_message(msg, telemetry=t)
+        msg = json.dumps(
+            {
+                "event_type": "last_trade_price",
+                "market": "m",
+                "asset_id": "t",
+                "price": "0.5",
+            }
+        )
+        parse_ws_message(msg, telemetry=t)
         assert len(t.known_schemas) == 1
+
+    def test_json_array_parsed(self) -> None:
+        """JSON arrays with event dicts are parsed (first valid event)."""
+        msg = json.dumps(
+            [
+                {
+                    "event_type": "last_trade_price",
+                    "market": "m",
+                    "asset_id": "t",
+                    "price": "0.5",
+                }
+            ]
+        )
+        update = parse_ws_message(msg)
+        assert update is not None
+        assert update.token_id == "t"
 
 
 class TestParseOrderbook:
-    """Tests for _parse_orderbook helper."""
+    """Tests for parse_orderbook helper."""
 
     def test_valid_orderbook(self) -> None:
         """Parses bids and asks into PriceUpdate."""
@@ -186,7 +327,7 @@ class TestParseOrderbook:
                 {"price": "0.68", "size": "40"},
             ],
         }
-        update = _parse_orderbook("tok-1", data)
+        update = parse_orderbook("tok-1", data)
         assert update is not None
         assert update.token_id == "tok-1"
         assert update.yes_bid == Decimal("0.62")
@@ -195,7 +336,7 @@ class TestParseOrderbook:
     def test_empty_bids_asks(self) -> None:
         """Empty order book uses defaults."""
         data: dict[str, Any] = {"bids": [], "asks": []}
-        update = _parse_orderbook("tok-1", data)
+        update = parse_orderbook("tok-1", data)
         assert update is not None
         assert update.yes_bid == Decimal("0")
         assert update.yes_ask == Decimal("1")
@@ -203,7 +344,7 @@ class TestParseOrderbook:
     def test_invalid_bids_type_returns_none(self) -> None:
         """Non-list bids returns None."""
         data: dict[str, Any] = {"bids": "invalid", "asks": []}
-        assert _parse_orderbook("tok-1", data) is None
+        assert parse_orderbook("tok-1", data) is None
 
 
 class TestSafeDec:

@@ -67,6 +67,25 @@ async function postJSON(url) {
     }
 }
 
+async function patchJSON(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            setStatus(`PATCH error ${resp.status}: ${text.substring(0, 120)}`);
+            return null;
+        }
+        return await resp.json();
+    } catch (err) {
+        console.error(`PATCH failed: ${url}`, err);
+        return null;
+    }
+}
+
 function el(id) { return document.getElementById(id); }
 
 function setStatus(msg) {
@@ -311,28 +330,240 @@ async function refreshAlerts() {
 
 // --- Tickets Tab ---
 async function refreshTickets() {
-    const data = await fetchJSON('/api/tickets');
+    const params = new URLSearchParams();
+    const statusVal = el('ticket-status-filter')?.value;
+    const catVal = el('ticket-category-filter')?.value;
+    const typeVal = el('ticket-type-filter')?.value;
+    if (statusVal) params.set('status', statusVal);
+    if (catVal) params.set('category', catVal);
+    if (typeVal) params.set('ticket_type', typeVal);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const [data, summary] = await Promise.all([
+        fetchJSON(`/api/tickets${qs}`),
+        fetchJSON('/api/tickets/summary?days=30'),
+    ]);
+
+    // Summary metrics
+    if (summary && Array.isArray(summary) && summary.length > 0) {
+        const totals = summary.reduce((a, r) => ({
+            tickets: a.tickets + (r.total_tickets || 0),
+            executed: a.executed + (r.executed_count || 0),
+            pnl: a.pnl + parseFloat(r.total_pnl || 0),
+            slippage: a.slippage + parseFloat(r.avg_slippage || 0) * (r.executed_count || 0),
+            wins: a.wins + (r.wins || 0),
+            withPnl: a.withPnl + (r.total_with_pnl || 0),
+        }), { tickets: 0, executed: 0, pnl: 0, slippage: 0, wins: 0, withPnl: 0 });
+
+        el('tkt-total').textContent = totals.tickets;
+        el('tkt-exec-rate').textContent = totals.tickets > 0
+            ? (totals.executed / totals.tickets * 100).toFixed(1) + '%' : '-';
+        el('tkt-avg-slippage').textContent = totals.executed > 0
+            ? (totals.slippage / totals.executed).toFixed(4) : '-';
+        el('tkt-win-rate').textContent = totals.withPnl > 0
+            ? (totals.wins / totals.withPnl * 100).toFixed(1) + '%' : '-';
+        el('tkt-total-pnl').textContent = totals.pnl !== 0
+            ? (totals.pnl >= 0 ? '+' : '') + totals.pnl.toFixed(4) : '-';
+    } else {
+        ['tkt-total', 'tkt-exec-rate', 'tkt-avg-slippage', 'tkt-win-rate', 'tkt-total-pnl']
+            .forEach(id => { el(id).textContent = '-'; });
+    }
+
     const tbody = el('tickets-tbody');
     if (!tbody || !data) return;
 
     if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No pending tickets</td></tr>';
+        const label = statusVal || '';
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No ${label} tickets</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = data.map(t => `
-        <tr>
-            <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...</td>
-            <td>${formatUSD(t.expected_cost)}</td>
-            <td>${formatUSD(t.expected_profit)}</td>
-            <td><span class="badge badge-${t.status}">${t.status}</span></td>
-            <td>${shortTime(t.created_at)}</td>
-            <td>
-                <button class="btn btn-success btn-sm" onclick="approveTicket('${t.arb_id}')">Approve</button>
-                <button class="btn btn-danger btn-sm" onclick="expireTicket('${t.arb_id}')">Expire</button>
-            </td>
-        </tr>
+    tbody.innerHTML = data.map(t => {
+        const leg1 = typeof t.leg_1 === 'string' ? JSON.parse(t.leg_1) : (t.leg_1 || {});
+        const title = leg1.market_title || (t.arb_id || '').substring(0, 16);
+        const actions = ticketActionButtons(t);
+        return `
+            <tr class="clickable" onclick="openTicketDetail('${t.arb_id}')">
+                <td title="${t.arb_id}">${title.length > 30 ? title.substring(0, 30) + '...' : title}</td>
+                <td>${t.category ? `<span class="category-badge">${t.category}</span>` : '-'}</td>
+                <td>${t.ticket_type || '-'}</td>
+                <td>${formatUSD(t.expected_cost)}</td>
+                <td>${formatUSD(t.expected_profit)}</td>
+                <td><span class="badge badge-${t.status}">${t.status}</span></td>
+                <td>${shortTime(t.created_at)}</td>
+                <td>${actions}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function renderLegEntries(leg) {
+    const hide = new Set(['market_url', 'title']);
+    return Object.entries(leg).filter(([k]) => !hide.has(k)).map(([k, v]) => {
+        const label = k.replace(/_/g, ' ');
+        return `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${v}</span></div>`;
+    }).join('') + (leg.market_url
+        ? `<div class="detail-row"><span class="detail-label">market</span><span class="detail-value"><a href="${leg.market_url}" target="_blank" rel="noopener" class="market-link">Open on ${leg.venue || 'venue'}</a></span></div>`
+        : '');
+}
+
+function ticketActionButtons(t) {
+    const id = t.arb_id;
+    const btns = [];
+    btns.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${id}')">View</button>`);
+    if (t.status === 'pending') {
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); approveTicket('${id}')">Approve</button>`);
+        btns.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${id}')">Expire</button>`);
+    }
+    if (t.status === 'approved') {
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
+        btns.push(`<button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); cancelTicket('${id}')">Cancel</button>`);
+    }
+    return btns.join(' ');
+}
+
+async function openTicketDetail(arbId) {
+    const modal = el('ticket-modal');
+    const body = el('modal-body');
+    if (!modal || !body) return;
+    modal.style.display = 'flex';
+    body.innerHTML = '<div class="empty-state">Loading...</div>';
+
+    const d = await fetchJSON(`/api/tickets/${encodeURIComponent(arbId)}`);
+    if (!d) {
+        body.innerHTML = '<div class="empty-state">Failed to load ticket detail</div>';
+        return;
+    }
+
+    const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
+    const leg2 = typeof d.leg_2 === 'string' ? JSON.parse(d.leg_2) : (d.leg_2 || {});
+    const isFlip = d.ticket_type === 'flippening';
+    const actionBtns = buildDetailActions(d);
+    const actionsLog = renderActionLog(d.actions || []);
+
+    if (isFlip) {
+        const flipTitle = leg1.market_title || d.market_title || 'N/A';
+        const flipUrl = leg1.market_url || '';
+        const flipMarketEl = flipUrl
+            ? `<a href="${flipUrl}" target="_blank" rel="noopener" class="market-link">${flipTitle}</a>`
+            : flipTitle;
+        body.innerHTML = `
+            <div class="detail-section">
+                <h4>Flippening Trade</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${flipMarketEl}</span></div>
+                    <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || leg1.sport || 'N/A'}</span></div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Execution Legs</h4>
+                <div class="detail-grid">
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 1 - ${leg1.action || 'Entry'}</div>
+                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
+                    </div>
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 2 - ${leg2.action || 'Exit'}</div>
+                        <div class="detail-row"><span class="detail-label">Target</span><span class="detail-value">${formatUSD(leg2.target_price)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Stop loss</span><span class="detail-value">${formatUSD(leg2.stop_loss)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Max hold</span><span class="detail-value">${leg2.max_hold_minutes || 'N/A'} min</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Ticket</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+                </div>
+            </div>
+            ${actionsLog}
+            ${actionBtns}
+        `;
+    } else {
+        const t1 = leg1.title || '';
+        const t2 = leg2.title || '';
+        const url1 = leg1.market_url || '';
+        const url2 = leg2.market_url || '';
+        const link1 = url1 ? `<a href="${url1}" target="_blank" rel="noopener" class="market-link">${t1}</a>` : t1;
+        const link2 = url2 ? `<a href="${url2}" target="_blank" rel="noopener" class="market-link">${t2}</a>` : t2;
+        body.innerHTML = `
+            <div class="detail-section">
+                <h4>Arbitrage Ticket</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Arb ID</span><span class="detail-value">${d.arb_id}</span></div>
+                    <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || '-'}</span></div>
+                </div>
+            </div>
+            ${(t1 || t2) ? `<div class="detail-section match-comparison">
+                <h4>Match Comparison</h4>
+                <div class="detail-grid">
+                    <div class="match-card"><div class="match-venue">${leg1.venue || 'Venue 1'}</div><div class="match-title">${link1 || 'N/A'}</div></div>
+                    <div class="match-card"><div class="match-venue">${leg2.venue || 'Venue 2'}</div><div class="match-title">${link2 || 'N/A'}</div></div>
+                </div>
+            </div>` : ''}
+            <div class="detail-section">
+                <h4>Execution Legs</h4>
+                <div class="detail-grid">
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 1</div>
+                        ${renderLegEntries(leg1)}
+                    </div>
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 2</div>
+                        ${renderLegEntries(leg2)}
+                    </div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Ticket</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+                </div>
+            </div>
+            ${actionsLog}
+            ${actionBtns}
+        `;
+    }
+}
+
+function buildDetailActions(d) {
+    const id = d.arb_id;
+    const btns = [];
+    if (d.status === 'pending') {
+        btns.push(`<button class="btn btn-success" onclick="approveTicket('${id}'); closeTicketModal();">Approve</button>`);
+        btns.push(`<button class="btn btn-danger" onclick="expireTicket('${id}'); closeTicketModal();">Expire</button>`);
+    } else if (d.status === 'approved') {
+        btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
+        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
+        btns.push(`<button class="btn btn-warning" onclick="cancelTicket('${id}'); closeTicketModal();">Cancel</button>`);
+    }
+    btns.push(`<button class="btn btn-primary" onclick="addAnnotation('${id}')">Add Note</button>`);
+    if (btns.length === 0) return `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
+    return `<div class="modal-actions">${btns.join('')}</div>`;
+}
+
+function renderActionLog(actions) {
+    if (!actions || actions.length === 0) return '';
+    const items = actions.map(a => `
+        <div class="action-log-item">
+            <span class="action-time">${formatTime(a.created_at)}</span>
+            <span class="action-type badge badge-${a.action === 'execute' ? 'executed' : a.action === 'approve' ? 'approved' : a.action === 'cancel' ? 'cancelled' : 'pending'}">${a.action}</span>
+            ${a.actual_entry_price ? `<span>Entry: ${formatUSD(a.actual_entry_price)}</span>` : ''}
+            ${a.slippage ? `<span>Slip: ${parseFloat(a.slippage).toFixed(4)}</span>` : ''}
+            ${a.notes ? `<span class="action-notes">${a.notes}</span>` : ''}
+        </div>
     `).join('');
+    return `<div class="detail-section"><h4>Action Log</h4><div class="action-log">${items}</div></div>`;
+}
+
+function closeTicketModal() {
+    const modal = el('ticket-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 async function approveTicket(arbId) {
@@ -345,6 +576,158 @@ async function expireTicket(arbId) {
     if (result) refreshTickets();
 }
 
+function openExecuteModal(arbId) {
+    el('exec-arb-id').value = arbId;
+    el('exec-entry-price').value = '';
+    el('exec-size-usd').value = '';
+    el('exec-notes').value = '';
+    el('execute-modal').style.display = 'flex';
+}
+
+function closeExecuteModal() {
+    el('execute-modal').style.display = 'none';
+}
+
+async function submitExecution() {
+    const arbId = el('exec-arb-id').value;
+    const body = { status: 'executed' };
+    const ep = el('exec-entry-price').value;
+    const sz = el('exec-size-usd').value;
+    const notes = el('exec-notes').value;
+    if (ep) body.actual_entry_price = parseFloat(ep);
+    if (sz) body.actual_size_usd = parseFloat(sz);
+    if (notes) body.notes = notes;
+    const result = await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, body);
+    closeExecuteModal();
+    if (result) refreshTickets();
+}
+
+async function cancelTicket(arbId) {
+    const notes = prompt('Reason for cancellation (optional):') || '';
+    const result = await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, {
+        status: 'cancelled', notes: notes
+    });
+    if (result) refreshTickets();
+}
+
+async function addAnnotation(arbId) {
+    const notes = prompt('Add a note to this ticket:');
+    if (notes === null) return;
+    await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, { notes: notes });
+    openTicketDetail(arbId);
+}
+
+// --- Execution Engine ---
+async function refreshExecStatus() {
+    const data = await fetchJSON('/api/execution/status');
+    const ind = el('exec-status-indicator');
+    if (!ind) return;
+    if (!data) {
+        ind.textContent = 'EXEC OFF';
+        ind.className = 'exec-indicator exec-disabled';
+        return;
+    }
+    if (data.enabled && data.initialised) {
+        ind.textContent = 'EXEC READY';
+        ind.className = 'exec-indicator exec-ready';
+    } else {
+        ind.textContent = 'EXEC OFF';
+        ind.className = 'exec-indicator exec-disabled';
+    }
+}
+
+async function oneClickExecute(arbId) {
+    const modal = el('preflight-modal');
+    const body = el('preflight-body');
+    const actions = el('preflight-actions');
+    if (!modal || !body || !actions) return;
+    modal.style.display = 'flex';
+    actions.style.display = 'none';
+    body.innerHTML = '<div class="empty-state">Running preflight checks...</div>';
+
+    const result = await postJSON(`/api/execution/preflight/${encodeURIComponent(arbId)}`);
+    if (!result) {
+        body.innerHTML = '<div class="empty-state">Preflight failed - execution engine may not be available</div>';
+        return;
+    }
+
+    const checks = (result.checks || []).map(c => `
+        <li class="preflight-check">
+            <span class="preflight-icon ${c.passed ? 'preflight-pass' : 'preflight-fail'}">${c.passed ? '\u2713' : '\u2717'}</span>
+            <span class="preflight-name">${c.name}</span>
+            <span class="preflight-msg">${c.message}</span>
+        </li>
+    `).join('');
+
+    const summaryHtml = `
+        <div class="preflight-summary">
+            <div class="detail-row"><span class="detail-label">Suggested size</span><span class="detail-value">${formatUSD(result.suggested_size_usd)}</span></div>
+            <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(result.max_size_usd)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly balance</span><span class="detail-value">${formatUSD(result.poly_balance)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi balance</span><span class="detail-value">${formatUSD(result.kalshi_balance)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_poly)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_kalshi)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly depth</span><span class="detail-value">${result.poly_depth_contracts} contracts</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi depth</span><span class="detail-value">${result.kalshi_depth_contracts} contracts</span></div>
+        </div>
+    `;
+
+    body.innerHTML = `
+        <div class="detail-section"><h4>Preflight Checks</h4><ul class="preflight-checks">${checks}</ul></div>
+        <div class="detail-section"><h4>Sizing & Liquidity</h4>${summaryHtml}</div>
+    `;
+
+    if (result.all_passed) {
+        el('preflight-arb-id').value = arbId;
+        el('preflight-size').value = parseFloat(result.suggested_size_usd || 0).toFixed(2);
+        actions.style.display = 'flex';
+    } else {
+        body.innerHTML += '<div class="exec-progress"><span class="exec-status-failed">Preflight failed - resolve issues before executing</span></div>';
+    }
+}
+
+function closePreflightModal() {
+    const modal = el('preflight-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function confirmExecution() {
+    const arbId = el('preflight-arb-id').value;
+    const size = parseFloat(el('preflight-size').value);
+    if (!arbId || !size || size <= 0) return;
+
+    const body = el('preflight-body');
+    const actions = el('preflight-actions');
+    if (actions) actions.style.display = 'none';
+    if (body) body.innerHTML += '<div class="exec-progress">Placing orders on both venues...</div>';
+
+    try {
+        const resp = await fetch(`/api/execution/execute/${encodeURIComponent(arbId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ size_usd: size }),
+        });
+        const result = await resp.json();
+        if (!resp.ok) {
+            if (body) body.innerHTML += `<div class="exec-progress"><span class="exec-status-failed">Error: ${result.detail || resp.status}</span></div>`;
+            return;
+        }
+
+        const statusClass = result.status === 'complete' ? 'exec-status-complete' : result.status === 'partial' ? 'exec-status-partial' : 'exec-status-failed';
+        const statusLabel = result.status === 'complete' ? 'Both legs filled' : result.status === 'partial' ? 'Partial execution - check orders' : 'Execution failed';
+        if (body) body.innerHTML += `
+            <div class="exec-progress">
+                <span class="${statusClass}">${statusLabel}</span><br>
+                Total cost: ${formatUSD(result.total_cost_usd)}<br>
+                ${result.slippage_from_ticket ? `Slippage: ${formatUSD(result.slippage_from_ticket)}` : ''}
+            </div>
+        `;
+        refreshTickets();
+    } catch (err) {
+        if (body) body.innerHTML += `<div class="exec-progress"><span class="exec-status-failed">Network error: ${err.message}</span></div>`;
+    }
+}
+
 // --- Flippenings Tab ---
 async function refreshFlippenings() {
     const [active, history, stats] = await Promise.all([
@@ -355,17 +738,17 @@ async function refreshFlippenings() {
 
     // Stats cards — stats is a list of per-category rows, aggregate for summary
     if (stats && Array.isArray(stats) && stats.length > 0) {
-        const total = stats.reduce((s, r) => s + (r.total || 0), 0);
+        const total = stats.reduce((s, r) => s + (r.total_signals || 0), 0);
         const wAvg = (field) => {
-            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total || 0), 0);
+            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total_signals || 0), 0);
             return total > 0 ? weighted / total : null;
         };
         el('flip-total').textContent = total;
-        const wr = wAvg('win_rate');
-        el('flip-winrate').textContent = wr != null ? (wr * 100).toFixed(1) + '%' : '-';
+        const wr = wAvg('win_rate_pct');
+        el('flip-winrate').textContent = wr != null ? wr.toFixed(1) + '%' : '-';
         const ap = wAvg('avg_pnl');
         el('flip-avgpnl').textContent = ap != null ? (ap >= 0 ? '+' : '') + ap.toFixed(4) : '-';
-        const ah = wAvg('avg_hold');
+        const ah = wAvg('avg_hold_minutes');
         el('flip-avghold').textContent = ah != null ? ah.toFixed(0) + 'm' : '-';
     } else {
         el('flip-total').textContent = 0;
@@ -419,10 +802,14 @@ async function refreshFlippenings() {
 }
 
 // --- Live Price Ticker (SSE) ---
+let tickerReconnectDelay = 1000;
+const TICKER_MAX_RECONNECT_DELAY = 30000;
+
 function initTickerSSE() {
     if (tickerSource) { tickerSource.close(); tickerSource = null; }
     tickerSource = new EventSource('/api/flippenings/price-stream');
     tickerSource.addEventListener('status', function(e) {
+        tickerReconnectDelay = 1000;
         const data = JSON.parse(e.data);
         setTickerStatus(data.status === 'idle' ? 'idle' : 'connected');
         if (data.status === 'idle') {
@@ -431,12 +818,23 @@ function initTickerSSE() {
         }
     });
     tickerSource.addEventListener('snapshot', function(e) {
+        tickerReconnectDelay = 1000;
         setTickerStatus('connected');
         const data = JSON.parse(e.data);
         renderTickerTable(data.markets || []);
     });
+    tickerSource.addEventListener('heartbeat', function() {
+        tickerReconnectDelay = 1000;
+        setTickerStatus('connected');
+    });
     tickerSource.onerror = function() {
         setTickerStatus('disconnected');
+        tickerSource.close();
+        tickerSource = null;
+        setTimeout(function() {
+            tickerReconnectDelay = Math.min(tickerReconnectDelay * 2, TICKER_MAX_RECONNECT_DELAY);
+            initTickerSSE();
+        }, tickerReconnectDelay);
     };
 }
 
@@ -876,12 +1274,128 @@ async function refreshActiveTab() {
         case 'flippenings': await refreshFlippenings(); break;
         case 'discovery': await refreshDiscovery(); break;
         case 'wshealth': await refreshWsHealth(); break;
+        case 'autoexec': await refreshAutoExec(); break;
     }
 }
 
 function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(refreshActiveTab, 30000);
+}
+
+// --- Auto-Exec Tab ---
+async function refreshAutoExec() {
+    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshAutoExecLog()]);
+}
+
+async function refreshAutoExecStatus() {
+    const data = await fetchJSON('/api/auto-execution/status');
+    if (!data) return;
+    const modeSelect = el('autoexec-mode-select');
+    if (modeSelect) modeSelect.value = data.mode || 'off';
+    if (data.circuit_breakers) {
+        data.circuit_breakers.forEach(cb => {
+            const card = el('breaker-' + cb.breaker_type);
+            if (!card) return;
+            const val = card.querySelector('.value');
+            if (val) {
+                if (cb.tripped) {
+                    val.textContent = 'TRIPPED';
+                    val.className = 'value breaker-tripped';
+                    val.title = cb.reason || '';
+                } else {
+                    val.textContent = 'OK';
+                    val.className = 'value breaker-ok';
+                    val.title = '';
+                }
+            }
+        });
+    }
+}
+
+async function refreshAutoExecStats() {
+    const data = await fetchJSON('/api/auto-execution/stats?days=1');
+    if (!data) return;
+    setText('ae-trades', data.total_trades || '0');
+    setText('ae-winloss', `${data.wins || 0}/${data.losses || 0}`);
+    const pnl = parseFloat(data.total_pnl || '0');
+    const pnlEl = el('ae-pnl');
+    if (pnlEl) {
+        pnlEl.textContent = formatUSD(pnl);
+        pnlEl.style.color = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+    const slip = parseFloat(data.avg_slippage || '0');
+    setText('ae-slippage', (slip * 100).toFixed(3) + '%');
+}
+
+async function refreshAutoExecLog() {
+    const data = await fetchJSON('/api/auto-execution/log?limit=20');
+    const tbody = el('autoexec-log-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No auto-trades yet</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(e => {
+        const cv = e.critic_verdict;
+        let criticBadge = '<span class="badge badge-critic-skipped">skipped</span>';
+        if (cv && !cv.skipped) {
+            if (cv.approved) {
+                criticBadge = `<span class="badge badge-critic-approved">approved (${(cv.risk_flags || []).length})</span>`;
+            } else {
+                criticBadge = `<span class="badge badge-critic-rejected">rejected (${(cv.risk_flags || []).length})</span>`;
+            }
+        }
+        const statusClass = e.status === 'executed' ? 'badge-approved' :
+                           e.status === 'failed' ? 'badge-cancelled' :
+                           e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
+        return `<tr>
+            <td>${shortTime(e.created_at)}</td>
+            <td title="${e.arb_id}">${(e.arb_id || '').substring(0, 10)}...</td>
+            <td>${formatPct(e.trigger_spread_pct)}</td>
+            <td>${formatUSD(e.size_usd)}</td>
+            <td>${criticBadge}</td>
+            <td><span class="badge ${statusClass}">${e.status}</span></td>
+            <td>${e.duration_ms != null ? e.duration_ms + 'ms' : '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function setText(id, text) {
+    const e = el(id);
+    if (e) e.textContent = text;
+}
+
+async function postJSONBody(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            setStatus(`POST error ${resp.status}: ${text.substring(0, 120)}`);
+            return null;
+        }
+        return await resp.json();
+    } catch (err) {
+        console.error(`POST failed: ${url}`, err);
+        return null;
+    }
+}
+
+async function setAutoExecMode() {
+    const modeSelect = el('autoexec-mode-select');
+    if (!modeSelect) return;
+    const mode = modeSelect.value;
+    await postJSONBody('/api/auto-execution/enable', { mode });
+    await refreshAutoExecStatus();
+}
+
+async function killAutoExec() {
+    await postJSON('/api/auto-execution/disable');
+    await refreshAutoExecStatus();
 }
 
 // --- Init ---
@@ -903,8 +1417,42 @@ document.addEventListener('DOMContentLoaded', () => {
     const alertFilter = el('alert-type-filter');
     if (alertFilter) alertFilter.addEventListener('change', refreshAlerts);
 
+    // Ticket filters
+    const ticketFilter = el('ticket-status-filter');
+    if (ticketFilter) ticketFilter.addEventListener('change', refreshTickets);
+    const ticketCatFilter = el('ticket-category-filter');
+    if (ticketCatFilter) ticketCatFilter.addEventListener('change', refreshTickets);
+    const ticketTypeFilter = el('ticket-type-filter');
+    if (ticketTypeFilter) ticketTypeFilter.addEventListener('change', refreshTickets);
+
+    // Close modals on Escape key or overlay click
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { closeTicketModal(); closeExecuteModal(); closePreflightModal(); }
+    });
+    const modalOverlay = el('ticket-modal');
+    if (modalOverlay) {
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) closeTicketModal();
+        });
+    }
+    const execOverlay = el('execute-modal');
+    if (execOverlay) {
+        execOverlay.addEventListener('click', (e) => {
+            if (e.target === execOverlay) closeExecuteModal();
+        });
+    }
+
+    // Preflight modal overlay click
+    const preflightOverlay = el('preflight-modal');
+    if (preflightOverlay) {
+        preflightOverlay.addEventListener('click', (e) => {
+            if (e.target === preflightOverlay) closePreflightModal();
+        });
+    }
+
     // Initial load
     switchTab('opportunities');
     startAutoRefresh();
     initTickerSSE();
+    refreshExecStatus();
 });

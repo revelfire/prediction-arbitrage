@@ -119,15 +119,14 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 ```bash
 cp .env.example .env              # Edit with your API keys and passwords
 docker compose up -d db           # Start just PostgreSQL + pgvector
-docker compose up -d              # Start db + migrations + dashboard
-docker compose up -d                 # Start db + migrations + dashboard + scanner
+docker compose up -d              # Start db + migrations + dashboard (with embedded flip-watch)
 docker compose run --rm scan      # One-shot scan via Docker
 docker compose logs -f dashboard  # Tail dashboard logs
 docker compose down               # Stop all services
 docker compose down -v            # Stop and delete database volume
 ```
 
-Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode), `flip-watch` (flippening engine, live sports), `scan` (one-shot, `tools` profile).
+Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000, embeds flip-watch via `--flip-watch`), `scanner` (watch mode), `scan` (one-shot, `tools` profile). The flippening engine runs in-process with the dashboard to share the `PriceRingBuffer`.
 
 Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ARBITRAGE_SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
 

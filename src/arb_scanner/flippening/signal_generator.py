@@ -43,7 +43,7 @@ class SignalGenerator:
         event: FlippeningEvent,
         current_ask: Decimal,
         baseline: Baseline,
-    ) -> EntrySignal:
+    ) -> EntrySignal | None:
         """Generate an entry signal from a detected flippening event.
 
         Args:
@@ -52,8 +52,19 @@ class SignalGenerator:
             baseline: Pre-spike baseline odds.
 
         Returns:
-            EntrySignal with entry price, targets, and sizing.
+            EntrySignal with entry price, targets, and sizing,
+            or None if the entry price is below min_entry_price.
         """
+        min_price = Decimal(str(self._config.min_entry_price))
+        if current_ask < min_price:
+            logger.info(
+                "entry_rejected_low_price",
+                event_id=event.id,
+                current_ask=float(current_ask),
+                min_entry_price=float(min_price),
+            )
+            return None
+
         cat_cfg = self._config.categories.get(event.category or event.sport)
         reversion_pct = (
             cat_cfg.reversion_target_pct
@@ -140,7 +151,7 @@ class SignalGenerator:
             )
         return None
 
-    def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket:
+    def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket | None:
         """Create an execution ticket for the flippening trade.
 
         Args:
@@ -148,14 +159,24 @@ class SignalGenerator:
             event: Originating flippening event.
 
         Returns:
-            ExecutionTicket with both legs.
+            ExecutionTicket with both legs, or None if unprofitable.
         """
+        if not entry.entry_price:
+            return None
+        num_contracts = entry.suggested_size_usd / entry.entry_price
+        expected_cost = entry.suggested_size_usd
+        expected_profit = (entry.target_exit_price - entry.entry_price) * num_contracts
+        min_profit = Decimal(str(self._config.min_expected_profit_usd))
+        if expected_profit < min_profit:
+            logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
+            return None
         leg_1: dict[str, object] = {
             "venue": "polymarket",
             "action": "buy",
             "side": entry.side,
             "price": str(entry.entry_price),
             "size_usd": str(entry.suggested_size_usd),
+            "contracts": str(num_contracts.quantize(Decimal("0.01"))),
         }
         leg_2: dict[str, object] = {
             "venue": "polymarket",
@@ -163,10 +184,9 @@ class SignalGenerator:
             "side": entry.side,
             "price": str(entry.target_exit_price),
             "size_usd": str(entry.suggested_size_usd),
+            "contracts": str(num_contracts.quantize(Decimal("0.01"))),
             "note": "limit sell — place manually when entry filled",
         }
-        expected_cost = entry.entry_price * entry.suggested_size_usd
-        expected_profit = (entry.target_exit_price - entry.entry_price) * entry.suggested_size_usd
         return ExecutionTicket(
             arb_id=event.id,
             leg_1=leg_1,

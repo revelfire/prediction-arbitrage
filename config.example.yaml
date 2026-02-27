@@ -46,6 +46,8 @@ arb_thresholds:
 notifications:
   slack_webhook: "${ARBITRAGE_SLACK_WEBHOOK_URL}"
   discord_webhook: "${DISCORD_WEBHOOK_URL}"
+  flippening_slack_webhook: "${FLIPPENING_SLACK_WEBHOOK_URL}"
+  auto_exec_slack_webhook: "${AUTO_EXEC_SLACK_WEBHOOK_URL}"
   enabled: true
   min_spread_to_notify_pct: 0.02
 
@@ -125,7 +127,7 @@ logging:
 fees:
   polymarket:
     maker_fee_pct: 0.0
-    taker_fee_pct: 0.0
+    taker_fee_pct: 0.02
     fee_model: "on_winnings"
   kalshi:
     maker_fee_pct: 0.0

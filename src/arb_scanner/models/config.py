@@ -7,6 +7,8 @@ from decimal import Decimal
 import structlog
 from pydantic import BaseModel, model_validator
 
+from arb_scanner.models._auto_exec_config import AutoExecutionConfig
+
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="models.config")
 
 
@@ -82,6 +84,7 @@ class ArbThresholds(BaseModel):
     min_net_spread_pct: Decimal = Decimal("0.02")
     min_size_usd: Decimal = Decimal("10")
     thin_liquidity_threshold: Decimal = Decimal("50")
+    min_expected_profit_usd: Decimal = Decimal("1.00")
 
 
 class NotificationConfig(BaseModel):
@@ -89,8 +92,20 @@ class NotificationConfig(BaseModel):
 
     slack_webhook: str = ""
     discord_webhook: str = ""
+    flippening_slack_webhook: str = ""
+    auto_exec_slack_webhook: str = ""
     enabled: bool = True
     min_spread_to_notify_pct: Decimal = Decimal("0.02")
+
+    @property
+    def effective_flippening_slack(self) -> str:
+        """Flippening-specific Slack URL, falling back to slack_webhook."""
+        return self.flippening_slack_webhook or self.slack_webhook
+
+    @property
+    def effective_auto_exec_slack(self) -> str:
+        """Auto-exec-specific Slack URL, falling back to slack_webhook."""
+        return self.auto_exec_slack_webhook or self.slack_webhook
 
 
 class StorageConfig(BaseModel):
@@ -222,6 +237,7 @@ class FlippeningConfig(BaseModel):
     min_confidence: float = 0.60
     reversion_target_pct: float = 0.70
     stop_loss_pct: float = 0.15
+    min_entry_price: float = 0.05
     base_position_usd: float = 100.0
     max_position_usd: float = 500.0
     max_hold_minutes: int = 45
@@ -235,6 +251,7 @@ class FlippeningConfig(BaseModel):
     manual_market_ids: list[ManualOverride] = []
     excluded_market_ids: list[str] = []
     sport_keywords: dict[str, list[str]] = {}
+    min_expected_profit_usd: float = 1.0
     min_hit_rate_pct: float = 0.01
     discovery_alert_cooldown_minutes: int = 60
     ws_telemetry_interval_seconds: int = 60
@@ -247,6 +264,9 @@ class FlippeningConfig(BaseModel):
     tick_retention_days: int = 90
     tick_buffer_size: int = 100
     tick_flush_interval_seconds: float = 5.0
+    min_baseline_price: float = 0.05
+    max_baseline_price: float = 0.95
+    max_deviation_recapture_pct: float = 500.0
 
     @model_validator(mode="after")
     def migrate_sports_to_categories(self) -> FlippeningConfig:
@@ -272,6 +292,48 @@ class FlippeningConfig(BaseModel):
         return self
 
 
+class PolyExecConfig(BaseModel):
+    """Polymarket execution venue configuration."""
+
+    chain_id: int = 137
+    clob_api_url: str = "https://clob.polymarket.com"
+    usdc_contract: str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+
+
+class KalshiExecConfig(BaseModel):
+    """Kalshi execution venue configuration."""
+
+    api_base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
+
+
+class ExecutionConfig(BaseModel):
+    """Configuration for one-click trade execution."""
+
+    enabled: bool = False
+    max_size_usd: float = 100.0
+    max_slippage_pct: float = 0.02
+    price_staleness_seconds: int = 30
+    pct_of_balance: float = 0.02
+    max_pct_per_venue: float = 0.05
+    max_exposure_pct: float = 0.25
+    min_reserve_usd: float = 50.0
+    daily_loss_limit_usd: float = 100.0
+    max_open_positions: int = 5
+    max_per_market_pct: float = 0.10
+    cooldown_after_loss_seconds: int = 300
+    min_book_depth_contracts: int = 20
+    polymarket: PolyExecConfig = PolyExecConfig()
+    kalshi: KalshiExecConfig = KalshiExecConfig()
+
+
+class TicketLifecycleConfig(BaseModel):
+    """Cross-cutting ticket lifecycle configuration."""
+
+    expire_interval_minutes: int = 60
+    max_pending_hours: int = 24
+    retention_days: int = 90
+
+
 class Settings(BaseModel):
     """Top-level application settings.
 
@@ -290,3 +352,6 @@ class Settings(BaseModel):
     trend_alerts: TrendAlertConfig = TrendAlertConfig()
     dashboard: DashboardConfig = DashboardConfig()
     flippening: FlippeningConfig = FlippeningConfig()
+    execution: ExecutionConfig = ExecutionConfig()
+    auto_execution: AutoExecutionConfig = AutoExecutionConfig()
+    ticket_lifecycle: TicketLifecycleConfig = TicketLifecycleConfig()
