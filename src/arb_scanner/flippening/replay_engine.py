@@ -220,6 +220,8 @@ class ReplayEngine:
                         ask,
                         current_baseline,
                     )
+                    if active is None:
+                        event = None
             else:
                 exit_sig = signal_gen.check_exit(update, active)
                 if exit_sig is not None:

@@ -109,6 +109,7 @@ class TestFullPipeline:
             spike_upd.yes_ask,
             state.baseline,
         )
+        assert entry is not None
         assert entry.side == "yes"
         game_mgr.set_active_signal("m1", entry)
 
@@ -152,6 +153,7 @@ class TestFullPipeline:
             spike_upd.yes_ask,
             state.baseline,
         )
+        assert entry is not None
         game_mgr.set_active_signal("m1", entry)
 
         # Further drop below stop loss
@@ -192,6 +194,7 @@ class TestFullPipeline:
             spike_upd.yes_ask,
             state.baseline,
         )
+        assert entry is not None
 
         # No reversion, timeout at 50 minutes
         timeout_upd = _upd(

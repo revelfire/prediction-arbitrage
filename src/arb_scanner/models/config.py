@@ -222,6 +222,7 @@ class FlippeningConfig(BaseModel):
     min_confidence: float = 0.60
     reversion_target_pct: float = 0.70
     stop_loss_pct: float = 0.15
+    min_entry_price: float = 0.05
     base_position_usd: float = 100.0
     max_position_usd: float = 500.0
     max_hold_minutes: int = 45

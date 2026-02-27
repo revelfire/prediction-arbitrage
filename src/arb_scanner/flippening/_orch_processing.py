@@ -153,6 +153,8 @@ async def handle_entry(
         update.yes_ask if state.baseline.yes_price >= state.baseline.no_price else update.no_ask
     )
     entry = signal_gen.create_entry(event, current_ask, state.baseline)
+    if entry is None:
+        return
     event.market_title = state.market_title
     game_mgr.set_active_signal(update.market_id, entry)
 

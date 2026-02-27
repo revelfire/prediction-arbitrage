@@ -103,6 +103,7 @@ class TestCreateEntry:
         bl = _baseline(yes="0.65")
         ev = _event(direction=SpikeDirection.FAVORITE_DROP)
         signal = gen.create_entry(ev, Decimal("0.50"), bl)
+        assert signal is not None
         assert signal.side == "yes"
 
     def test_side_no_when_underdog_rises(self) -> None:
@@ -114,6 +115,7 @@ class TestCreateEntry:
             baseline_yes="0.35",
         )
         signal = gen.create_entry(ev, Decimal("0.55"), bl)
+        assert signal is not None
         assert signal.side == "no"
 
     def test_target_exit_calculation(self) -> None:
@@ -123,6 +125,7 @@ class TestCreateEntry:
         ev = _event()
         entry_ask = Decimal("0.50")
         signal = gen.create_entry(ev, entry_ask, bl)
+        assert signal is not None
         expected_target = Decimal("0.50") + (Decimal("0.65") - Decimal("0.50")) * Decimal("0.70")
         assert signal.target_exit_price == expected_target
 
@@ -132,6 +135,7 @@ class TestCreateEntry:
         bl = _baseline()
         ev = _event()
         signal = gen.create_entry(ev, Decimal("0.50"), bl)
+        assert signal is not None
         expected_stop = Decimal("0.50") * Decimal("0.85")
         assert signal.stop_loss_price == expected_stop
 
@@ -146,6 +150,8 @@ class TestCreateEntry:
         ev_high = _event(confidence="0.95")
         sig_high = gen.create_entry(ev_high, Decimal("0.50"), bl)
 
+        assert sig_low is not None
+        assert sig_high is not None
         assert sig_high.suggested_size_usd > sig_low.suggested_size_usd
 
     def test_size_capped_at_max(self) -> None:
@@ -159,6 +165,7 @@ class TestCreateEntry:
         bl = _baseline()
         ev = _event(confidence="0.95")
         signal = gen.create_entry(ev, Decimal("0.50"), bl)
+        assert signal is not None
         assert signal.suggested_size_usd <= Decimal("200.00")
 
     def test_expected_profit_pct(self) -> None:
@@ -167,8 +174,35 @@ class TestCreateEntry:
         bl = _baseline()
         ev = _event()
         signal = gen.create_entry(ev, Decimal("0.50"), bl)
+        assert signal is not None
         expected = (signal.target_exit_price - signal.entry_price) / signal.entry_price
         assert signal.expected_profit_pct == expected
+
+    def test_rejects_entry_below_min_price(self) -> None:
+        """Entry rejected when current_ask is below min_entry_price."""
+        gen = SignalGenerator(_CONFIG)
+        bl = _baseline()
+        ev = _event()
+        signal = gen.create_entry(ev, Decimal("0.001"), bl)
+        assert signal is None
+
+    def test_accepts_entry_at_min_price(self) -> None:
+        """Entry accepted when current_ask equals min_entry_price."""
+        gen = SignalGenerator(_CONFIG)
+        bl = _baseline()
+        ev = _event()
+        signal = gen.create_entry(ev, Decimal("0.05"), bl)
+        assert signal is not None
+        assert signal.entry_price == Decimal("0.05")
+
+    def test_custom_min_entry_price(self) -> None:
+        """Custom min_entry_price from config is respected."""
+        config = FlippeningConfig(enabled=True, min_entry_price=0.10)
+        gen = SignalGenerator(config)
+        bl = _baseline()
+        ev = _event()
+        assert gen.create_entry(ev, Decimal("0.09"), bl) is None
+        assert gen.create_entry(ev, Decimal("0.10"), bl) is not None
 
 
 class TestCheckExit:

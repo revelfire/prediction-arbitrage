@@ -169,9 +169,7 @@ DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
         "ppv",
         "conor",
         "mcgregor",
-        "jones",
         "adesanya",
-        "pereira",
         "volkanovski",
         "makhachev",
         "o'malley",
@@ -179,8 +177,6 @@ DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
         "topuria",
         "strickland",
         "poirier",
-        "diaz",
-        "paul",
     ],
 }
 
