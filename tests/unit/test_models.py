@@ -385,7 +385,7 @@ class TestExecutionTicketValid:
 class TestExecutionTicketStatusValid:
     """Tests for the status_valid field validator."""
 
-    @pytest.mark.parametrize("status", ["pending", "approved", "expired"])
+    @pytest.mark.parametrize("status", ["pending", "approved", "expired", "executed", "cancelled"])
     def test_valid_statuses(self, status: str) -> None:
         """Verify all accepted status values."""
         ticket = ExecutionTicket(
@@ -398,7 +398,7 @@ class TestExecutionTicketStatusValid:
         )
         assert ticket.status == status
 
-    @pytest.mark.parametrize("status", ["rejected", "cancelled", "active", ""])
+    @pytest.mark.parametrize("status", ["rejected", "active", ""])
     def test_invalid_statuses_rejected(self, status: str) -> None:
         """Verify unknown status values raise a validation error."""
         with pytest.raises(ValidationError, match="status must be one of"):

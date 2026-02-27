@@ -16,7 +16,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arb_scanner.api.app import create_app
-from arb_scanner.api.deps import get_analytics_repo, get_config, get_flip_repo, get_repo
+from arb_scanner.api.deps import (
+    get_analytics_repo,
+    get_config,
+    get_flip_repo,
+    get_repo,
+    get_ticket_repo,
+)
 from arb_scanner.models.analytics import (
     AlertType,
     PairSummary,
@@ -163,10 +169,25 @@ def mock_flip_repo() -> AsyncMock:
 
 
 @pytest.fixture()
+def mock_ticket_repo() -> AsyncMock:
+    """Create a mock TicketRepository with pre-configured async methods."""
+    repo = AsyncMock()
+    repo.get_tickets = AsyncMock(return_value=[])
+    repo.get_ticket = AsyncMock(return_value=None)
+    repo.update_status = AsyncMock()
+    repo.insert_action = AsyncMock()
+    repo.get_actions = AsyncMock(return_value=[])
+    repo.get_summary = AsyncMock(return_value=[])
+    repo.auto_expire = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture()
 def client(
     mock_repo: AsyncMock,
     mock_analytics_repo: AsyncMock,
     mock_flip_repo: AsyncMock,
+    mock_ticket_repo: AsyncMock,
 ) -> TestClient:
     """Build a TestClient with mocked DB and overridden dependencies."""
     config = _test_config()
@@ -179,6 +200,7 @@ def client(
         app.dependency_overrides[get_repo] = lambda: mock_repo
         app.dependency_overrides[get_analytics_repo] = lambda: mock_analytics_repo
         app.dependency_overrides[get_flip_repo] = lambda: mock_flip_repo
+        app.dependency_overrides[get_ticket_repo] = lambda: mock_ticket_repo
         app.dependency_overrides[get_config] = lambda: config
 
         with TestClient(app, raise_server_exceptions=False) as tc:
@@ -389,93 +411,195 @@ class TestMatchRoutes:
 class TestTicketRoutes:
     """Tests for /api/tickets and action endpoints."""
 
-    def test_tickets_pending(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_tickets_pending(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
         """GET /api/tickets?status=pending returns pending tickets."""
-        mock_repo.get_tickets_by_status.return_value = [
-            {"arb_id": "abc123", "status": "pending"},
+        mock_ticket_repo.get_tickets.return_value = [
+            {"arb_id": "abc123", "status": "pending", "leg_1": "{}", "leg_2": "{}"},
         ]
         resp = client.get("/api/tickets?status=pending")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
         assert data[0]["arb_id"] == "abc123"
-        mock_repo.get_tickets_by_status.assert_awaited_once_with("pending", 50)
 
-    def test_tickets_all(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_tickets_all(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
         """GET /api/tickets without status returns all tickets."""
-        mock_repo.get_tickets_by_status.return_value = []
         resp = client.get("/api/tickets")
         assert resp.status_code == 200
-        mock_repo.get_tickets_by_status.assert_awaited_once_with(None, 50)
 
-    def test_tickets_invalid_status(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_tickets_invalid_status(self, client: TestClient) -> None:
         """GET /api/tickets?status=invalid returns 400."""
         resp = client.get("/api/tickets?status=invalid")
         assert resp.status_code == 400
 
-    def test_ticket_detail(self, client: TestClient, mock_repo: AsyncMock) -> None:
-        """GET /api/tickets/{arb_id} returns enriched detail."""
-        mock_repo.get_ticket_detail.return_value = {
+    def test_tickets_category_filter(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """GET /api/tickets?category=nba passes category filter."""
+        resp = client.get("/api/tickets?category=nba")
+        assert resp.status_code == 200
+        mock_ticket_repo.get_tickets.assert_awaited_once()
+
+    def test_tickets_type_filter(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """GET /api/tickets?ticket_type=flippening passes type filter."""
+        resp = client.get("/api/tickets?ticket_type=flippening")
+        assert resp.status_code == 200
+
+    def test_ticket_detail(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """GET /api/tickets/{arb_id} returns detail with actions."""
+        mock_ticket_repo.get_ticket.return_value = {
             "arb_id": "abc123",
-            "leg_1": '{"venue":"polymarket","side":"YES","price":"0.45","size":"100"}',
-            "leg_2": '{"venue":"kalshi","side":"NO","price":"0.52","size":"100"}',
+            "leg_1": '{"action":"BUY YES","price":"0.45"}',
+            "leg_2": '{"action":"SELL YES"}',
             "expected_cost": 97,
             "expected_profit": 3,
             "status": "pending",
+            "ticket_type": "flippening",
+            "category": "nba",
+            "category_type": "sport",
             "created_at": "2026-01-01T00:00:00Z",
-            "poly_event_id": "0xabc",
-            "kalshi_event_id": "TICKER-1",
-            "buy_venue": "polymarket",
-            "sell_venue": "kalshi",
-            "poly_title": "Will X happen?",
-            "kalshi_title": "X by date",
-            "poly_raw_data": '{"slug": "will-x-happen"}',
-            "kalshi_raw_data": "{}",
-            "net_spread_pct": 0.03,
-            "cost_per_contract": 0.97,
-            "gross_profit": 0.03,
-            "net_profit": 0.03,
-            "max_size": 100,
-            "annualized_return": 0.15,
-            "depth_risk": False,
-            "detected_at": "2026-01-01T00:00:00Z",
-            "poly_yes_bid": 0.44,
-            "poly_yes_ask": 0.46,
-            "poly_no_bid": 0.53,
-            "poly_no_ask": 0.55,
-            "poly_volume": 50000,
-            "kalshi_yes_bid": 0.47,
-            "kalshi_yes_ask": 0.49,
-            "kalshi_no_bid": 0.50,
-            "kalshi_no_ask": 0.52,
-            "kalshi_volume": 30000,
+            "market_id": None,
+            "market_title": None,
+            "spike_price": None,
+            "spike_magnitude": None,
+            "confidence": None,
+            "event_detected_at": None,
         }
         resp = client.get("/api/tickets/abc123")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["poly_url"] == "https://polymarket.com/event/will-x-happen"
-        assert data["kalshi_url"] == "https://kalshi.com/markets/TICKER-1"
-        assert data["leg_1"]["venue"] == "polymarket"
+        assert data["arb_id"] == "abc123"
+        assert data["leg_1"]["action"] == "BUY YES"
+        assert "actions" in data
 
-    def test_ticket_detail_not_found(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_ticket_detail_not_found(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
         """GET /api/tickets/{arb_id} returns 404 when not found."""
-        mock_repo.get_ticket_detail.return_value = None
         resp = client.get("/api/tickets/nonexistent")
         assert resp.status_code == 404
 
-    def test_ticket_approve(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_ticket_summary(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """GET /api/tickets/summary returns summary data."""
+        mock_ticket_repo.get_summary.return_value = [
+            {"category": "nba", "total_tickets": 10, "execution_rate": 50.0}
+        ]
+        resp = client.get("/api/tickets/summary?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["total_tickets"] == 10
+
+    def test_ticket_approve(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
         """POST /api/tickets/abc123/approve returns approved status."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "pending",
+        }
         resp = client.post("/api/tickets/abc123/approve")
         assert resp.status_code == 200
         assert resp.json() == {"status": "approved"}
-        mock_repo.update_ticket_status.assert_awaited_once_with("abc123", "approved")
+        mock_ticket_repo.update_status.assert_awaited_once_with("abc123", "approved")
 
-    def test_ticket_expire(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_ticket_approve_not_found(
+        self, client: TestClient, mock_ticket_repo: AsyncMock
+    ) -> None:
+        """POST /api/tickets/xxx/approve returns 404 when not found."""
+        resp = client.post("/api/tickets/xxx/approve")
+        assert resp.status_code == 404
+
+    def test_ticket_approve_invalid_transition(
+        self, client: TestClient, mock_ticket_repo: AsyncMock
+    ) -> None:
+        """POST approve on already expired ticket returns 409."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "expired",
+        }
+        resp = client.post("/api/tickets/abc123/approve")
+        assert resp.status_code == 409
+
+    def test_ticket_expire(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
         """POST /api/tickets/abc123/expire returns expired status."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "pending",
+        }
         resp = client.post("/api/tickets/abc123/expire")
         assert resp.status_code == 200
         assert resp.json() == {"status": "expired"}
-        mock_repo.update_ticket_status.assert_awaited_once_with("abc123", "expired")
+        mock_ticket_repo.update_status.assert_awaited_once_with("abc123", "expired")
+
+    def test_patch_approve(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """PATCH with status=approved transitions pending ticket."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "pending",
+            "leg_1": "{}",
+        }
+        resp = client.patch(
+            "/api/tickets/abc123",
+            json={"status": "approved"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "approved"
+        assert "action_id" in data
+
+    def test_patch_execute_with_data(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """PATCH with status=executed and execution data."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "approved",
+            "leg_1": '{"price":"0.45"}',
+        }
+        resp = client.patch(
+            "/api/tickets/abc123",
+            json={
+                "status": "executed",
+                "actual_entry_price": 0.46,
+                "actual_size_usd": 100,
+                "notes": "Filled at market",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "executed"
+        mock_ticket_repo.insert_action.assert_awaited_once()
+
+    def test_patch_invalid_transition(
+        self, client: TestClient, mock_ticket_repo: AsyncMock
+    ) -> None:
+        """PATCH with invalid transition returns 409."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "expired",
+            "leg_1": "{}",
+        }
+        resp = client.patch(
+            "/api/tickets/abc123",
+            json={"status": "approved"},
+        )
+        assert resp.status_code == 409
+
+    def test_patch_annotate(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """PATCH without status records annotation."""
+        mock_ticket_repo.get_ticket.return_value = {
+            "arb_id": "abc123",
+            "status": "pending",
+            "leg_1": "{}",
+        }
+        resp = client.patch(
+            "/api/tickets/abc123",
+            json={"notes": "Watching this one"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "pending"
+
+    def test_patch_not_found(self, client: TestClient, mock_ticket_repo: AsyncMock) -> None:
+        """PATCH on nonexistent ticket returns 404."""
+        resp = client.patch(
+            "/api/tickets/nonexistent",
+            json={"status": "approved"},
+        )
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

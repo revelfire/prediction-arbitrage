@@ -221,6 +221,8 @@ class FlippeningRepository:
             expected_profit,
             "pending",
             "flippening",
+            event.category or event.sport,
+            event.category_type,
         )
         logger.info("flip_ticket_created", event_id=event.id, side=entry.side)
 

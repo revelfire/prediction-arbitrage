@@ -204,6 +204,8 @@ tr.clickable { cursor: pointer; }
 .badge-pending { background: var(--warning); color: #000; }
 .badge-approved { background: var(--success); color: #000; }
 .badge-expired { background: var(--text-secondary); color: #000; }
+.badge-executed { background: var(--accent); color: #000; }
+.badge-cancelled { background: var(--danger); color: #fff; }
 
 /* Scrollable containers */
 .scroll-container { max-height: 600px; overflow-y: auto; }
@@ -388,3 +390,19 @@ tr.clickable { cursor: pointer; }
     padding: 16px 20px;
     border-top: 1px solid var(--border);
 }
+
+/* Action log in ticket detail */
+.action-log { margin-top: 12px; }
+.action-log-item {
+    display: flex;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.4);
+    font-size: 12px;
+}
+.action-log-item .action-time { color: var(--text-secondary); min-width: 140px; }
+.action-log-item .action-type { font-weight: 600; min-width: 80px; }
+.action-log-item .action-notes { color: var(--text-secondary); }
+
+/* Btn warning for cancel */
+.btn-warning { background: var(--warning); color: #000; }

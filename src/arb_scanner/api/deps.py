@@ -72,6 +72,21 @@ async def get_flip_repo(request: Request) -> Any:
     return FlippeningRepository(db.pool)
 
 
+async def get_ticket_repo(request: Request) -> Any:
+    """Provide a TicketRepository from the app's database pool.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        TicketRepository backed by the shared connection pool.
+    """
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    db = _require_db(request)
+    return TicketRepository(db.pool)
+
+
 async def get_config(request: Request) -> Settings:
     """Provide the application Settings.
 

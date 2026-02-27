@@ -67,6 +67,25 @@ async function postJSON(url) {
     }
 }
 
+async function patchJSON(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            setStatus(`PATCH error ${resp.status}: ${text.substring(0, 120)}`);
+            return null;
+        }
+        return await resp.json();
+    } catch (err) {
+        console.error(`PATCH failed: ${url}`, err);
+        return null;
+    }
+}
+
 function el(id) { return document.getElementById(id); }
 
 function setStatus(msg) {
@@ -311,28 +330,63 @@ async function refreshAlerts() {
 
 // --- Tickets Tab ---
 async function refreshTickets() {
-    const filter = el('ticket-status-filter');
-    const statusParam = filter && filter.value ? `?status=${filter.value}` : '';
-    const data = await fetchJSON(`/api/tickets${statusParam}`);
+    const params = new URLSearchParams();
+    const statusVal = el('ticket-status-filter')?.value;
+    const catVal = el('ticket-category-filter')?.value;
+    const typeVal = el('ticket-type-filter')?.value;
+    if (statusVal) params.set('status', statusVal);
+    if (catVal) params.set('category', catVal);
+    if (typeVal) params.set('ticket_type', typeVal);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+
+    const [data, summary] = await Promise.all([
+        fetchJSON(`/api/tickets${qs}`),
+        fetchJSON('/api/tickets/summary?days=30'),
+    ]);
+
+    // Summary metrics
+    if (summary && Array.isArray(summary) && summary.length > 0) {
+        const totals = summary.reduce((a, r) => ({
+            tickets: a.tickets + (r.total_tickets || 0),
+            executed: a.executed + (r.executed_count || 0),
+            pnl: a.pnl + parseFloat(r.total_pnl || 0),
+            slippage: a.slippage + parseFloat(r.avg_slippage || 0) * (r.executed_count || 0),
+            wins: a.wins + (r.wins || 0),
+            withPnl: a.withPnl + (r.total_with_pnl || 0),
+        }), { tickets: 0, executed: 0, pnl: 0, slippage: 0, wins: 0, withPnl: 0 });
+
+        el('tkt-total').textContent = totals.tickets;
+        el('tkt-exec-rate').textContent = totals.tickets > 0
+            ? (totals.executed / totals.tickets * 100).toFixed(1) + '%' : '-';
+        el('tkt-avg-slippage').textContent = totals.executed > 0
+            ? (totals.slippage / totals.executed).toFixed(4) : '-';
+        el('tkt-win-rate').textContent = totals.withPnl > 0
+            ? (totals.wins / totals.withPnl * 100).toFixed(1) + '%' : '-';
+        el('tkt-total-pnl').textContent = totals.pnl !== 0
+            ? (totals.pnl >= 0 ? '+' : '') + totals.pnl.toFixed(4) : '-';
+    } else {
+        ['tkt-total', 'tkt-exec-rate', 'tkt-avg-slippage', 'tkt-win-rate', 'tkt-total-pnl']
+            .forEach(id => { el(id).textContent = '-'; });
+    }
+
     const tbody = el('tickets-tbody');
     if (!tbody || !data) return;
 
     if (data.length === 0) {
-        const label = filter && filter.value ? filter.value : '';
-        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No ${label} tickets</td></tr>`;
+        const label = statusVal || '';
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No ${label} tickets</td></tr>`;
         return;
     }
 
     tbody.innerHTML = data.map(t => {
-        const actions = t.status === 'pending'
-            ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${t.arb_id}')">Review</button>
-               <button class="btn btn-success btn-sm" onclick="event.stopPropagation(); approveTicket('${t.arb_id}')">Approve</button>
-               <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${t.arb_id}')">Expire</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${t.arb_id}')">View</button>`;
-        const typeBadge = t.ticket_type === 'flippening' ? '<span class="badge badge-pending" style="font-size:0.65rem;margin-left:4px">flip</span>' : '';
+        const leg1 = typeof t.leg_1 === 'string' ? JSON.parse(t.leg_1) : (t.leg_1 || {});
+        const title = leg1.market_title || (t.arb_id || '').substring(0, 16);
+        const actions = ticketActionButtons(t);
         return `
             <tr class="clickable" onclick="openTicketDetail('${t.arb_id}')">
-                <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...${typeBadge}</td>
+                <td title="${t.arb_id}">${title.length > 30 ? title.substring(0, 30) + '...' : title}</td>
+                <td>${t.category ? `<span class="category-badge">${t.category}</span>` : '-'}</td>
+                <td>${t.ticket_type || '-'}</td>
                 <td>${formatUSD(t.expected_cost)}</td>
                 <td>${formatUSD(t.expected_profit)}</td>
                 <td><span class="badge badge-${t.status}">${t.status}</span></td>
@@ -341,6 +395,21 @@ async function refreshTickets() {
             </tr>
         `;
     }).join('');
+}
+
+function ticketActionButtons(t) {
+    const id = t.arb_id;
+    const btns = [];
+    btns.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${id}')">View</button>`);
+    if (t.status === 'pending') {
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); approveTicket('${id}')">Approve</button>`);
+        btns.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${id}')">Expire</button>`);
+    }
+    if (t.status === 'approved') {
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Execute</button>`);
+        btns.push(`<button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); cancelTicket('${id}')">Cancel</button>`);
+    }
+    return btns.join(' ');
 }
 
 async function openTicketDetail(arbId) {
@@ -356,24 +425,19 @@ async function openTicketDetail(arbId) {
         return;
     }
 
-    const isFlip = d.ticket_type === 'flippening';
     const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
     const leg2 = typeof d.leg_2 === 'string' ? JSON.parse(d.leg_2) : (d.leg_2 || {});
-
-    const actionBtns = d.status === 'pending'
-        ? `<div class="modal-actions">
-               <button class="btn btn-success" onclick="approveTicket('${d.arb_id}'); closeTicketModal();">Approve</button>
-               <button class="btn btn-danger" onclick="expireTicket('${d.arb_id}'); closeTicketModal();">Expire</button>
-           </div>`
-        : `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
+    const isFlip = d.ticket_type === 'flippening';
+    const actionBtns = buildDetailActions(d);
+    const actionsLog = renderActionLog(d.actions || []);
 
     if (isFlip) {
         body.innerHTML = `
             <div class="detail-section">
                 <h4>Flippening Trade</h4>
                 <div class="detail-grid">
-                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${leg1.market_title || 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Sport</span><span class="detail-value">${leg1.sport || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${leg1.market_title || d.market_title || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || leg1.sport || 'N/A'}</span></div>
                 </div>
             </div>
             <div class="detail-section">
@@ -399,63 +463,28 @@ async function openTicketDetail(arbId) {
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
                 </div>
             </div>
+            ${actionsLog}
             ${actionBtns}
         `;
     } else {
-        const spread = d.net_spread_pct != null ? formatPct(d.net_spread_pct) : 'N/A';
-        const annual = d.annualized_return != null ? formatPct(d.annualized_return) : 'N/A';
-        const depth = d.depth_risk ? 'Low liquidity' : 'OK';
-        const polyLink = d.poly_url
-            ? `<a class="venue-link" href="${d.poly_url}" target="_blank" rel="noopener">${d.poly_title || d.poly_event_id || 'View on Polymarket'}</a>`
-            : (d.poly_title || d.poly_event_id || 'N/A');
-        const kalshiLink = d.kalshi_url
-            ? `<a class="venue-link" href="${d.kalshi_url}" target="_blank" rel="noopener">${d.kalshi_title || d.kalshi_event_id || 'View on Kalshi'}</a>`
-            : (d.kalshi_title || d.kalshi_event_id || 'N/A');
-
         body.innerHTML = `
             <div class="detail-section">
-                <h4>Markets</h4>
+                <h4>Arbitrage Ticket</h4>
                 <div class="detail-grid">
-                    <div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${polyLink}</span></div>
-                    <div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${kalshiLink}</span></div>
-                </div>
-            </div>
-            <div class="detail-section">
-                <h4>Opportunity</h4>
-                <div class="detail-grid">
-                    <div class="detail-row"><span class="detail-label">Buy venue</span><span class="detail-value">${d.buy_venue || 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Sell venue</span><span class="detail-value">${d.sell_venue || 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Net spread</span><span class="detail-value">${spread}</span></div>
-                    <div class="detail-row"><span class="detail-label">Annualized</span><span class="detail-value">${annual}</span></div>
-                    <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(d.max_size)}</span></div>
-                    <div class="detail-row"><span class="detail-label">Depth risk</span><span class="detail-value">${depth}</span></div>
-                    <div class="detail-row"><span class="detail-label">Cost/contract</span><span class="detail-value">${formatUSD(d.cost_per_contract)}</span></div>
-                    <div class="detail-row"><span class="detail-label">Net profit/contract</span><span class="detail-value">${formatUSD(d.net_profit)}</span></div>
-                </div>
-            </div>
-            <div class="detail-section">
-                <h4>Current Prices</h4>
-                <div class="detail-grid">
-                    <div class="detail-row"><span class="detail-label">Poly YES</span><span class="detail-value">${d.poly_yes_bid != null ? parseFloat(d.poly_yes_bid).toFixed(3) + ' / ' + parseFloat(d.poly_yes_ask).toFixed(3) : 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Kalshi YES</span><span class="detail-value">${d.kalshi_yes_bid != null ? parseFloat(d.kalshi_yes_bid).toFixed(3) + ' / ' + parseFloat(d.kalshi_yes_ask).toFixed(3) : 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Poly volume 24h</span><span class="detail-value">${d.poly_volume != null ? formatUSD(d.poly_volume) : 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Kalshi volume 24h</span><span class="detail-value">${d.kalshi_volume != null ? formatUSD(d.kalshi_volume) : 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Arb ID</span><span class="detail-value">${d.arb_id}</span></div>
+                    <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || '-'}</span></div>
                 </div>
             </div>
             <div class="detail-section">
                 <h4>Execution Legs</h4>
                 <div class="detail-grid">
                     <div class="leg-card">
-                        <div class="leg-title">Leg 1 - Buy ${leg1.side || ''}</div>
-                        <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg1.venue || 'N/A'}</span></div>
-                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
-                        <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg1.size)}</span></div>
+                        <div class="leg-title">Leg 1</div>
+                        ${Object.entries(leg1).map(([k,v]) => `<div class="detail-row"><span class="detail-label">${k}</span><span class="detail-value">${v}</span></div>`).join('')}
                     </div>
                     <div class="leg-card">
-                        <div class="leg-title">Leg 2 - Buy ${leg2.side || ''}</div>
-                        <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg2.venue || 'N/A'}</span></div>
-                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg2.price)}</span></div>
-                        <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg2.size)}</span></div>
+                        <div class="leg-title">Leg 2</div>
+                        ${Object.entries(leg2).map(([k,v]) => `<div class="detail-row"><span class="detail-label">${k}</span><span class="detail-value">${v}</span></div>`).join('')}
                     </div>
                 </div>
             </div>
@@ -464,13 +493,42 @@ async function openTicketDetail(arbId) {
                 <div class="detail-grid">
                     <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
                     <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
-                    <div class="detail-row"><span class="detail-label">Detected</span><span class="detail-value">${formatTime(d.detected_at)}</span></div>
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
                 </div>
             </div>
+            ${actionsLog}
             ${actionBtns}
         `;
     }
+}
+
+function buildDetailActions(d) {
+    const id = d.arb_id;
+    const btns = [];
+    if (d.status === 'pending') {
+        btns.push(`<button class="btn btn-success" onclick="approveTicket('${id}'); closeTicketModal();">Approve</button>`);
+        btns.push(`<button class="btn btn-danger" onclick="expireTicket('${id}'); closeTicketModal();">Expire</button>`);
+    } else if (d.status === 'approved') {
+        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Execute</button>`);
+        btns.push(`<button class="btn btn-warning" onclick="cancelTicket('${id}'); closeTicketModal();">Cancel</button>`);
+    }
+    btns.push(`<button class="btn btn-primary" onclick="addAnnotation('${id}')">Add Note</button>`);
+    if (btns.length === 0) return `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
+    return `<div class="modal-actions">${btns.join('')}</div>`;
+}
+
+function renderActionLog(actions) {
+    if (!actions || actions.length === 0) return '';
+    const items = actions.map(a => `
+        <div class="action-log-item">
+            <span class="action-time">${formatTime(a.created_at)}</span>
+            <span class="action-type badge badge-${a.action === 'execute' ? 'executed' : a.action === 'approve' ? 'approved' : a.action === 'cancel' ? 'cancelled' : 'pending'}">${a.action}</span>
+            ${a.actual_entry_price ? `<span>Entry: ${formatUSD(a.actual_entry_price)}</span>` : ''}
+            ${a.slippage ? `<span>Slip: ${parseFloat(a.slippage).toFixed(4)}</span>` : ''}
+            ${a.notes ? `<span class="action-notes">${a.notes}</span>` : ''}
+        </div>
+    `).join('');
+    return `<div class="detail-section"><h4>Action Log</h4><div class="action-log">${items}</div></div>`;
 }
 
 function closeTicketModal() {
@@ -486,6 +544,47 @@ async function approveTicket(arbId) {
 async function expireTicket(arbId) {
     const result = await postJSON(`/api/tickets/${encodeURIComponent(arbId)}/expire`);
     if (result) refreshTickets();
+}
+
+function openExecuteModal(arbId) {
+    el('exec-arb-id').value = arbId;
+    el('exec-entry-price').value = '';
+    el('exec-size-usd').value = '';
+    el('exec-notes').value = '';
+    el('execute-modal').style.display = 'flex';
+}
+
+function closeExecuteModal() {
+    el('execute-modal').style.display = 'none';
+}
+
+async function submitExecution() {
+    const arbId = el('exec-arb-id').value;
+    const body = { status: 'executed' };
+    const ep = el('exec-entry-price').value;
+    const sz = el('exec-size-usd').value;
+    const notes = el('exec-notes').value;
+    if (ep) body.actual_entry_price = parseFloat(ep);
+    if (sz) body.actual_size_usd = parseFloat(sz);
+    if (notes) body.notes = notes;
+    const result = await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, body);
+    closeExecuteModal();
+    if (result) refreshTickets();
+}
+
+async function cancelTicket(arbId) {
+    const notes = prompt('Reason for cancellation (optional):') || '';
+    const result = await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, {
+        status: 'cancelled', notes: notes
+    });
+    if (result) refreshTickets();
+}
+
+async function addAnnotation(arbId) {
+    const notes = prompt('Add a note to this ticket:');
+    if (notes === null) return;
+    await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, { notes: notes });
+    openTicketDetail(arbId);
 }
 
 // --- Flippenings Tab ---
@@ -1061,18 +1160,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const alertFilter = el('alert-type-filter');
     if (alertFilter) alertFilter.addEventListener('change', refreshAlerts);
 
-    // Ticket status filter
+    // Ticket filters
     const ticketFilter = el('ticket-status-filter');
     if (ticketFilter) ticketFilter.addEventListener('change', refreshTickets);
+    const ticketCatFilter = el('ticket-category-filter');
+    if (ticketCatFilter) ticketCatFilter.addEventListener('change', refreshTickets);
+    const ticketTypeFilter = el('ticket-type-filter');
+    if (ticketTypeFilter) ticketTypeFilter.addEventListener('change', refreshTickets);
 
-    // Close modal on Escape key or overlay click
+    // Close modals on Escape key or overlay click
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeTicketModal();
+        if (e.key === 'Escape') { closeTicketModal(); closeExecuteModal(); }
     });
     const modalOverlay = el('ticket-modal');
     if (modalOverlay) {
         modalOverlay.addEventListener('click', (e) => {
             if (e.target === modalOverlay) closeTicketModal();
+        });
+    }
+    const execOverlay = el('execute-modal');
+    if (execOverlay) {
+        execOverlay.addEventListener('click', (e) => {
+            if (e.target === execOverlay) closeExecuteModal();
         });
     }
 
