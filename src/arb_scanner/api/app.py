@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from arb_scanner.models.config import Settings
@@ -204,13 +204,23 @@ def create_app(
     app.state.no_db = no_db
     app.state.flip_watch = flip_watch
 
+    # Bearer token auth (must be added before static files mount)
+    from arb_scanner.api.auth import BearerTokenMiddleware
+
+    app.add_middleware(BearerTokenMiddleware, token=config.dashboard.auth_token)
+
     # Static files
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     @app.get("/")
-    async def root() -> FileResponse:
-        """Serve the dashboard HTML."""
-        return FileResponse(str(_STATIC_DIR / "index.html"))
+    async def root() -> HTMLResponse:
+        """Serve the dashboard HTML with optional auth token meta tag."""
+        html = (_STATIC_DIR / "index.html").read_text()
+        token = config.dashboard.auth_token
+        if token:
+            meta_tag = f'<meta name="api-token" content="{token}">'
+            html = html.replace("</head>", f"    {meta_tag}\n</head>", 1)
+        return HTMLResponse(html)
 
     # API route modules
     from arb_scanner.api.routes_alerts import router as alerts_router

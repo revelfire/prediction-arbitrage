@@ -1,0 +1,84 @@
+services:
+  # PostgreSQL 15 with pgvector extension
+  db:
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /mnt/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arb_scanner}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Run database migrations on startup (exits after completion)
+  migrate:
+    image: ghcr.io/revelfire/prediction-arbitrage:latest
+    command: ["uv", "run", "arb-scanner", "migrate"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Web dashboard + REST API + embedded flip-watch engine
+  dashboard:
+    image: ghcr.io/revelfire/prediction-arbitrage:latest
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--flip-watch"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ${KALSHI_RSA_PRIVATE_KEY_PATH:-/dev/null}:/app/kalshi_key.pem:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Continuous scanner (watch mode with webhook alerts)
+  scanner:
+    image: ghcr.io/revelfire/prediction-arbitrage:latest
+    command: ["uv", "run", "arb-scanner", "watch", "--interval", "${SCAN_INTERVAL:-60}"]
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot scan (run manually with: docker compose run --rm scan)
+  scan:
+    image: ghcr.io/revelfire/prediction-arbitrage:latest
+    command: ["uv", "run", "arb-scanner", "scan"]
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles:
+      - tools

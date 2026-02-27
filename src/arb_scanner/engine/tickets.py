@@ -27,7 +27,7 @@ def _market_url(market: Market) -> str:
         slug = str(market.raw_data.get("slug", ""))
         return f"https://polymarket.com/event/{slug}" if slug else ""
     ticker = str(market.raw_data.get("event_ticker", market.event_id))
-    return f"https://kalshi.com/markets/{ticker}" if ticker else ""
+    return f"https://kalshi.com/events/{ticker}" if ticker else ""
 
 
 def _build_leg(

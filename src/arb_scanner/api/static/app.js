@@ -15,6 +15,14 @@ let tickerSparklines = {};
 let wsThroughputChart = null;
 let wsSchemaTrendChart = null;
 
+// --- Auth ---
+const _apiToken = document.querySelector('meta[name="api-token"]')?.content || '';
+function authHeaders(extra = {}) {
+    const h = { ...extra };
+    if (_apiToken) h['Authorization'] = `Bearer ${_apiToken}`;
+    return h;
+}
+
 // --- Helpers ---
 function formatPct(val) {
     if (val == null) return 'N/A';
@@ -40,7 +48,7 @@ function shortTime(iso) {
 
 async function fetchJSON(url) {
     try {
-        const resp = await fetch(url);
+        const resp = await fetch(url, { headers: authHeaders() });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
             const detail = body ? `: ${body.substring(0, 120)}` : '';
@@ -58,7 +66,7 @@ async function fetchJSON(url) {
 
 async function postJSON(url) {
     try {
-        const resp = await fetch(url, { method: 'POST' });
+        const resp = await fetch(url, { method: 'POST', headers: authHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return await resp.json();
     } catch (err) {
@@ -71,7 +79,7 @@ async function patchJSON(url, body) {
     try {
         const resp = await fetch(url, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body),
         });
         if (!resp.ok) {
@@ -416,8 +424,10 @@ function ticketActionButtons(t) {
         btns.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${id}')">Expire</button>`);
     }
     if (t.status === 'approved') {
-        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
-        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
+        if (_execReady) {
+            btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
+            btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
+        }
         btns.push(`<button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); cancelTicket('${id}')">Cancel</button>`);
     }
     return btns.join(' ');
@@ -538,8 +548,10 @@ function buildDetailActions(d) {
         btns.push(`<button class="btn btn-success" onclick="approveTicket('${id}'); closeTicketModal();">Approve</button>`);
         btns.push(`<button class="btn btn-danger" onclick="expireTicket('${id}'); closeTicketModal();">Expire</button>`);
     } else if (d.status === 'approved') {
-        btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
-        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
+        if (_execReady) {
+            btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
+            btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
+        }
         btns.push(`<button class="btn btn-warning" onclick="cancelTicket('${id}'); closeTicketModal();">Cancel</button>`);
     }
     btns.push(`<button class="btn btn-primary" onclick="addAnnotation('${id}')">Add Note</button>`);
@@ -618,16 +630,14 @@ async function addAnnotation(arbId) {
 }
 
 // --- Execution Engine ---
+let _execReady = false;
+
 async function refreshExecStatus() {
     const data = await fetchJSON('/api/execution/status');
     const ind = el('exec-status-indicator');
+    _execReady = !!(data && data.enabled && data.initialised);
     if (!ind) return;
-    if (!data) {
-        ind.textContent = 'EXEC OFF';
-        ind.className = 'exec-indicator exec-disabled';
-        return;
-    }
-    if (data.enabled && data.initialised) {
+    if (_execReady) {
         ind.textContent = 'EXEC READY';
         ind.className = 'exec-indicator exec-ready';
     } else {
@@ -807,7 +817,8 @@ const TICKER_MAX_RECONNECT_DELAY = 30000;
 
 function initTickerSSE() {
     if (tickerSource) { tickerSource.close(); tickerSource = null; }
-    tickerSource = new EventSource('/api/flippenings/price-stream');
+    const sseUrl = _apiToken ? `/api/flippenings/price-stream?token=${_apiToken}` : '/api/flippenings/price-stream';
+    tickerSource = new EventSource(sseUrl);
     tickerSource.addEventListener('status', function(e) {
         tickerReconnectDelay = 1000;
         const data = JSON.parse(e.data);

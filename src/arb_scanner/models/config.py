@@ -146,6 +146,7 @@ class DashboardConfig(BaseModel):
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
+    auth_token: str | None = None
 
 
 class ConfidenceWeights(BaseModel):

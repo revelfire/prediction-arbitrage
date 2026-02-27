@@ -1,0 +1,190 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - s3cmd
+
+write_files:
+  - path: /opt/arb-scanner/docker-compose.prod.yml
+    permissions: "0644"
+    content: |
+      services:
+        db:
+          image: pgvector/pgvector:pg15
+          restart: unless-stopped
+          env_file: .env
+          volumes:
+            - /mnt/pgdata:/var/lib/postgresql/data
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-arb_scanner}"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
+          logging:
+            driver: json-file
+            options:
+              max-size: "10m"
+              max-file: "3"
+        migrate:
+          image: ghcr.io/revelfire/prediction-arbitrage:latest
+          command: ["uv", "run", "arb-scanner", "migrate"]
+          env_file: .env
+          depends_on:
+            db:
+              condition: service_healthy
+          restart: "no"
+        dashboard:
+          image: ghcr.io/revelfire/prediction-arbitrage:latest
+          command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--flip-watch"]
+          ports:
+            - "127.0.0.1:8000:8000"
+          env_file: .env
+          volumes:
+            - ./config.yaml:/app/config.yaml:ro
+          depends_on:
+            db:
+              condition: service_healthy
+            migrate:
+              condition: service_completed_successfully
+          restart: unless-stopped
+          logging:
+            driver: json-file
+            options:
+              max-size: "10m"
+              max-file: "3"
+        scanner:
+          image: ghcr.io/revelfire/prediction-arbitrage:latest
+          command: ["uv", "run", "arb-scanner", "watch", "--interval", "$${SCAN_INTERVAL:-60}"]
+          env_file: .env
+          volumes:
+            - ./config.yaml:/app/config.yaml:ro
+          depends_on:
+            db:
+              condition: service_healthy
+            migrate:
+              condition: service_completed_successfully
+          restart: unless-stopped
+          logging:
+            driver: json-file
+            options:
+              max-size: "10m"
+              max-file: "3"
+
+  - path: /opt/arb-scanner/.env
+    permissions: "0600"
+    content: |
+      # Replace these values with your actual secrets
+      POSTGRES_USER=arb_scanner
+      POSTGRES_PASSWORD=CHANGE_ME
+      POSTGRES_DB=arb_scanner
+      DATABASE_URL=postgresql://arb_scanner:CHANGE_ME@db:5432/arb_scanner
+      ANTHROPIC_API_KEY=
+      SCAN_INTERVAL=60
+
+  - path: /opt/arb-scanner/backup.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      BACKUP_DIR="/tmp/arb-backup"
+      TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+      DAY_OF_WEEK=$(date +%u)
+      FILENAME="arb_scanner_$${TIMESTAMP}.sql.gz"
+
+      mkdir -p "$BACKUP_DIR"
+
+      # Dump and compress
+      docker compose -f /opt/arb-scanner/docker-compose.prod.yml exec -T db \
+        pg_dump -U arb_scanner arb_scanner | gzip > "$${BACKUP_DIR}/$${FILENAME}"
+
+      # Verify non-empty
+      if [ ! -s "$${BACKUP_DIR}/$${FILENAME}" ]; then
+        echo "ERROR: Empty backup file"
+        exit 1
+      fi
+
+      # Upload to Hetzner Object Storage
+      s3cmd put "$${BACKUP_DIR}/$${FILENAME}" "s3://arb-scanner-backups/daily/$${FILENAME}" 2>/dev/null || \
+        echo "WARN: s3cmd upload failed (configure s3cmd first)"
+
+      # Keep Sunday backups as weekly
+      if [ "$DAY_OF_WEEK" = "7" ]; then
+        s3cmd put "$${BACKUP_DIR}/$${FILENAME}" "s3://arb-scanner-backups/weekly/$${FILENAME}" 2>/dev/null || true
+      fi
+
+      # Clean up local temp
+      rm -f "$${BACKUP_DIR}/$${FILENAME}"
+
+      # Rotate remote: delete daily backups older than 7 days
+      CUTOFF=$(date -d '7 days ago' +%Y%m%d 2>/dev/null || date -v-7d +%Y%m%d 2>/dev/null || echo "")
+      if [ -n "$CUTOFF" ]; then
+        s3cmd ls "s3://arb-scanner-backups/daily/" 2>/dev/null | while read -r line; do
+          REMOTE_FILE=$(echo "$line" | awk '{print $NF}')
+          REMOTE_DATE=$(echo "$REMOTE_FILE" | grep -oP '\d{8}' | head -1 || true)
+          if [ -n "$REMOTE_DATE" ] && [ "$REMOTE_DATE" -lt "$CUTOFF" ] 2>/dev/null; then
+            s3cmd del "$REMOTE_FILE" 2>/dev/null || true
+          fi
+        done
+      fi
+
+      # Rotate remote: delete weekly backups older than 28 days
+      WEEKLY_CUTOFF=$(date -d '28 days ago' +%Y%m%d 2>/dev/null || date -v-28d +%Y%m%d 2>/dev/null || echo "")
+      if [ -n "$WEEKLY_CUTOFF" ]; then
+        s3cmd ls "s3://arb-scanner-backups/weekly/" 2>/dev/null | while read -r line; do
+          REMOTE_FILE=$(echo "$line" | awk '{print $NF}')
+          REMOTE_DATE=$(echo "$REMOTE_FILE" | grep -oP '\d{8}' | head -1 || true)
+          if [ -n "$REMOTE_DATE" ] && [ "$REMOTE_DATE" -lt "$WEEKLY_CUTOFF" ] 2>/dev/null; then
+            s3cmd del "$REMOTE_FILE" 2>/dev/null || true
+          fi
+        done
+      fi
+
+      echo "$(date -Iseconds) Backup complete: $${FILENAME}"
+
+runcmd:
+  # Install Docker CE
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+  # Install and configure Tailscale
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --auth-key=${tailscale_auth_key} --hostname=arb-scanner
+
+  # Mount Hetzner Volume (auto-mounted by hcloud, ensure correct mount point)
+  - mkdir -p /mnt/pgdata
+  - |
+    VOLUME_DEV=$(lsblk -ndo NAME,TYPE | grep disk | awk '{print $1}' | tail -1)
+    if [ -n "$VOLUME_DEV" ] && [ -b "/dev/$VOLUME_DEV" ]; then
+      # Check if already formatted
+      if ! blkid "/dev/$VOLUME_DEV" | grep -q ext4; then
+        mkfs.ext4 "/dev/$VOLUME_DEV"
+      fi
+      mount "/dev/$VOLUME_DEV" /mnt/pgdata || true
+      grep -q "$VOLUME_DEV" /etc/fstab || echo "/dev/$VOLUME_DEV /mnt/pgdata ext4 defaults 0 2" >> /etc/fstab
+    fi
+  - chown -R 999:999 /mnt/pgdata  # PostgreSQL container UID
+
+  # Login to GHCR
+  - echo "${ghcr_token}" | docker login ghcr.io -u ${ghcr_username} --password-stdin
+
+  # SSH hardening
+  - sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - systemctl restart sshd
+
+  # Set up backup cron (daily at 03:00 UTC)
+  - echo "0 3 * * * root /opt/arb-scanner/backup.sh >> /var/log/arb-backup.log 2>&1" > /etc/cron.d/arb-backup
+  - chmod 644 /etc/cron.d/arb-backup
+
+  # Pull images (services won't start until .env has real secrets)
+  - cd /opt/arb-scanner && docker compose -f docker-compose.prod.yml pull
