@@ -55,18 +55,23 @@ def _get_prices(
     return opp.kalshi_market.yes_ask, opp.poly_market.no_ask
 
 
-def generate_ticket(opp: ArbOpportunity) -> ExecutionTicket:
+def generate_ticket(opp: ArbOpportunity) -> ExecutionTicket | None:
     """Generate an execution ticket from an arb opportunity.
 
     Creates a two-leg ticket: leg_1 buys YES on the buy venue,
-    leg_2 buys NO on the sell venue.
+    leg_2 buys NO on the sell venue. Returns None if expected
+    profit is not positive (fees exceed the spread).
 
     Args:
         opp: The arb opportunity to convert into a ticket.
 
     Returns:
-        An ExecutionTicket with pending status for operator review.
+        An ExecutionTicket with pending status, or None if unprofitable.
     """
+    expected_profit = opp.net_profit * opp.max_size
+    if expected_profit <= Decimal("0"):
+        logger.debug("ticket_skipped_negative_profit", arb_id=opp.id)
+        return None
     yes_price, no_price = _get_prices(opp)
     leg_1 = _build_leg(opp.buy_venue, "YES", yes_price, opp.max_size)
     leg_2 = _build_leg(opp.sell_venue, "NO", no_price, opp.max_size)
@@ -75,7 +80,7 @@ def generate_ticket(opp: ArbOpportunity) -> ExecutionTicket:
         leg_1=leg_1,
         leg_2=leg_2,
         expected_cost=opp.cost_per_contract * opp.max_size,
-        expected_profit=opp.net_profit * opp.max_size,
+        expected_profit=expected_profit,
         status="pending",
     )
     logger.info(

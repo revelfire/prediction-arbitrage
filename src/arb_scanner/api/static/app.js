@@ -329,9 +329,10 @@ async function refreshTickets() {
                <button class="btn btn-success btn-sm" onclick="event.stopPropagation(); approveTicket('${t.arb_id}')">Approve</button>
                <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${t.arb_id}')">Expire</button>`
             : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTicketDetail('${t.arb_id}')">View</button>`;
+        const typeBadge = t.ticket_type === 'flippening' ? '<span class="badge badge-pending" style="font-size:0.65rem;margin-left:4px">flip</span>' : '';
         return `
             <tr class="clickable" onclick="openTicketDetail('${t.arb_id}')">
-                <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...</td>
+                <td title="${t.arb_id}">${(t.arb_id || '').substring(0, 12)}...${typeBadge}</td>
                 <td>${formatUSD(t.expected_cost)}</td>
                 <td>${formatUSD(t.expected_profit)}</td>
                 <td><span class="badge badge-${t.status}">${t.status}</span></td>
@@ -355,17 +356,7 @@ async function openTicketDetail(arbId) {
         return;
     }
 
-    const spread = d.net_spread_pct != null ? formatPct(d.net_spread_pct) : 'N/A';
-    const annual = d.annualized_return != null ? formatPct(d.annualized_return) : 'N/A';
-    const depth = d.depth_risk ? 'Low liquidity' : 'OK';
-
-    const polyLink = d.poly_url
-        ? `<a class="venue-link" href="${d.poly_url}" target="_blank" rel="noopener">${d.poly_title || d.poly_event_id || 'View on Polymarket'}</a>`
-        : (d.poly_title || d.poly_event_id || 'N/A');
-    const kalshiLink = d.kalshi_url
-        ? `<a class="venue-link" href="${d.kalshi_url}" target="_blank" rel="noopener">${d.kalshi_title || d.kalshi_event_id || 'View on Kalshi'}</a>`
-        : (d.kalshi_title || d.kalshi_event_id || 'N/A');
-
+    const isFlip = d.ticket_type === 'flippening';
     const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
     const leg2 = typeof d.leg_2 === 'string' ? JSON.parse(d.leg_2) : (d.leg_2 || {});
 
@@ -376,64 +367,110 @@ async function openTicketDetail(arbId) {
            </div>`
         : `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
 
-    body.innerHTML = `
-        <div class="detail-section">
-            <h4>Markets</h4>
-            <div class="detail-grid">
-                <div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${polyLink}</span></div>
-                <div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${kalshiLink}</span></div>
-            </div>
-        </div>
-        <div class="detail-section">
-            <h4>Opportunity</h4>
-            <div class="detail-grid">
-                <div class="detail-row"><span class="detail-label">Buy venue</span><span class="detail-value">${d.buy_venue || 'N/A'}</span></div>
-                <div class="detail-row"><span class="detail-label">Sell venue</span><span class="detail-value">${d.sell_venue || 'N/A'}</span></div>
-                <div class="detail-row"><span class="detail-label">Net spread</span><span class="detail-value">${spread}</span></div>
-                <div class="detail-row"><span class="detail-label">Annualized</span><span class="detail-value">${annual}</span></div>
-                <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(d.max_size)}</span></div>
-                <div class="detail-row"><span class="detail-label">Depth risk</span><span class="detail-value">${depth}</span></div>
-                <div class="detail-row"><span class="detail-label">Cost/contract</span><span class="detail-value">${formatUSD(d.cost_per_contract)}</span></div>
-                <div class="detail-row"><span class="detail-label">Net profit/contract</span><span class="detail-value">${formatUSD(d.net_profit)}</span></div>
-            </div>
-        </div>
-        <div class="detail-section">
-            <h4>Current Prices</h4>
-            <div class="detail-grid">
-                <div class="detail-row"><span class="detail-label">Poly YES</span><span class="detail-value">${d.poly_yes_bid != null ? parseFloat(d.poly_yes_bid).toFixed(3) + ' / ' + parseFloat(d.poly_yes_ask).toFixed(3) : 'N/A'}</span></div>
-                <div class="detail-row"><span class="detail-label">Kalshi YES</span><span class="detail-value">${d.kalshi_yes_bid != null ? parseFloat(d.kalshi_yes_bid).toFixed(3) + ' / ' + parseFloat(d.kalshi_yes_ask).toFixed(3) : 'N/A'}</span></div>
-                <div class="detail-row"><span class="detail-label">Poly volume 24h</span><span class="detail-value">${d.poly_volume != null ? formatUSD(d.poly_volume) : 'N/A'}</span></div>
-                <div class="detail-row"><span class="detail-label">Kalshi volume 24h</span><span class="detail-value">${d.kalshi_volume != null ? formatUSD(d.kalshi_volume) : 'N/A'}</span></div>
-            </div>
-        </div>
-        <div class="detail-section">
-            <h4>Execution Legs</h4>
-            <div class="detail-grid">
-                <div class="leg-card">
-                    <div class="leg-title">Leg 1 - Buy ${leg1.side || ''}</div>
-                    <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg1.venue || 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
-                    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg1.size)}</span></div>
-                </div>
-                <div class="leg-card">
-                    <div class="leg-title">Leg 2 - Buy ${leg2.side || ''}</div>
-                    <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg2.venue || 'N/A'}</span></div>
-                    <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg2.price)}</span></div>
-                    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg2.size)}</span></div>
+    if (isFlip) {
+        body.innerHTML = `
+            <div class="detail-section">
+                <h4>Flippening Trade</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${leg1.market_title || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Sport</span><span class="detail-value">${leg1.sport || 'N/A'}</span></div>
                 </div>
             </div>
-        </div>
-        <div class="detail-section">
-            <h4>Ticket</h4>
-            <div class="detail-grid">
-                <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
-                <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
-                <div class="detail-row"><span class="detail-label">Detected</span><span class="detail-value">${formatTime(d.detected_at)}</span></div>
-                <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+            <div class="detail-section">
+                <h4>Execution Legs</h4>
+                <div class="detail-grid">
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 1 - ${leg1.action || 'Entry'}</div>
+                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
+                    </div>
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 2 - ${leg2.action || 'Exit'}</div>
+                        <div class="detail-row"><span class="detail-label">Target</span><span class="detail-value">${formatUSD(leg2.target_price)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Stop loss</span><span class="detail-value">${formatUSD(leg2.stop_loss)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Max hold</span><span class="detail-value">${leg2.max_hold_minutes || 'N/A'} min</span></div>
+                    </div>
+                </div>
             </div>
-        </div>
-        ${actionBtns}
-    `;
+            <div class="detail-section">
+                <h4>Ticket</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+                </div>
+            </div>
+            ${actionBtns}
+        `;
+    } else {
+        const spread = d.net_spread_pct != null ? formatPct(d.net_spread_pct) : 'N/A';
+        const annual = d.annualized_return != null ? formatPct(d.annualized_return) : 'N/A';
+        const depth = d.depth_risk ? 'Low liquidity' : 'OK';
+        const polyLink = d.poly_url
+            ? `<a class="venue-link" href="${d.poly_url}" target="_blank" rel="noopener">${d.poly_title || d.poly_event_id || 'View on Polymarket'}</a>`
+            : (d.poly_title || d.poly_event_id || 'N/A');
+        const kalshiLink = d.kalshi_url
+            ? `<a class="venue-link" href="${d.kalshi_url}" target="_blank" rel="noopener">${d.kalshi_title || d.kalshi_event_id || 'View on Kalshi'}</a>`
+            : (d.kalshi_title || d.kalshi_event_id || 'N/A');
+
+        body.innerHTML = `
+            <div class="detail-section">
+                <h4>Markets</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${polyLink}</span></div>
+                    <div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${kalshiLink}</span></div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Opportunity</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Buy venue</span><span class="detail-value">${d.buy_venue || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Sell venue</span><span class="detail-value">${d.sell_venue || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Net spread</span><span class="detail-value">${spread}</span></div>
+                    <div class="detail-row"><span class="detail-label">Annualized</span><span class="detail-value">${annual}</span></div>
+                    <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(d.max_size)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Depth risk</span><span class="detail-value">${depth}</span></div>
+                    <div class="detail-row"><span class="detail-label">Cost/contract</span><span class="detail-value">${formatUSD(d.cost_per_contract)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Net profit/contract</span><span class="detail-value">${formatUSD(d.net_profit)}</span></div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Current Prices</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Poly YES</span><span class="detail-value">${d.poly_yes_bid != null ? parseFloat(d.poly_yes_bid).toFixed(3) + ' / ' + parseFloat(d.poly_yes_ask).toFixed(3) : 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Kalshi YES</span><span class="detail-value">${d.kalshi_yes_bid != null ? parseFloat(d.kalshi_yes_bid).toFixed(3) + ' / ' + parseFloat(d.kalshi_yes_ask).toFixed(3) : 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Poly volume 24h</span><span class="detail-value">${d.poly_volume != null ? formatUSD(d.poly_volume) : 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Kalshi volume 24h</span><span class="detail-value">${d.kalshi_volume != null ? formatUSD(d.kalshi_volume) : 'N/A'}</span></div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Execution Legs</h4>
+                <div class="detail-grid">
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 1 - Buy ${leg1.side || ''}</div>
+                        <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg1.venue || 'N/A'}</span></div>
+                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg1.price)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg1.size)}</span></div>
+                    </div>
+                    <div class="leg-card">
+                        <div class="leg-title">Leg 2 - Buy ${leg2.side || ''}</div>
+                        <div class="detail-row"><span class="detail-label">Venue</span><span class="detail-value">${leg2.venue || 'N/A'}</span></div>
+                        <div class="detail-row"><span class="detail-label">Price</span><span class="detail-value">${formatUSD(leg2.price)}</span></div>
+                        <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${formatUSD(leg2.size)}</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="detail-section">
+                <h4>Ticket</h4>
+                <div class="detail-grid">
+                    <div class="detail-row"><span class="detail-label">Expected cost</span><span class="detail-value">${formatUSD(d.expected_cost)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Expected profit</span><span class="detail-value">${formatUSD(d.expected_profit)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Detected</span><span class="detail-value">${formatTime(d.detected_at)}</span></div>
+                    <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
+                </div>
+            </div>
+            ${actionBtns}
+        `;
+    }
 }
 
 function closeTicketModal() {
@@ -461,17 +498,17 @@ async function refreshFlippenings() {
 
     // Stats cards — stats is a list of per-category rows, aggregate for summary
     if (stats && Array.isArray(stats) && stats.length > 0) {
-        const total = stats.reduce((s, r) => s + (r.total || 0), 0);
+        const total = stats.reduce((s, r) => s + (r.total_signals || 0), 0);
         const wAvg = (field) => {
-            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total || 0), 0);
+            const weighted = stats.reduce((s, r) => s + (parseFloat(r[field]) || 0) * (r.total_signals || 0), 0);
             return total > 0 ? weighted / total : null;
         };
         el('flip-total').textContent = total;
-        const wr = wAvg('win_rate');
-        el('flip-winrate').textContent = wr != null ? (wr * 100).toFixed(1) + '%' : '-';
+        const wr = wAvg('win_rate_pct');
+        el('flip-winrate').textContent = wr != null ? wr.toFixed(1) + '%' : '-';
         const ap = wAvg('avg_pnl');
         el('flip-avgpnl').textContent = ap != null ? (ap >= 0 ? '+' : '') + ap.toFixed(4) : '-';
-        const ah = wAvg('avg_hold');
+        const ah = wAvg('avg_hold_minutes');
         el('flip-avghold').textContent = ah != null ? ah.toFixed(0) + 'm' : '-';
     } else {
         el('flip-total').textContent = 0;
@@ -525,10 +562,14 @@ async function refreshFlippenings() {
 }
 
 // --- Live Price Ticker (SSE) ---
+let tickerReconnectDelay = 1000;
+const TICKER_MAX_RECONNECT_DELAY = 30000;
+
 function initTickerSSE() {
     if (tickerSource) { tickerSource.close(); tickerSource = null; }
     tickerSource = new EventSource('/api/flippenings/price-stream');
     tickerSource.addEventListener('status', function(e) {
+        tickerReconnectDelay = 1000;
         const data = JSON.parse(e.data);
         setTickerStatus(data.status === 'idle' ? 'idle' : 'connected');
         if (data.status === 'idle') {
@@ -537,12 +578,23 @@ function initTickerSSE() {
         }
     });
     tickerSource.addEventListener('snapshot', function(e) {
+        tickerReconnectDelay = 1000;
         setTickerStatus('connected');
         const data = JSON.parse(e.data);
         renderTickerTable(data.markets || []);
     });
+    tickerSource.addEventListener('heartbeat', function() {
+        tickerReconnectDelay = 1000;
+        setTickerStatus('connected');
+    });
     tickerSource.onerror = function() {
         setTickerStatus('disconnected');
+        tickerSource.close();
+        tickerSource = null;
+        setTimeout(function() {
+            tickerReconnectDelay = Math.min(tickerReconnectDelay * 2, TICKER_MAX_RECONNECT_DELAY);
+            initTickerSSE();
+        }, tickerReconnectDelay);
     };
 }
 

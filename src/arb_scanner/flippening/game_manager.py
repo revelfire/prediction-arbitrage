@@ -60,6 +60,7 @@ class GameManager:
         """Initialise with flippening configuration."""
         self._config = config
         self._games: dict[str, GameState] = {}
+        self._id_to_market: dict[str, str] = {}
 
     @property
     def active_game_count(self) -> int:
@@ -68,7 +69,7 @@ class GameManager:
 
     def has_open_signal(self, market_id: str) -> bool:
         """Check if a game has an active entry signal."""
-        state = self._games.get(market_id)
+        state = self.get_state(market_id)
         return state is not None and state.active_signal is not None
 
     def initialize(self, category_markets: list[CategoryMarket]) -> None:
@@ -97,6 +98,10 @@ class GameManager:
                 game_start_time=sm.game_start_time,
             )
             self._games[mid] = state
+            self._id_to_market[sm.token_id] = mid
+            cid = sm.market.raw_data.get("conditionId")
+            if isinstance(cid, str) and cid:
+                self._id_to_market[cid] = mid
             if is_live:
                 state.needs_baseline = True
             logger.info(
@@ -178,7 +183,7 @@ class GameManager:
         update: PriceUpdate,
     ) -> tuple[FlippeningEvent | None, ExitSignal | None, DriftInfo | None]:
         """Process a price update for its corresponding game."""
-        state = self._games.get(update.market_id)
+        state = self.get_state(update.market_id) or self.get_state(update.token_id)
         if state is None or state.phase == GamePhase.COMPLETED:
             return None, None, None
         state.price_history.append(update)
@@ -206,7 +211,7 @@ class GameManager:
         return None, None, drift
 
     def _refresh_rolling_baseline(self, state: GameState) -> None:
-        """Refresh the baseline using rolling window if enough data."""
+        """Refresh baseline via rolling window if enough data."""
         cat_cfg = self._config.categories.get(state.category)
         window = cat_cfg.baseline_window_minutes if cat_cfg else 30
         result = BaselineCapture.capture_rolling_window(
@@ -223,12 +228,18 @@ class GameManager:
             state.baseline = result
 
     def get_state(self, market_id: str) -> GameState | None:
-        """Get the current state for a game."""
-        return self._games.get(market_id)
+        """Get state by event_id, condition_id, or token_id."""
+        state = self._games.get(market_id)
+        if state is not None:
+            return state
+        resolved = self._id_to_market.get(market_id)
+        if resolved is not None:
+            return self._games.get(resolved)
+        return None
 
     def set_active_signal(self, market_id: str, signal: EntrySignal) -> None:
         """Record an active entry signal for a game."""
-        state = self._games.get(market_id)
+        state = self.get_state(market_id)
         if state is not None:
             state.active_signal = signal
 

@@ -140,7 +140,7 @@ class SignalGenerator:
             )
         return None
 
-    def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket:
+    def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket | None:
         """Create an execution ticket for the flippening trade.
 
         Args:
@@ -148,14 +148,23 @@ class SignalGenerator:
             event: Originating flippening event.
 
         Returns:
-            ExecutionTicket with both legs.
+            ExecutionTicket with both legs, or None if unprofitable.
         """
+        if not entry.entry_price:
+            return None
+        num_contracts = entry.suggested_size_usd / entry.entry_price
+        expected_cost = entry.suggested_size_usd
+        expected_profit = (entry.target_exit_price - entry.entry_price) * num_contracts
+        if expected_profit <= Decimal("0"):
+            logger.debug("flip_ticket_skipped_negative_profit", event_id=event.id)
+            return None
         leg_1: dict[str, object] = {
             "venue": "polymarket",
             "action": "buy",
             "side": entry.side,
             "price": str(entry.entry_price),
             "size_usd": str(entry.suggested_size_usd),
+            "contracts": str(num_contracts.quantize(Decimal("0.01"))),
         }
         leg_2: dict[str, object] = {
             "venue": "polymarket",
@@ -163,10 +172,9 @@ class SignalGenerator:
             "side": entry.side,
             "price": str(entry.target_exit_price),
             "size_usd": str(entry.suggested_size_usd),
+            "contracts": str(num_contracts.quantize(Decimal("0.01"))),
             "note": "limit sell — place manually when entry filled",
         }
-        expected_cost = entry.entry_price * entry.suggested_size_usd
-        expected_profit = (entry.target_exit_price - entry.entry_price) * entry.suggested_size_usd
         return ExecutionTicket(
             arb_id=event.id,
             leg_1=leg_1,

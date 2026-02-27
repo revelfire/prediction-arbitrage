@@ -119,6 +119,21 @@ class PolymarketClient(BaseVenueClient):
             data: dict[str, object] = resp.json()
             return data
 
+    async def enrich_with_book(self, market: Market) -> Market:
+        """Replace synthetic bid/ask with real CLOB top-of-book."""
+        tokens = _safe_json_loads(market.raw_data.get("clobTokenIds", "[]"))
+        if not tokens:
+            return market
+        try:
+            book = await self.fetch_orderbook(tokens[0])
+            quotes = _parse_top_of_book(book)
+            if quotes is not None:
+                market.yes_bid, market.yes_ask = quotes[0], quotes[1]
+                market.no_bid, market.no_ask = quotes[2], quotes[3]
+        except Exception:
+            logger.debug("book_enrich_failed", event_id=market.event_id)
+        return market
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -241,6 +256,27 @@ def _parse_gamma_market(raw: dict[str, object]) -> Market | None:
         )
     except Exception:
         logger.warning("polymarket_parse_error", raw_keys=list(raw.keys()))
+        return None
+
+
+def _parse_top_of_book(
+    book: dict[str, object],
+) -> tuple[Decimal, Decimal, Decimal, Decimal] | None:
+    """Extract (yes_bid, yes_ask, no_bid, no_ask) from CLOB /book response."""
+    bids = book.get("bids")
+    asks = book.get("asks")
+    if not isinstance(bids, list) or not bids:
+        return None
+    try:
+        yes_bid = _safe_decimal(bids[-1].get("price") if isinstance(bids[-1], dict) else None)
+        if isinstance(asks, list) and asks:
+            yes_ask = _safe_decimal(asks[0].get("price") if isinstance(asks[0], dict) else None)
+        else:
+            yes_ask = min(yes_bid + Decimal("0.01"), Decimal("1"))
+        no_ask = Decimal("1") - yes_bid
+        no_bid = Decimal("1") - yes_ask
+        return yes_bid, yes_ask, max(no_bid, Decimal("0")), no_ask
+    except (IndexError, AttributeError):
         return None
 
 

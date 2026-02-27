@@ -24,10 +24,10 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # Web dashboard + REST API (with live reload via volume mount)
+  # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     build: .
-    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--flip-watch"]
     ports:
       - "${DASHBOARD_PORT:-8000}:8000"
     env_file: .env
@@ -45,21 +45,6 @@ services:
   scanner:
     build: .
     command: ["uv", "run", "arb-scanner", "watch", "--interval", "${SCAN_INTERVAL:-60}"]
-    env_file: .env
-    volumes:
-      - ./src:/app/src
-      - ./config.yaml:/app/config.yaml:ro
-    depends_on:
-      db:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  # Flippening mean reversion engine (live market monitoring)
-  flip-watch:
-    build: .
-    command: ["uv", "run", "arb-scanner", "flip-watch"]
     env_file: .env
     volumes:
       - ./src:/app/src

@@ -166,7 +166,9 @@ class TestServeCommand:
         mock_create_app.return_value = fake_app
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
-        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=False)
+        mock_create_app.assert_called_once_with(
+            mock_config.return_value, no_db=False, flip_watch=False
+        )
         mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
 
     @patch("uvicorn.run")
@@ -193,5 +195,7 @@ class TestServeCommand:
         mock_create_app.return_value = fake_app
         result = runner.invoke(app, ["serve", "--no-db"])
         assert result.exit_code == 0
-        mock_create_app.assert_called_once_with(mock_config.return_value, no_db=True)
+        mock_create_app.assert_called_once_with(
+            mock_config.return_value, no_db=True, flip_watch=False
+        )
         mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)

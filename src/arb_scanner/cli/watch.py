@@ -36,7 +36,7 @@ async def run_watch(
         stop_event: Set this event to trigger graceful shutdown.
         dry_run: Use fixture data instead of live APIs.
     """
-    seen_ids: set[str] = set()
+    seen_keys: set[str] = set()
     detector = TrendDetector(config.trend_alerts) if config.trend_alerts.enabled else None
     interval = config.scanning.interval_seconds
     notif = config.notifications
@@ -53,10 +53,10 @@ async def run_watch(
             await _interruptible_sleep(interval, stop_event)
             continue
 
-        new_opps = _extract_new_opps(result, seen_ids, min_spread)
+        new_opps = _extract_new_opps(result, seen_keys, min_spread)
         await _notify_new_opps(new_opps, notif)
         for opp in new_opps:
-            seen_ids.add(opp.id)
+            seen_keys.add(_opp_dedup_key(opp))
 
         if detector is not None:
             trend_alerts = detector.ingest(result)
@@ -70,23 +70,32 @@ async def run_watch(
         await _interruptible_sleep(interval, stop_event)
 
 
+def _opp_dedup_key(opp: ArbOpportunity) -> str:
+    """Deterministic dedup key from the market pair and direction."""
+    return f"{opp.poly_market.event_id}|{opp.kalshi_market.event_id}|{opp.buy_venue.value}"
+
+
 def _extract_new_opps(
     result: dict[str, Any],
-    seen_ids: set[str],
+    seen_keys: set[str],
     min_spread: Decimal,
 ) -> list[ArbOpportunity]:
     """Extract unseen opportunities exceeding the minimum spread.
 
     Args:
         result: Scan result dict from run_scan (includes _raw_opps).
-        seen_ids: Set of previously-alerted opportunity IDs.
+        seen_keys: Set of previously-alerted dedup keys.
         min_spread: Minimum net spread pct to trigger alerts.
 
     Returns:
         List of new ArbOpportunity objects to alert on.
     """
     raw_opps: list[ArbOpportunity] = result.get("_raw_opps", [])
-    return [opp for opp in raw_opps if opp.id not in seen_ids and opp.net_spread_pct >= min_spread]
+    return [
+        opp
+        for opp in raw_opps
+        if _opp_dedup_key(opp) not in seen_keys and opp.net_spread_pct >= min_spread
+    ]
 
 
 async def _notify_new_opps(

@@ -21,9 +21,12 @@ _STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Manage database pool lifecycle."""
+    """Manage database pool and optional flip-watch lifecycle."""
+    import asyncio
+
     config: Settings = app.state.config
     no_db: bool = getattr(app.state, "no_db", False)
+    flip_watch: bool = getattr(app.state, "flip_watch", False)
     if no_db:
         app.state.db = None
         logger.info(
@@ -34,18 +37,40 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await db.connect()
         app.state.db = db
         logger.info("api.started", host=config.dashboard.host, port=config.dashboard.port)
+
+    flip_task: asyncio.Task[None] | None = None
+    if flip_watch and not no_db:
+        from arb_scanner.flippening.orchestrator import run_flip_watch
+
+        flip_task = asyncio.create_task(run_flip_watch(config))
+        logger.info("flip_watch_embedded", mode="background_task")
+
     yield
+
+    if flip_task is not None:
+        flip_task.cancel()
+        try:
+            await flip_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("flip_watch_stopped")
     if not no_db and app.state.db is not None:
         await app.state.db.disconnect()
     logger.info("api.stopped")
 
 
-def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
+def create_app(
+    config: Settings,
+    *,
+    no_db: bool = False,
+    flip_watch: bool = False,
+) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Application settings.
         no_db: When True, skip database connection (UI-only mode).
+        flip_watch: When True, run flip-watch engine in-process.
 
     Returns:
         Configured FastAPI instance.
@@ -57,6 +82,7 @@ def create_app(config: Settings, *, no_db: bool = False) -> FastAPI:
     )
     app.state.config = config
     app.state.no_db = no_db
+    app.state.flip_watch = flip_watch
 
     # Static files
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -101,5 +127,6 @@ def create_app_from_env() -> FastAPI:
     from arb_scanner.config.loader import load_config
 
     no_db = os.environ.get("ARB_NO_DB", "0") == "1"
+    flip_watch = os.environ.get("ARB_FLIP_WATCH", "0") == "1"
     config = load_config()
-    return create_app(config, no_db=no_db)
+    return create_app(config, no_db=no_db, flip_watch=flip_watch)

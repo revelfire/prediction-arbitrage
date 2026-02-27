@@ -190,7 +190,11 @@ class FlippeningRepository:
         event: FlippeningEvent,
         entry: EntrySignal,
     ) -> None:
-        """Persist a flippening execution ticket."""
+        """Persist a flippening execution ticket (skips if unprofitable)."""
+        expected_profit = entry.expected_profit_pct * entry.suggested_size_usd
+        if expected_profit <= 0:
+            logger.debug("flip_ticket_skipped_negative_profit", event_id=event.id)
+            return
         leg_1 = json.dumps(
             {
                 "action": f"BUY {entry.side.upper()}",
@@ -213,8 +217,8 @@ class FlippeningRepository:
             event.id,
             leg_1,
             leg_2,
-            entry.entry_price * entry.suggested_size_usd,
-            entry.expected_profit_pct * entry.suggested_size_usd,
+            entry.suggested_size_usd,
+            expected_profit,
             "pending",
             "flippening",
         )

@@ -274,7 +274,9 @@ class TestCreateTicket:
         entry = _entry(entry_price="0.50", target_exit="0.605")
         ev = _event()
         ticket = gen.create_ticket(entry, ev)
-        expected_cost = Decimal("0.50") * Decimal("80.00")
-        assert ticket.expected_cost == expected_cost
-        expected_profit = Decimal("0.105") * Decimal("80.00")
+        # expected_cost is the dollar position (suggested_size_usd)
+        assert ticket.expected_cost == Decimal("80.00")
+        # num_contracts = 80 / 0.50 = 160; profit = 0.105 * 160 = 16.80
+        num_contracts = Decimal("80.00") / Decimal("0.50")
+        expected_profit = Decimal("0.105") * num_contracts
         assert ticket.expected_profit == expected_profit

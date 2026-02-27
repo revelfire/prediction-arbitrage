@@ -125,7 +125,7 @@ logging:
 fees:
   polymarket:
     maker_fee_pct: 0.0
-    taker_fee_pct: 0.0
+    taker_fee_pct: 0.02
     fee_model: "on_winnings"
   kalshi:
     maker_fee_pct: 0.0

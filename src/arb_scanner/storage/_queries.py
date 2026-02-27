@@ -90,9 +90,10 @@ LIMIT $1;
 
 GET_TICKETS_BY_STATUS = """
 SELECT arb_id, leg_1, leg_2, expected_cost, expected_profit,
-       status, created_at
+       status, created_at, COALESCE(ticket_type, 'arbitrage') AS ticket_type
 FROM execution_tickets
 WHERE ($1::text IS NULL OR status = $1)
+  AND expected_profit > 0
 ORDER BY created_at DESC
 LIMIT $2;
 """
@@ -102,6 +103,7 @@ SELECT arb_id, leg_1, leg_2, expected_cost, expected_profit,
        status, created_at
 FROM execution_tickets
 WHERE status = 'pending'
+  AND expected_profit > 0
 ORDER BY created_at DESC;
 """
 
@@ -133,6 +135,7 @@ SELECT t.arb_id, t.leg_1, t.leg_2, t.expected_cost,
        o.poly_event_id, o.kalshi_event_id, o.net_spread_pct
 FROM execution_tickets t
 JOIN arb_opportunities o ON t.arb_id = o.id
+WHERE t.expected_profit > 0
 ORDER BY t.created_at DESC
 LIMIT $1;
 """
@@ -140,6 +143,7 @@ LIMIT $1;
 GET_TICKET_DETAIL = """
 SELECT t.arb_id, t.leg_1, t.leg_2, t.expected_cost,
        t.expected_profit, t.status, t.created_at,
+       COALESCE(t.ticket_type, 'arbitrage') AS ticket_type,
        o.poly_event_id, o.kalshi_event_id, o.buy_venue, o.sell_venue,
        o.cost_per_contract, o.gross_profit, o.net_profit,
        o.net_spread_pct, o.max_size, o.annualized_return,
@@ -153,7 +157,7 @@ SELECT t.arb_id, t.leg_1, t.leg_2, t.expected_cost,
        km.no_bid AS kalshi_no_bid, km.no_ask AS kalshi_no_ask,
        km.volume_24h AS kalshi_volume
 FROM execution_tickets t
-JOIN arb_opportunities o ON t.arb_id = o.id
+LEFT JOIN arb_opportunities o ON t.arb_id = o.id
 LEFT JOIN markets pm ON pm.venue = 'polymarket' AND pm.event_id = o.poly_event_id
 LEFT JOIN markets km ON km.venue = 'kalshi' AND km.event_id = o.kalshi_event_id
 WHERE t.arb_id = $1;

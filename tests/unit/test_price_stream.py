@@ -162,6 +162,33 @@ async def test_stream_yields_snapshot_with_data() -> None:
 
 
 @pytest.mark.asyncio()
+async def test_stream_yields_heartbeat_when_no_changes() -> None:
+    """The SSE generator yields a heartbeat after interval with no changes."""
+    from arb_scanner.api.routes_price_stream import _stream_prices
+
+    buf = PriceRingBuffer()
+    buf.push(_make_tick("m1"))
+
+    with (
+        patch(
+            "arb_scanner.api.routes_price_stream.get_shared_buffer",
+            return_value=buf,
+        ),
+        patch(
+            "arb_scanner.api.routes_price_stream._HEARTBEAT_INTERVAL_SECONDS",
+            0.0,
+        ),
+    ):
+        gen = _stream_prices()
+        first = await gen.__anext__()
+        assert "event: snapshot" in first
+        second = await gen.__anext__()
+        assert "event: heartbeat" in second
+        assert '"ts"' in second
+        await gen.aclose()
+
+
+@pytest.mark.asyncio()
 async def test_stream_yields_idle_with_empty_buffer() -> None:
     """The SSE generator yields idle when buffer exists but is empty."""
     from arb_scanner.api.routes_price_stream import _stream_prices

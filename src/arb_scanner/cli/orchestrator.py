@@ -31,7 +31,7 @@ from arb_scanner.matching.prefilter import prefilter_candidates
 from arb_scanner.matching.semantic import evaluate_pairs
 from arb_scanner.models.arbitrage import ArbOpportunity, ExecutionTicket
 from arb_scanner.models.config import Settings
-from arb_scanner.models.market import Market
+from arb_scanner.models.market import Market, Venue
 from arb_scanner.models.matching import MatchResult
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="cli.orchestrator")
@@ -98,6 +98,10 @@ async def run_scan(
         msg = f"matching stage failed: {exc}"
         logger.error("matching_stage_failed", error=str(exc), exc_info=True)
         errors.append(msg)
+
+    # --- Stage 2b: Enrich Polymarket quotes with real CLOB book ---
+    if candidates and not dry_run:
+        candidates = await _enrich_poly_quotes(candidates, config)
 
     # --- Stage 3: Calculate arbs ---
     opps: list[ArbOpportunity] = []
@@ -254,7 +258,11 @@ async def _match_candidates(
     if not dry_run and embeddings:
         await persist_embeddings(embeddings, config)
 
-    uncached = filtered_pairs if dry_run else await _filter_cached(filtered_pairs, config)
+    if dry_run:
+        uncached = filtered_pairs
+        cached_results: list[MatchResult] = []
+    else:
+        uncached, cached_results = await _filter_cached(filtered_pairs, config)
 
     # Cap semantic evaluation to avoid excessive Claude API calls.
     # Pairs are sorted by BM25 score descending; top-N are best matches.
@@ -267,12 +275,31 @@ async def _match_candidates(
         )
         uncached = uncached[:max_pairs]
 
-    match_results = await _run_semantic(uncached, config, errors)
+    new_results = await _run_semantic(uncached, config, errors)
 
     if not dry_run:
-        await _cache_results(match_results, config)
+        await _cache_results(new_results, config)
 
-    return _zip_safe_matches(filtered_pairs, match_results)
+    all_results = cached_results + new_results
+    return _zip_safe_matches(filtered_pairs, all_results)
+
+
+async def _enrich_poly_quotes(
+    candidates: list[tuple[Market, Market, MatchResult]],
+    config: Settings,
+) -> list[tuple[Market, Market, MatchResult]]:
+    """Replace synthetic Polymarket quotes with real CLOB top-of-book."""
+    from arb_scanner.ingestion.polymarket import PolymarketClient
+
+    try:
+        async with PolymarketClient(config.venues.polymarket) as poly:
+            for pm, km, mr in candidates:
+                if pm.venue == Venue.POLYMARKET:
+                    await poly.enrich_with_book(pm)
+        logger.info("clob_enrichment_done", candidates=len(candidates))
+    except Exception:
+        logger.warning("clob_enrichment_failed", exc_info=True)
+    return candidates
 
 
 async def _run_embedding_rerank(
@@ -341,13 +368,14 @@ async def _load_cached_embeddings(
 async def _filter_cached(
     pairs: list[tuple[Market, Market, float]],
     config: Settings,
-) -> list[tuple[Market, Market, float]]:
-    """Remove pairs already in the match cache."""
+) -> tuple[list[tuple[Market, Market, float]], list[MatchResult]]:
+    """Separate pairs into uncached (need eval) and cached hits."""
     from arb_scanner.matching.cache import MatchCache
     from arb_scanner.storage.db import Database
     from arb_scanner.storage.repository import Repository
 
     uncached: list[tuple[Market, Market, float]] = []
+    cached_hits: list[MatchResult] = []
     async with Database(config.storage.database_url) as db:
         repo = Repository(db.pool)
         cache = MatchCache(repo, ttl_hours=config.claude.match_cache_ttl_hours)
@@ -355,7 +383,10 @@ async def _filter_cached(
             hit = await cache.get(poly.event_id, kalshi.event_id)
             if hit is None:
                 uncached.append((poly, kalshi, score))
-    return uncached
+            else:
+                cached_hits.append(hit)
+    logger.info("cache.split", cached=len(cached_hits), uncached=len(uncached))
+    return uncached, cached_hits
 
 
 async def _run_semantic(
@@ -410,5 +441,5 @@ def _calculate_and_ticket(
 ) -> tuple[list[ArbOpportunity], list[ExecutionTicket]]:
     """Run arb calculation and ticket generation."""
     opps = calculate_arbs(candidates, config.fees, config.arb_thresholds)
-    tickets = [generate_ticket(opp) for opp in opps]
+    tickets = [t for opp in opps if (t := generate_ticket(opp)) is not None]
     return opps, tickets

@@ -302,6 +302,9 @@ def serve(
     port: int = typer.Option(8000, "--port", help="Port for the dashboard server."),
     no_db: bool = typer.Option(False, "--no-db", help="Start without database (UI preview only)."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)."),
+    flip_watch: bool = typer.Option(
+        False, "--flip-watch", help="Run flippening engine in-process."
+    ),
 ) -> None:
     """Start the web dashboard and API server."""
     try:
@@ -316,6 +319,7 @@ def serve(
         import os
 
         os.environ.setdefault("ARB_NO_DB", "1" if no_db else "0")
+        os.environ.setdefault("ARB_FLIP_WATCH", "1" if flip_watch else "0")
         uvicorn.run(
             "arb_scanner.api.app:create_app_from_env",
             host=host,
@@ -327,5 +331,5 @@ def serve(
     else:
         from arb_scanner.api.app import create_app
 
-        api_app = create_app(config, no_db=no_db)
+        api_app = create_app(config, no_db=no_db, flip_watch=flip_watch)
         uvicorn.run(api_app, host=host, port=port)
