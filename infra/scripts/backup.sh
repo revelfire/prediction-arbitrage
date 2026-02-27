@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Backup PostgreSQL to Hetzner Object Storage (S3-compatible).
+# Backup PostgreSQL to DigitalOcean Spaces (S3-compatible).
 # Usage: backup.sh
-# Requires: s3cmd configured with Hetzner Object Storage credentials.
+# Requires: s3cmd configured with DO Spaces credentials.
 set -euo pipefail
 
 BACKUP_DIR="/tmp/arb-backup"
@@ -21,7 +21,7 @@ if [ ! -s "${BACKUP_DIR}/${FILENAME}" ]; then
   exit 1
 fi
 
-# Upload to Hetzner Object Storage
+# Upload to DigitalOcean Spaces
 s3cmd put "${BACKUP_DIR}/${FILENAME}" "s3://arb-scanner-backups/daily/${FILENAME}"
 
 # Keep Sunday backups as weekly

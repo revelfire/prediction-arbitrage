@@ -2,13 +2,15 @@ terraform {
   required_version = ">= 1.5"
 
   required_providers {
-    hcloud = {
-      source  = "hetznercloud/hcloud"
-      version = "~> 1.48"
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.36"
     }
   }
 }
 
-provider "hcloud" {
-  token = var.hcloud_token
+provider "digitalocean" {
+  token             = var.do_token
+  spaces_access_id  = var.spaces_access_key
+  spaces_secret_key = var.spaces_secret_key
 }

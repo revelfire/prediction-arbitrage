@@ -1,8 +1,8 @@
-# 020 — CI/CD Pipeline & Hetzner Cloud Deployment
+# 020 — CI/CD Pipeline & DigitalOcean Deployment
 
 ## Overview
 
-Establish a complete CI/CD pipeline via GitHub Actions and deploy the prediction arbitrage scanner to a Hetzner Cloud VM. Includes automated quality gates on PR/push, Docker image builds pushed to GitHub Container Registry (GHCR), auto-deployment on merge to main, Terraform-managed infrastructure, Tailscale VPN for network access, bearer-token dashboard auth, and PostgreSQL backup automation.
+Establish a complete CI/CD pipeline via GitHub Actions and deploy the prediction arbitrage scanner to a DigitalOcean VM. Includes automated quality gates on PR/push, Docker image builds pushed to GitHub Container Registry (GHCR), auto-deployment on merge to main, Terraform-managed infrastructure, Tailscale VPN for network access, bearer-token dashboard auth, and PostgreSQL backup automation.
 
 ## Motivation
 
@@ -12,7 +12,7 @@ The scanner currently runs only in local Docker Compose. To operate 24/7 — cap
 
 - Features 001–019 complete (the full application stack).
 - GitHub repository at `git@github.com:revelfire/prediction-arbitrage.git`.
-- Hetzner Cloud account with API token.
+- DigitalOcean account with API token.
 - Tailscale account (free personal tier).
 - Domain (optional): `spillwave.com` for subdomain pointing.
 
@@ -43,11 +43,11 @@ On merge to `main`, after the quality gate passes:
 
 The GHCR token is the built-in `GITHUB_TOKEN` — no additional secrets needed for pushing.
 
-### FR-003: Auto-Deploy to Hetzner on Merge
+### FR-003: Auto-Deploy to DigitalOcean on Merge
 
 After the Docker image is pushed to GHCR:
 
-1. SSH to the Hetzner VM (via Tailscale IP or public IP with key-based auth).
+1. SSH to the DigitalOcean VM (via Tailscale IP or public IP with key-based auth).
 2. Run `docker compose pull` to fetch the new image.
 3. Run `docker compose up -d` to restart services with the new image.
 4. Run a health check: `curl -sf http://localhost:8000/api/health` with retry (up to 30s).
@@ -58,20 +58,20 @@ Deployment uses a dedicated SSH key stored as a GitHub Actions secret.
 
 ### FR-004: Terraform Infrastructure
 
-Provision the Hetzner Cloud environment using Terraform:
+Provision the DigitalOcean environment using Terraform:
 
-1. **VM**: Hetzner CX22 (2 vCPU, 4 GB RAM, 40 GB NVMe SSD, ~€4.35/mo).
+1. **VM**: DigitalOcean s-2vcpu-4gb Droplet (2 vCPU, 4 GB RAM, 40 GB NVMe SSD, ~€4.35/mo).
    - Location: `nbg1` (Nuremberg) or `fsn1` (Falkenstein) — configurable.
    - Image: Ubuntu 24.04 LTS.
    - SSH key: Provisioned via Terraform.
 
-2. **Firewall**: Hetzner Cloud Firewall attached to the VM.
+2. **Firewall**: DigitalOcean Firewall attached to the VM.
    - Allow inbound SSH (TCP 22) from configurable IP allowlist.
    - Allow inbound Tailscale UDP (41641) from anywhere (Tailscale handles its own auth).
    - Deny all other inbound traffic. Port 8000 is **NOT** exposed to the internet.
 
 3. **Volume** (optional, for PostgreSQL persistence across VM recreation):
-   - Hetzner Cloud Volume, 20 GB, mounted at `/mnt/pgdata`.
+   - DigitalOcean Volume, 20 GB, mounted at `/mnt/pgdata`.
    - Survives `terraform destroy` + `terraform apply` cycle.
 
 4. **Outputs**: VM public IP, Tailscale instructions, SSH command.
@@ -110,13 +110,13 @@ This is defense-in-depth behind the Tailscale VPN. If the VPN is compromised, th
 
 Automated database backups:
 
-1. Cron job on the VM: `pg_dump` → gzip → upload to Hetzner Object Storage (S3-compatible).
+1. Cron job on the VM: `pg_dump` → gzip → upload to DigitalOcean Object Storage (S3-compatible).
 2. Schedule: daily at 03:00 UTC.
 3. Retention: 7 daily backups + 4 weekly backups (Sunday).
 4. Backup script verifies the dump is non-empty before uploading.
 5. On backup failure: log error to stdout (captured by systemd journal).
 
-**Object Storage**: Hetzner S3-compatible bucket, configured via `s3cmd` or `aws cli` with Hetzner endpoint. Estimated cost: ~€1/month.
+**Object Storage**: DigitalOcean S3-compatible bucket, configured via `s3cmd` or `aws cli` with DigitalOcean endpoint. Estimated cost: ~€1/month.
 
 ### FR-008: Production Docker Compose
 
@@ -125,7 +125,7 @@ A `docker-compose.prod.yml` that differs from the dev `docker-compose.yml`:
 1. Uses GHCR image (`ghcr.io/revelfire/prediction-arbitrage:latest`) instead of local build.
 2. No source volume mounts (immutable container).
 3. Config mounted read-only from `/opt/arb-scanner/config.yaml`.
-4. PostgreSQL data on the Hetzner Volume (`/mnt/pgdata`).
+4. PostgreSQL data on the DigitalOcean Volume (`/mnt/pgdata`).
 5. Restart policy: `unless-stopped` on all services.
 6. Logging driver: `json-file` with `max-size: 10m`, `max-file: 3` (prevent disk fill).
 7. Kalshi PEM file mounted read-only from `/opt/arb-scanner/kalshi_key.pem`.
@@ -208,7 +208,7 @@ Requests to `/api/opportunities` without a valid bearer token return 401. Reques
     build-and-deploy.yml      # Main merge: build → push → deploy
 infra/
   terraform/
-    main.tf                   # Hetzner VM, firewall, volume, SSH key
+    main.tf                   # DigitalOcean VM, firewall, volume, SSH key
     variables.tf              # Configurable inputs (location, size, IPs)
     outputs.tf                # VM IP, SSH command, Tailscale instructions
     cloud-init.yml            # First-boot provisioning script
@@ -222,7 +222,7 @@ docker-compose.prod.yml       # Production compose (GHCR image, no volumes)
 
 - Blue-green or canary deployments (single-VM, single-operator).
 - Kubernetes, Nomad, or any orchestrator beyond Docker Compose.
-- Multi-region or HA (can be added later with Hetzner Load Balancer).
+- Multi-region or HA (can be added later with DigitalOcean Load Balancer).
 - Grafana/Loki observability stack (future feature).
 - SIWE wallet authentication (decided: bearer token + VPN is sufficient).
 - Automatic rollback on deploy failure (operator investigates manually).

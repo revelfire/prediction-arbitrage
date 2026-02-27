@@ -109,7 +109,7 @@ write_files:
         exit 1
       fi
 
-      # Upload to Hetzner Object Storage
+      # Upload to DigitalOcean Spaces
       s3cmd put "$${BACKUP_DIR}/$${FILENAME}" "s3://arb-scanner-backups/daily/$${FILENAME}" 2>/dev/null || \
         echo "WARN: s3cmd upload failed (configure s3cmd first)"
 
@@ -147,6 +147,16 @@ write_files:
 
       echo "$(date -Iseconds) Backup complete: $${FILENAME}"
 
+  - path: /root/.s3cfg
+    permissions: "0600"
+    content: |
+      [default]
+      access_key = ${spaces_access_key}
+      secret_key = ${spaces_secret_key}
+      host_base = ${spaces_region}.digitaloceanspaces.com
+      host_bucket = %(bucket)s.${spaces_region}.digitaloceanspaces.com
+      use_https = True
+
 runcmd:
   # Install Docker CE
   - install -m 0755 -d /etc/apt/keyrings
@@ -160,17 +170,19 @@ runcmd:
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --auth-key=${tailscale_auth_key} --hostname=arb-scanner
 
-  # Mount Hetzner Volume (auto-mounted by hcloud, ensure correct mount point)
+  # Mount DigitalOcean Volume (auto-attached, needs mount)
   - mkdir -p /mnt/pgdata
   - |
-    VOLUME_DEV=$(lsblk -ndo NAME,TYPE | grep disk | awk '{print $1}' | tail -1)
-    if [ -n "$VOLUME_DEV" ] && [ -b "/dev/$VOLUME_DEV" ]; then
+    # DO volumes are attached as /dev/disk/by-id/scsi-0DO_Volume_<name>
+    VOLUME_DEV="/dev/disk/by-id/scsi-0DO_Volume_arb-scanner-pgdata"
+    if [ -b "$VOLUME_DEV" ]; then
       # Check if already formatted
-      if ! blkid "/dev/$VOLUME_DEV" | grep -q ext4; then
-        mkfs.ext4 "/dev/$VOLUME_DEV"
+      if ! blkid "$VOLUME_DEV" | grep -q ext4; then
+        mkfs.ext4 "$VOLUME_DEV"
       fi
-      mount "/dev/$VOLUME_DEV" /mnt/pgdata || true
-      grep -q "$VOLUME_DEV" /etc/fstab || echo "/dev/$VOLUME_DEV /mnt/pgdata ext4 defaults 0 2" >> /etc/fstab
+      mount -o defaults,nofail,discard,noatime "$VOLUME_DEV" /mnt/pgdata || true
+      grep -q "arb-scanner-pgdata" /etc/fstab || \
+        echo "$VOLUME_DEV /mnt/pgdata ext4 defaults,nofail,discard,noatime 0 2" >> /etc/fstab
     fi
   - chown -R 999:999 /mnt/pgdata  # PostgreSQL container UID
 

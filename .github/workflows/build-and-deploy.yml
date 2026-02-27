@@ -55,12 +55,12 @@ jobs:
     environment: production
 
     steps:
-      - name: Deploy to Hetzner
+      - name: Deploy to DigitalOcean
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.HETZNER_HOST }}
+          host: ${{ secrets.DEPLOY_HOST }}
           username: deploy
-          key: ${{ secrets.HETZNER_SSH_PRIVATE_KEY }}
+          key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           script: |
             cd /opt/arb-scanner
             docker compose -f docker-compose.prod.yml pull

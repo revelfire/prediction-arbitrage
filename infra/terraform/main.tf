@@ -1,69 +1,85 @@
 # --- SSH Key ---
 
-resource "hcloud_ssh_key" "deploy" {
+resource "digitalocean_ssh_key" "deploy" {
   name       = "arb-scanner-deploy"
   public_key = file(var.ssh_public_key_path)
 }
 
 # --- Firewall ---
 
-resource "hcloud_firewall" "scanner" {
+resource "digitalocean_firewall" "scanner" {
   name = "arb-scanner"
 
+  droplet_ids = [digitalocean_droplet.scanner.id]
+
   # SSH from allowed CIDRs
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "22"
-    source_ips = var.allowed_ssh_cidrs
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = var.allowed_ssh_cidrs
   }
 
   # Tailscale WireGuard (UDP 41641) from anywhere — Tailscale handles its own auth
-  rule {
-    direction  = "in"
-    protocol   = "udp"
-    port       = "41641"
-    source_ips = ["0.0.0.0/0", "::/0"]
+  inbound_rule {
+    protocol         = "udp"
+    port_range       = "41641"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # All outbound traffic (API calls, GHCR pulls, etc.)
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "icmp"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
   }
 }
 
 # --- Persistent Volume for PostgreSQL ---
 
-resource "hcloud_volume" "pgdata" {
-  name              = "arb-scanner-pgdata"
-  size              = 20
-  location          = var.location
-  format            = "ext4"
-  delete_protection = true
+resource "digitalocean_volume" "pgdata" {
+  name                    = "arb-scanner-pgdata"
+  region                  = var.region
+  size                    = 20
+  initial_filesystem_type = "ext4"
+  description             = "PostgreSQL data for arb-scanner"
 }
 
-# --- Server ---
+# --- Droplet ---
 
-resource "hcloud_server" "scanner" {
-  name        = "arb-scanner"
-  server_type = var.server_type
-  location    = var.location
-  image       = "ubuntu-24.04"
-  ssh_keys    = [hcloud_ssh_key.deploy.id]
-
-  firewall_ids = [hcloud_firewall.scanner.id]
+resource "digitalocean_droplet" "scanner" {
+  name     = "arb-scanner"
+  size     = var.droplet_size
+  region   = var.region
+  image    = "ubuntu-24-04-x64"
+  ssh_keys = [digitalocean_ssh_key.deploy.fingerprint]
 
   user_data = templatefile("${path.module}/cloud-init.yml", {
     tailscale_auth_key = var.tailscale_auth_key
     ghcr_username      = var.ghcr_username
     ghcr_token         = var.ghcr_token
+    spaces_access_key  = var.spaces_access_key
+    spaces_secret_key  = var.spaces_secret_key
+    spaces_region      = var.spaces_region
   })
 
-  public_net {
-    ipv4_enabled = true
-    ipv6_enabled = true
-  }
+  volume_ids = [digitalocean_volume.pgdata.id]
 }
 
-# --- Attach Volume ---
+# --- Spaces Bucket for Backups (optional — skip if spaces keys not set) ---
 
-resource "hcloud_volume_attachment" "pgdata" {
-  volume_id = hcloud_volume.pgdata.id
-  server_id = hcloud_server.scanner.id
-  automount = true
+resource "digitalocean_spaces_bucket" "backups" {
+  count  = var.spaces_access_key != "" ? 1 : 0
+  name   = "arb-scanner-backups"
+  region = var.spaces_region
 }
