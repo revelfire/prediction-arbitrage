@@ -84,12 +84,13 @@ A cloud-init or shell script that runs on first boot:
 
 1. Install Docker Engine + Docker Compose plugin.
 2. Install Tailscale and join the tailnet (using a pre-auth key).
-3. Create the app directory (`/opt/arb-scanner/`).
-4. Copy `docker-compose.prod.yml` and `.env` template.
-5. Log in to GHCR (`docker login ghcr.io`).
-6. Pull the latest image and start services.
-7. Set up the backup cron job (FR-007).
-8. Harden SSH: disable password auth, disable root login.
+3. Install ExpressVPN, activate with code, set auto-connect, connect to Mexico (geo-routing for prediction market APIs). **Must run after Tailscale** so the VPN tunnel is established before ExpressVPN routes traffic. Once VPN is active, SSH via public IP may be unreliable — use Tailscale IP for all management access.
+4. Create the app directory (`/opt/arb-scanner/`).
+5. Copy `docker-compose.prod.yml` and `.env` template.
+6. Log in to GHCR (`docker login ghcr.io`).
+7. Pull the latest image and start services.
+8. Set up the backup cron job (FR-007).
+9. Harden SSH: disable password auth, disable root login.
 
 ### FR-006: Dashboard Authentication (Bearer Token)
 

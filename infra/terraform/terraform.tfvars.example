@@ -13,3 +13,7 @@ droplet_size        = "s-2vcpu-4gb"
 
 # Restrict SSH to your IP (recommended)
 # allowed_ssh_cidrs = ["203.0.113.1/32"]
+
+# ExpressVPN for geo-routing through Mexico
+expressvpn_activation_code = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+# expressvpn_location      = "Mexico"

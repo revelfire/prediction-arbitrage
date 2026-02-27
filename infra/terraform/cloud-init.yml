@@ -198,5 +198,16 @@ runcmd:
   - echo "0 3 * * * root /opt/arb-scanner/backup.sh >> /var/log/arb-backup.log 2>&1" > /etc/cron.d/arb-backup
   - chmod 644 /etc/cron.d/arb-backup
 
+  # Install ExpressVPN (AFTER Tailscale so the tunnel is established first)
+  - curl -fsSL https://www.expressvpn.works/clients/linux/expressvpn_3.75.0.15-1_amd64.deb -o /tmp/expressvpn.deb
+  - dpkg -i /tmp/expressvpn.deb || apt-get install -fy
+  - rm -f /tmp/expressvpn.deb
+  - expressvpn activate --key ${expressvpn_activation_code}
+  - expressvpn preferences set auto_connect true
+  - expressvpn preferences set preferred_protocol auto
+  - expressvpn connect "${expressvpn_location}"
+  - sleep 5
+  - expressvpn status
+
   # Pull images (services won't start until .env has real secrets)
   - cd /opt/arb-scanner && docker compose -f docker-compose.prod.yml pull

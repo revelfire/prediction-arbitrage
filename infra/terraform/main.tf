@@ -65,12 +65,14 @@ resource "digitalocean_droplet" "scanner" {
   ssh_keys = [digitalocean_ssh_key.deploy.fingerprint]
 
   user_data = templatefile("${path.module}/cloud-init.yml", {
-    tailscale_auth_key = var.tailscale_auth_key
-    ghcr_username      = var.ghcr_username
-    ghcr_token         = var.ghcr_token
-    spaces_access_key  = var.spaces_access_key
-    spaces_secret_key  = var.spaces_secret_key
-    spaces_region      = var.spaces_region
+    tailscale_auth_key         = var.tailscale_auth_key
+    ghcr_username              = var.ghcr_username
+    ghcr_token                 = var.ghcr_token
+    spaces_access_key          = var.spaces_access_key
+    spaces_secret_key          = var.spaces_secret_key
+    spaces_region              = var.spaces_region
+    expressvpn_activation_code = var.expressvpn_activation_code
+    expressvpn_location        = var.expressvpn_location
   })
 
   volume_ids = [digitalocean_volume.pgdata.id]
