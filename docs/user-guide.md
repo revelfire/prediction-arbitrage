@@ -260,7 +260,11 @@ Click any row or the **View** button to open the detail modal. The modal shows:
 
 Click **Approve** to indicate you intend to act on this ticket. This changes the status from Pending to Approved and enables the Execute and Cancel buttons. Approving doesn't execute any trade — it's a personal workflow step to separate "interesting" from "committed."
 
-#### Executing a ticket
+#### One-Click Execution (Automated)
+
+If the execution engine is configured (header shows **EXEC READY** in green), click **1-Click** on an approved ticket to run automated preflight checks and place orders on both venues simultaneously. See [Wallet Setup & Execution Integration Guide](wallet-setup.md) for credential setup and capital control configuration.
+
+#### Executing a ticket (Manual Recording)
 
 Click **Execute** (only available on Approved tickets) to open the execution recording modal:
 

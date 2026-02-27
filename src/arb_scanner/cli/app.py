@@ -296,6 +296,68 @@ async def _run_migrate(config: Any) -> list[str]:
         return await run_migrations(db.pool)
 
 
+@app.command(name="ticket-prune")
+def ticket_prune(
+    days: int | None = typer.Option(
+        None, "--days", help="Delete terminal tickets older than N days (default: config)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be deleted without deleting."
+    ),
+) -> None:
+    """Delete expired/executed/cancelled tickets older than retention threshold."""
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.error("config_load_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    try:
+        result = asyncio.run(_run_ticket_prune(config, days, dry_run))
+    except Exception as exc:
+        logger.error("ticket_prune_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        retention = days if days is not None else config.ticket_lifecycle.retention_days
+        sys.stdout.write(
+            f"Dry run: would delete terminal tickets older than {retention} days "
+            f"(before {result['cutoff']}).\n"
+        )
+    else:
+        sys.stdout.write(f"Deleted {result['deleted']} terminal ticket(s).\n")
+
+
+async def _run_ticket_prune(
+    config: Any,
+    days: int | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Run ticket pruning.
+
+    Args:
+        config: Application settings.
+        days: Retention days override (None = use config default).
+        dry_run: Report only, don't delete.
+
+    Returns:
+        Dict with deleted count or dry-run info.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from arb_scanner.storage.db import Database
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    retention = days if days is not None else config.ticket_lifecycle.retention_days
+    cutoff = datetime.now(tz=UTC) - timedelta(days=retention)
+    async with Database(config.storage.database_url) as db:
+        repo = TicketRepository(db.pool)
+        if dry_run:
+            return {"cutoff": cutoff.isoformat(), "days": retention, "dry_run": True}
+        count = await repo.prune_tickets(cutoff)
+        return {"deleted": count, "cutoff": cutoff.isoformat(), "days": retention}
+
+
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the dashboard server."),

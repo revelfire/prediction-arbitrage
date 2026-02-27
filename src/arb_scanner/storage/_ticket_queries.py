@@ -109,3 +109,10 @@ WHERE status = 'pending'
   AND created_at < NOW() - ($1 || ' hours')::INTERVAL
 RETURNING arb_id
 """
+
+PRUNE_TERMINAL_TICKETS = """
+DELETE FROM execution_tickets
+WHERE status IN ('expired', 'executed', 'cancelled')
+  AND created_at < $1
+RETURNING arb_id
+"""

@@ -87,6 +87,54 @@ async def get_ticket_repo(request: Request) -> Any:
     return TicketRepository(db.pool)
 
 
+async def get_exec_repo(request: Request) -> Any:
+    """Provide an ExecutionRepository from the app's database pool.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        ExecutionRepository backed by the shared connection pool.
+    """
+    from arb_scanner.storage.execution_repository import ExecutionRepository
+
+    db = _require_db(request)
+    return ExecutionRepository(db.pool)
+
+
+async def get_auto_exec_repo(request: Request) -> Any:
+    """Provide an AutoExecRepository from the app's database pool.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        AutoExecRepository backed by the shared connection pool.
+    """
+    from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+
+    db = _require_db(request)
+    return AutoExecRepository(db.pool)
+
+
+async def get_auto_pipeline(request: Request) -> Any:
+    """Provide the AutoExecutionPipeline from app state.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        AutoExecutionPipeline instance.
+
+    Raises:
+        HTTPException: 503 when pipeline not initialised.
+    """
+    pipeline = getattr(request.app.state, "auto_pipeline", None)
+    if pipeline is None:
+        raise HTTPException(503, "Auto-execution pipeline not available")
+    return pipeline
+
+
 async def get_config(request: Request) -> Settings:
     """Provide the application Settings.
 

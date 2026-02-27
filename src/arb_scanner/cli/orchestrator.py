@@ -441,5 +441,10 @@ def _calculate_and_ticket(
 ) -> tuple[list[ArbOpportunity], list[ExecutionTicket]]:
     """Run arb calculation and ticket generation."""
     opps = calculate_arbs(candidates, config.fees, config.arb_thresholds)
-    tickets = [t for opp in opps if (t := generate_ticket(opp)) is not None]
+    min_profit = config.arb_thresholds.min_expected_profit_usd
+    tickets = [
+        t
+        for opp in opps
+        if (t := generate_ticket(opp, min_expected_profit_usd=min_profit)) is not None
+    ]
     return opps, tickets

@@ -106,6 +106,7 @@ def _push_price_tick(update: PriceUpdate, state: Any) -> None:
     deviation = 0.0
     if baseline_yes and baseline_yes > 0:
         deviation = float((yes_mid - baseline_yes) / baseline_yes * 100)
+        deviation = max(-999.99, min(999.99, deviation))
     tick = PriceTick(
         market_id=update.market_id,
         market_title=state.market_title,
@@ -169,8 +170,20 @@ async def handle_entry(
     )
 
     if not dry_run:
-        await persist_entry(repo, event, entry, state.baseline)
+        from decimal import Decimal as _Decimal
+
+        min_profit = _Decimal(str(config.flippening.min_expected_profit_usd))
+        slug = getattr(state, "market_slug", "")
+        await persist_entry(
+            repo,
+            event,
+            entry,
+            state.baseline,
+            min_expected_profit_usd=min_profit,
+            market_slug=slug,
+        )
         await dispatch_entry_alert(event, entry, config, http_client)
+        await _feed_auto_pipeline(event, entry, config)
 
 
 async def handle_exit(
@@ -224,3 +237,34 @@ async def handle_exit(
             detected_at=entry.created_at,
         )
         await dispatch_exit_alert(event, entry, exit_sig, config, http_client)
+
+
+async def _feed_auto_pipeline(
+    event: FlippeningEvent,
+    entry: EntrySignal,
+    config: Settings,
+) -> None:
+    """Feed a flippening entry to the auto-execution pipeline if available.
+
+    Args:
+        event: Detected flippening event.
+        entry: Entry signal.
+        config: Application settings.
+    """
+    try:
+        from arb_scanner.execution.auto_pipeline import AutoExecutionPipeline
+
+        pipeline: AutoExecutionPipeline | None = getattr(config, "_auto_pipeline", None)
+        if pipeline is None or pipeline.mode != "auto":
+            return
+        opp = {
+            "arb_id": event.id,
+            "spread_pct": float(event.spike_magnitude_pct),
+            "confidence": float(event.confidence),
+            "category": event.category,
+            "title": event.market_title,
+            "ticket_type": "flippening",
+        }
+        await pipeline.process_opportunity(opp, source="flippening")
+    except Exception:
+        logger.warning("auto_pipeline_feed_failed")

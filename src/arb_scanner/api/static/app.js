@@ -397,6 +397,16 @@ async function refreshTickets() {
     }).join('');
 }
 
+function renderLegEntries(leg) {
+    const hide = new Set(['market_url', 'title']);
+    return Object.entries(leg).filter(([k]) => !hide.has(k)).map(([k, v]) => {
+        const label = k.replace(/_/g, ' ');
+        return `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${v}</span></div>`;
+    }).join('') + (leg.market_url
+        ? `<div class="detail-row"><span class="detail-label">market</span><span class="detail-value"><a href="${leg.market_url}" target="_blank" rel="noopener" class="market-link">Open on ${leg.venue || 'venue'}</a></span></div>`
+        : '');
+}
+
 function ticketActionButtons(t) {
     const id = t.arb_id;
     const btns = [];
@@ -406,7 +416,8 @@ function ticketActionButtons(t) {
         btns.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${id}')">Expire</button>`);
     }
     if (t.status === 'approved') {
-        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Execute</button>`);
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
+        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
         btns.push(`<button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); cancelTicket('${id}')">Cancel</button>`);
     }
     return btns.join(' ');
@@ -432,11 +443,16 @@ async function openTicketDetail(arbId) {
     const actionsLog = renderActionLog(d.actions || []);
 
     if (isFlip) {
+        const flipTitle = leg1.market_title || d.market_title || 'N/A';
+        const flipUrl = leg1.market_url || '';
+        const flipMarketEl = flipUrl
+            ? `<a href="${flipUrl}" target="_blank" rel="noopener" class="market-link">${flipTitle}</a>`
+            : flipTitle;
         body.innerHTML = `
             <div class="detail-section">
                 <h4>Flippening Trade</h4>
                 <div class="detail-grid">
-                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${leg1.market_title || d.market_title || 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${flipMarketEl}</span></div>
                     <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || leg1.sport || 'N/A'}</span></div>
                 </div>
             </div>
@@ -467,6 +483,12 @@ async function openTicketDetail(arbId) {
             ${actionBtns}
         `;
     } else {
+        const t1 = leg1.title || '';
+        const t2 = leg2.title || '';
+        const url1 = leg1.market_url || '';
+        const url2 = leg2.market_url || '';
+        const link1 = url1 ? `<a href="${url1}" target="_blank" rel="noopener" class="market-link">${t1}</a>` : t1;
+        const link2 = url2 ? `<a href="${url2}" target="_blank" rel="noopener" class="market-link">${t2}</a>` : t2;
         body.innerHTML = `
             <div class="detail-section">
                 <h4>Arbitrage Ticket</h4>
@@ -475,16 +497,23 @@ async function openTicketDetail(arbId) {
                     <div class="detail-row"><span class="detail-label">Category</span><span class="detail-value">${d.category || '-'}</span></div>
                 </div>
             </div>
+            ${(t1 || t2) ? `<div class="detail-section match-comparison">
+                <h4>Match Comparison</h4>
+                <div class="detail-grid">
+                    <div class="match-card"><div class="match-venue">${leg1.venue || 'Venue 1'}</div><div class="match-title">${link1 || 'N/A'}</div></div>
+                    <div class="match-card"><div class="match-venue">${leg2.venue || 'Venue 2'}</div><div class="match-title">${link2 || 'N/A'}</div></div>
+                </div>
+            </div>` : ''}
             <div class="detail-section">
                 <h4>Execution Legs</h4>
                 <div class="detail-grid">
                     <div class="leg-card">
                         <div class="leg-title">Leg 1</div>
-                        ${Object.entries(leg1).map(([k,v]) => `<div class="detail-row"><span class="detail-label">${k}</span><span class="detail-value">${v}</span></div>`).join('')}
+                        ${renderLegEntries(leg1)}
                     </div>
                     <div class="leg-card">
                         <div class="leg-title">Leg 2</div>
-                        ${Object.entries(leg2).map(([k,v]) => `<div class="detail-row"><span class="detail-label">${k}</span><span class="detail-value">${v}</span></div>`).join('')}
+                        ${renderLegEntries(leg2)}
                     </div>
                 </div>
             </div>
@@ -509,7 +538,8 @@ function buildDetailActions(d) {
         btns.push(`<button class="btn btn-success" onclick="approveTicket('${id}'); closeTicketModal();">Approve</button>`);
         btns.push(`<button class="btn btn-danger" onclick="expireTicket('${id}'); closeTicketModal();">Expire</button>`);
     } else if (d.status === 'approved') {
-        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Execute</button>`);
+        btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
+        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
         btns.push(`<button class="btn btn-warning" onclick="cancelTicket('${id}'); closeTicketModal();">Cancel</button>`);
     }
     btns.push(`<button class="btn btn-primary" onclick="addAnnotation('${id}')">Add Note</button>`);
@@ -585,6 +615,117 @@ async function addAnnotation(arbId) {
     if (notes === null) return;
     await patchJSON(`/api/tickets/${encodeURIComponent(arbId)}`, { notes: notes });
     openTicketDetail(arbId);
+}
+
+// --- Execution Engine ---
+async function refreshExecStatus() {
+    const data = await fetchJSON('/api/execution/status');
+    const ind = el('exec-status-indicator');
+    if (!ind) return;
+    if (!data) {
+        ind.textContent = 'EXEC OFF';
+        ind.className = 'exec-indicator exec-disabled';
+        return;
+    }
+    if (data.enabled && data.initialised) {
+        ind.textContent = 'EXEC READY';
+        ind.className = 'exec-indicator exec-ready';
+    } else {
+        ind.textContent = 'EXEC OFF';
+        ind.className = 'exec-indicator exec-disabled';
+    }
+}
+
+async function oneClickExecute(arbId) {
+    const modal = el('preflight-modal');
+    const body = el('preflight-body');
+    const actions = el('preflight-actions');
+    if (!modal || !body || !actions) return;
+    modal.style.display = 'flex';
+    actions.style.display = 'none';
+    body.innerHTML = '<div class="empty-state">Running preflight checks...</div>';
+
+    const result = await postJSON(`/api/execution/preflight/${encodeURIComponent(arbId)}`);
+    if (!result) {
+        body.innerHTML = '<div class="empty-state">Preflight failed - execution engine may not be available</div>';
+        return;
+    }
+
+    const checks = (result.checks || []).map(c => `
+        <li class="preflight-check">
+            <span class="preflight-icon ${c.passed ? 'preflight-pass' : 'preflight-fail'}">${c.passed ? '\u2713' : '\u2717'}</span>
+            <span class="preflight-name">${c.name}</span>
+            <span class="preflight-msg">${c.message}</span>
+        </li>
+    `).join('');
+
+    const summaryHtml = `
+        <div class="preflight-summary">
+            <div class="detail-row"><span class="detail-label">Suggested size</span><span class="detail-value">${formatUSD(result.suggested_size_usd)}</span></div>
+            <div class="detail-row"><span class="detail-label">Max size</span><span class="detail-value">${formatUSD(result.max_size_usd)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly balance</span><span class="detail-value">${formatUSD(result.poly_balance)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi balance</span><span class="detail-value">${formatUSD(result.kalshi_balance)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_poly)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_kalshi)}</span></div>
+            <div class="detail-row"><span class="detail-label">Poly depth</span><span class="detail-value">${result.poly_depth_contracts} contracts</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi depth</span><span class="detail-value">${result.kalshi_depth_contracts} contracts</span></div>
+        </div>
+    `;
+
+    body.innerHTML = `
+        <div class="detail-section"><h4>Preflight Checks</h4><ul class="preflight-checks">${checks}</ul></div>
+        <div class="detail-section"><h4>Sizing & Liquidity</h4>${summaryHtml}</div>
+    `;
+
+    if (result.all_passed) {
+        el('preflight-arb-id').value = arbId;
+        el('preflight-size').value = parseFloat(result.suggested_size_usd || 0).toFixed(2);
+        actions.style.display = 'flex';
+    } else {
+        body.innerHTML += '<div class="exec-progress"><span class="exec-status-failed">Preflight failed - resolve issues before executing</span></div>';
+    }
+}
+
+function closePreflightModal() {
+    const modal = el('preflight-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function confirmExecution() {
+    const arbId = el('preflight-arb-id').value;
+    const size = parseFloat(el('preflight-size').value);
+    if (!arbId || !size || size <= 0) return;
+
+    const body = el('preflight-body');
+    const actions = el('preflight-actions');
+    if (actions) actions.style.display = 'none';
+    if (body) body.innerHTML += '<div class="exec-progress">Placing orders on both venues...</div>';
+
+    try {
+        const resp = await fetch(`/api/execution/execute/${encodeURIComponent(arbId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ size_usd: size }),
+        });
+        const result = await resp.json();
+        if (!resp.ok) {
+            if (body) body.innerHTML += `<div class="exec-progress"><span class="exec-status-failed">Error: ${result.detail || resp.status}</span></div>`;
+            return;
+        }
+
+        const statusClass = result.status === 'complete' ? 'exec-status-complete' : result.status === 'partial' ? 'exec-status-partial' : 'exec-status-failed';
+        const statusLabel = result.status === 'complete' ? 'Both legs filled' : result.status === 'partial' ? 'Partial execution - check orders' : 'Execution failed';
+        if (body) body.innerHTML += `
+            <div class="exec-progress">
+                <span class="${statusClass}">${statusLabel}</span><br>
+                Total cost: ${formatUSD(result.total_cost_usd)}<br>
+                ${result.slippage_from_ticket ? `Slippage: ${formatUSD(result.slippage_from_ticket)}` : ''}
+            </div>
+        `;
+        refreshTickets();
+    } catch (err) {
+        if (body) body.innerHTML += `<div class="exec-progress"><span class="exec-status-failed">Network error: ${err.message}</span></div>`;
+    }
 }
 
 // --- Flippenings Tab ---
@@ -1133,12 +1274,128 @@ async function refreshActiveTab() {
         case 'flippenings': await refreshFlippenings(); break;
         case 'discovery': await refreshDiscovery(); break;
         case 'wshealth': await refreshWsHealth(); break;
+        case 'autoexec': await refreshAutoExec(); break;
     }
 }
 
 function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(refreshActiveTab, 30000);
+}
+
+// --- Auto-Exec Tab ---
+async function refreshAutoExec() {
+    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshAutoExecLog()]);
+}
+
+async function refreshAutoExecStatus() {
+    const data = await fetchJSON('/api/auto-execution/status');
+    if (!data) return;
+    const modeSelect = el('autoexec-mode-select');
+    if (modeSelect) modeSelect.value = data.mode || 'off';
+    if (data.circuit_breakers) {
+        data.circuit_breakers.forEach(cb => {
+            const card = el('breaker-' + cb.breaker_type);
+            if (!card) return;
+            const val = card.querySelector('.value');
+            if (val) {
+                if (cb.tripped) {
+                    val.textContent = 'TRIPPED';
+                    val.className = 'value breaker-tripped';
+                    val.title = cb.reason || '';
+                } else {
+                    val.textContent = 'OK';
+                    val.className = 'value breaker-ok';
+                    val.title = '';
+                }
+            }
+        });
+    }
+}
+
+async function refreshAutoExecStats() {
+    const data = await fetchJSON('/api/auto-execution/stats?days=1');
+    if (!data) return;
+    setText('ae-trades', data.total_trades || '0');
+    setText('ae-winloss', `${data.wins || 0}/${data.losses || 0}`);
+    const pnl = parseFloat(data.total_pnl || '0');
+    const pnlEl = el('ae-pnl');
+    if (pnlEl) {
+        pnlEl.textContent = formatUSD(pnl);
+        pnlEl.style.color = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+    const slip = parseFloat(data.avg_slippage || '0');
+    setText('ae-slippage', (slip * 100).toFixed(3) + '%');
+}
+
+async function refreshAutoExecLog() {
+    const data = await fetchJSON('/api/auto-execution/log?limit=20');
+    const tbody = el('autoexec-log-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No auto-trades yet</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(e => {
+        const cv = e.critic_verdict;
+        let criticBadge = '<span class="badge badge-critic-skipped">skipped</span>';
+        if (cv && !cv.skipped) {
+            if (cv.approved) {
+                criticBadge = `<span class="badge badge-critic-approved">approved (${(cv.risk_flags || []).length})</span>`;
+            } else {
+                criticBadge = `<span class="badge badge-critic-rejected">rejected (${(cv.risk_flags || []).length})</span>`;
+            }
+        }
+        const statusClass = e.status === 'executed' ? 'badge-approved' :
+                           e.status === 'failed' ? 'badge-cancelled' :
+                           e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
+        return `<tr>
+            <td>${shortTime(e.created_at)}</td>
+            <td title="${e.arb_id}">${(e.arb_id || '').substring(0, 10)}...</td>
+            <td>${formatPct(e.trigger_spread_pct)}</td>
+            <td>${formatUSD(e.size_usd)}</td>
+            <td>${criticBadge}</td>
+            <td><span class="badge ${statusClass}">${e.status}</span></td>
+            <td>${e.duration_ms != null ? e.duration_ms + 'ms' : '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function setText(id, text) {
+    const e = el(id);
+    if (e) e.textContent = text;
+}
+
+async function postJSONBody(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            setStatus(`POST error ${resp.status}: ${text.substring(0, 120)}`);
+            return null;
+        }
+        return await resp.json();
+    } catch (err) {
+        console.error(`POST failed: ${url}`, err);
+        return null;
+    }
+}
+
+async function setAutoExecMode() {
+    const modeSelect = el('autoexec-mode-select');
+    if (!modeSelect) return;
+    const mode = modeSelect.value;
+    await postJSONBody('/api/auto-execution/enable', { mode });
+    await refreshAutoExecStatus();
+}
+
+async function killAutoExec() {
+    await postJSON('/api/auto-execution/disable');
+    await refreshAutoExecStatus();
 }
 
 // --- Init ---
@@ -1170,7 +1427,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Close modals on Escape key or overlay click
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { closeTicketModal(); closeExecuteModal(); }
+        if (e.key === 'Escape') { closeTicketModal(); closeExecuteModal(); closePreflightModal(); }
     });
     const modalOverlay = el('ticket-modal');
     if (modalOverlay) {
@@ -1185,8 +1442,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Preflight modal overlay click
+    const preflightOverlay = el('preflight-modal');
+    if (preflightOverlay) {
+        preflightOverlay.addEventListener('click', (e) => {
+            if (e.target === preflightOverlay) closePreflightModal();
+        });
+    }
+
     // Initial load
     switchTab('opportunities');
     startAutoRefresh();
     initTickerSSE();
+    refreshExecStatus();
 });

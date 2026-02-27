@@ -166,8 +166,9 @@ class SignalGenerator:
         num_contracts = entry.suggested_size_usd / entry.entry_price
         expected_cost = entry.suggested_size_usd
         expected_profit = (entry.target_exit_price - entry.entry_price) * num_contracts
-        if expected_profit <= Decimal("0"):
-            logger.debug("flip_ticket_skipped_negative_profit", event_id=event.id)
+        min_profit = Decimal(str(self._config.min_expected_profit_usd))
+        if expected_profit < min_profit:
+            logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
             return None
         leg_1: dict[str, object] = {
             "venue": "polymarket",

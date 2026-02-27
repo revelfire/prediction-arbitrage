@@ -1,0 +1,75 @@
+"""SQL query constants for auto-execution pipeline."""
+
+INSERT_LOG = """
+INSERT INTO auto_execution_log (
+    id, arb_id, trigger_spread_pct, trigger_confidence,
+    criteria_snapshot, pre_exec_balances, size_usd,
+    critic_verdict, execution_result_id, actual_spread,
+    actual_pnl, slippage, duration_ms, circuit_breaker_state,
+    status, source
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15, $16
+)
+"""
+
+UPDATE_LOG = """
+UPDATE auto_execution_log
+SET execution_result_id = COALESCE($2, execution_result_id),
+    actual_spread = COALESCE($3, actual_spread),
+    actual_pnl = COALESCE($4, actual_pnl),
+    slippage = COALESCE($5, slippage),
+    duration_ms = COALESCE($6, duration_ms),
+    status = COALESCE($7, status)
+WHERE id = $1
+"""
+
+GET_LOG = """
+SELECT * FROM auto_execution_log WHERE id = $1
+"""
+
+LIST_LOG = """
+SELECT * FROM auto_execution_log
+ORDER BY created_at DESC
+LIMIT $1
+"""
+
+INSERT_POSITION = """
+INSERT INTO auto_execution_positions (
+    id, arb_id, poly_market_id, kalshi_ticker,
+    entry_spread, entry_cost_usd, status
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+"""
+
+CLOSE_POSITION = """
+UPDATE auto_execution_positions
+SET status = 'closed',
+    current_value_usd = $2,
+    closed_at = NOW()
+WHERE id = $1
+"""
+
+GET_OPEN_POSITIONS = """
+SELECT * FROM auto_execution_positions
+WHERE status = 'open'
+ORDER BY opened_at DESC
+"""
+
+GET_DAILY_STATS = """
+SELECT
+    COUNT(*) AS total_trades,
+    COUNT(*) FILTER (WHERE actual_pnl > 0) AS wins,
+    COUNT(*) FILTER (WHERE actual_pnl <= 0) AS losses,
+    COALESCE(SUM(actual_pnl), 0) AS total_pnl,
+    COALESCE(AVG(trigger_spread_pct), 0) AS avg_spread,
+    COALESCE(AVG(slippage), 0) AS avg_slippage,
+    COUNT(*) FILTER (
+        WHERE critic_verdict->>'approved' = 'false'
+    ) AS critic_rejections,
+    COUNT(*) FILTER (
+        WHERE status = 'breaker_blocked'
+    ) AS breaker_trips
+FROM auto_execution_log
+WHERE created_at >= (NOW() - ($1 || ' days')::interval)
+  AND status != 'pending'
+"""

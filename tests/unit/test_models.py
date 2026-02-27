@@ -539,8 +539,36 @@ class TestNotificationConfig:
         cfg = NotificationConfig()
         assert cfg.slack_webhook == ""
         assert cfg.discord_webhook == ""
+        assert cfg.flippening_slack_webhook == ""
+        assert cfg.auto_exec_slack_webhook == ""
         assert cfg.enabled is True
         assert cfg.min_spread_to_notify_pct == Decimal("0.02")
+
+    def test_effective_flippening_slack_uses_dedicated(self) -> None:
+        """Dedicated flippening URL takes priority over slack_webhook."""
+        cfg = NotificationConfig(
+            slack_webhook="https://general",
+            flippening_slack_webhook="https://flippening",
+        )
+        assert cfg.effective_flippening_slack == "https://flippening"
+
+    def test_effective_flippening_slack_falls_back(self) -> None:
+        """Falls back to slack_webhook when flippening URL is empty."""
+        cfg = NotificationConfig(slack_webhook="https://general")
+        assert cfg.effective_flippening_slack == "https://general"
+
+    def test_effective_auto_exec_slack_uses_dedicated(self) -> None:
+        """Dedicated auto-exec URL takes priority over slack_webhook."""
+        cfg = NotificationConfig(
+            slack_webhook="https://general",
+            auto_exec_slack_webhook="https://autoexec",
+        )
+        assert cfg.effective_auto_exec_slack == "https://autoexec"
+
+    def test_effective_auto_exec_slack_falls_back(self) -> None:
+        """Falls back to slack_webhook when auto-exec URL is empty."""
+        cfg = NotificationConfig(slack_webhook="https://general")
+        assert cfg.effective_auto_exec_slack == "https://general"
 
 
 class TestStorageConfig:

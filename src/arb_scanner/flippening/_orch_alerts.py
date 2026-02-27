@@ -46,9 +46,9 @@ async def dispatch_entry_alert(
     """
     notif = config.notifications
     await dispatch_flip_alert(
-        build_entry_slack_payload(event, entry) if notif.slack_webhook else None,
+        build_entry_slack_payload(event, entry) if notif.effective_flippening_slack else None,
         build_entry_discord_payload(event, entry) if notif.discord_webhook else None,
-        slack_url=notif.slack_webhook,
+        slack_url=notif.effective_flippening_slack,
         discord_url=notif.discord_webhook,
         client=client,
     )
@@ -72,9 +72,11 @@ async def dispatch_exit_alert(
     """
     notif = config.notifications
     await dispatch_flip_alert(
-        build_exit_slack_payload(event, entry, exit_sig) if notif.slack_webhook else None,
+        build_exit_slack_payload(event, entry, exit_sig)
+        if notif.effective_flippening_slack
+        else None,
         build_exit_discord_payload(event, entry, exit_sig) if notif.discord_webhook else None,
-        slack_url=notif.slack_webhook,
+        slack_url=notif.effective_flippening_slack,
         discord_url=notif.discord_webhook,
         client=client,
     )
@@ -89,12 +91,12 @@ async def dispatch_drift_alert(config: Settings, client: httpx.AsyncClient) -> N
     """
     notif = config.notifications
     msg = "WebSocket schema drift detected — parser match rate below threshold."
-    slack_payload = {"text": f":warning: {msg}"} if notif.slack_webhook else None
+    slack_payload = {"text": f":warning: {msg}"} if notif.effective_flippening_slack else None
     discord_payload = {"content": f"**{msg}**"} if notif.discord_webhook else None
     await dispatch_flip_alert(
         slack_payload,
         discord_payload,
-        slack_url=notif.slack_webhook,
+        slack_url=notif.effective_flippening_slack,
         discord_url=notif.discord_webhook,
         client=client,
     )
@@ -135,10 +137,10 @@ async def handle_discovery_health(
         for msg in alerts:
             logger.warning("discovery_degradation", alert=msg)
         notif = config.notifications
-        if notif.slack_webhook or notif.discord_webhook:
+        if notif.effective_flippening_slack or notif.discord_webhook:
             slack_payload: dict[str, Any] | None = (
                 {"text": f":warning: Market Discovery Alert\n{chr(10).join(alerts)}"}
-                if notif.slack_webhook
+                if notif.effective_flippening_slack
                 else None
             )
             discord_payload: dict[str, Any] | None = (
@@ -149,7 +151,7 @@ async def handle_discovery_health(
             await dispatch_flip_alert(
                 slack_payload,
                 discord_payload,
-                slack_url=notif.slack_webhook,
+                slack_url=notif.effective_flippening_slack,
                 discord_url=notif.discord_webhook,
                 client=client,
             )

@@ -58,6 +58,23 @@ body {
     color: var(--accent);
     border-bottom-color: var(--accent);
 }
+.tab-group-label {
+    padding: 12px 8px 12px 12px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    opacity: 0.6;
+    align-self: center;
+    user-select: none;
+}
+.tab-divider {
+    width: 1px;
+    background: var(--border);
+    margin: 8px 4px;
+    align-self: stretch;
+}
 
 /* Content */
 .content { padding: 24px; max-width: 1400px; margin: 0 auto; }
@@ -372,6 +389,33 @@ tr.clickable { cursor: pointer; }
     font-weight: 500;
 }
 .modal-body .venue-link:hover { text-decoration: underline; }
+.market-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+}
+.market-link:hover { text-decoration: underline; }
+.match-comparison .detail-grid {
+    grid-template-columns: 1fr 1fr;
+}
+.match-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+}
+.match-card .match-venue {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.match-card .match-title {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+}
 .modal-body .leg-card {
     background: var(--bg-primary);
     border: 1px solid var(--border);
@@ -406,3 +450,96 @@ tr.clickable { cursor: pointer; }
 
 /* Btn warning for cancel */
 .btn-warning { background: var(--warning); color: #000; }
+
+/* Execution engine indicator */
+.exec-indicator {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+    margin-right: 8px;
+}
+.exec-disabled { background: rgba(233, 69, 96, 0.2); color: var(--danger); }
+.exec-ready { background: rgba(0, 230, 118, 0.2); color: var(--success); }
+
+/* Preflight checks */
+.preflight-checks { list-style: none; padding: 0; margin: 0 0 16px 0; }
+.preflight-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.4);
+    font-size: 13px;
+}
+.preflight-icon { font-size: 14px; min-width: 18px; text-align: center; }
+.preflight-pass { color: var(--success); }
+.preflight-fail { color: var(--danger); }
+.preflight-name { font-weight: 600; min-width: 120px; }
+.preflight-msg { color: var(--text-secondary); }
+
+/* Preflight summary row */
+.preflight-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 24px;
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+.preflight-summary .detail-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.3);
+}
+
+/* Execution progress */
+.exec-progress {
+    padding: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-top: 8px;
+    font-size: 13px;
+}
+.exec-progress .exec-status-complete { color: var(--success); }
+.exec-progress .exec-status-partial { color: var(--warning); }
+.exec-progress .exec-status-failed { color: var(--danger); }
+
+/* Auto-Exec Tab */
+.autoexec-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+.autoexec-mode {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.autoexec-mode select {
+    background: var(--bg-accent);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+}
+#autoexec-kill-btn {
+    padding: 8px 24px;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.breaker-ok { color: var(--success); }
+.breaker-tripped { color: var(--danger); }
+.badge-critic-approved { background: var(--success); color: #000; }
+.badge-critic-rejected { background: var(--danger); color: #fff; }
+.badge-critic-skipped { background: var(--text-secondary); color: #000; }

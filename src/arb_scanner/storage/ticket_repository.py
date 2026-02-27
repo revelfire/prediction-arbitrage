@@ -159,3 +159,21 @@ class TicketRepository:
         if expired:
             logger.info("tickets_auto_expired", count=len(expired))
         return expired
+
+    async def prune_tickets(self, before: datetime) -> int:
+        """Delete terminal tickets older than the given cutoff.
+
+        Removes tickets in expired, executed, or cancelled states
+        that were created before ``before``.
+
+        Args:
+            before: Delete tickets created before this datetime.
+
+        Returns:
+            Number of deleted tickets.
+        """
+        rows = await self._pool.fetch(TQ.PRUNE_TERMINAL_TICKETS, before)
+        count = len(rows)
+        if count:
+            logger.info("tickets_pruned", count=count)
+        return count

@@ -38,6 +38,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.db = db
         logger.info("api.started", host=config.dashboard.host, port=config.dashboard.port)
 
+    if not no_db and config.execution.enabled and app.state.db is not None:
+        _init_execution(app, config)
+
+    if not no_db and config.auto_execution.enabled and app.state.db is not None:
+        _init_auto_execution(app, config)
+
     flip_task: asyncio.Task[None] | None = None
     if flip_watch and not no_db:
         from arb_scanner.flippening.orchestrator import run_flip_watch
@@ -45,8 +51,20 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         flip_task = asyncio.create_task(run_flip_watch(config))
         logger.info("flip_watch_embedded", mode="background_task")
 
+    expire_task: asyncio.Task[None] | None = None
+    if not no_db and app.state.db is not None:
+        expire_task = asyncio.create_task(_run_ticket_expiry(app))
+        logger.info("ticket_expiry_started")
+
     yield
 
+    if expire_task is not None:
+        expire_task.cancel()
+        try:
+            await expire_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("ticket_expiry_stopped")
     if flip_task is not None:
         flip_task.cancel()
         try:
@@ -57,6 +75,108 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not no_db and app.state.db is not None:
         await app.state.db.disconnect()
     logger.info("api.stopped")
+
+
+def _init_execution(app: FastAPI, config: Settings) -> None:
+    """Wire up execution engine components on app state.
+
+    Args:
+        app: FastAPI application.
+        config: Application settings.
+    """
+    from arb_scanner.execution.capital_manager import CapitalManager
+    from arb_scanner.execution.kalshi_executor import KalshiExecutor
+    from arb_scanner.execution.orchestrator import ExecutionOrchestrator
+    from arb_scanner.execution.polymarket_executor import PolymarketExecutor
+    from arb_scanner.storage.execution_repository import ExecutionRepository
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    poly = PolymarketExecutor(config.execution.polymarket)
+    kalshi = KalshiExecutor(config.execution.kalshi)
+    capital = CapitalManager(config.execution, poly.get_balance, kalshi.get_balance)
+    exec_repo = ExecutionRepository(app.state.db.pool)
+    ticket_repo = TicketRepository(app.state.db.pool)
+    orch = ExecutionOrchestrator(
+        config=config.execution,
+        capital=capital,
+        poly=poly,
+        kalshi=kalshi,
+        exec_repo=exec_repo,
+        ticket_repo=ticket_repo,
+    )
+    app.state.execution_orchestrator = orch
+    app.state.execution_repo = exec_repo
+    app.state.capital_manager = capital
+    app.state.poly_executor = poly
+    app.state.kalshi_executor = kalshi
+    logger.info("execution_engine_initialised")
+
+
+def _init_auto_execution(app: FastAPI, config: Settings) -> None:
+    """Wire up auto-execution pipeline components on app state.
+
+    Args:
+        app: FastAPI application.
+        config: Application settings.
+    """
+    from arb_scanner.execution.auto_pipeline import AutoExecutionPipeline
+    from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
+    from arb_scanner.execution.trade_critic import TradeCritic
+    from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+
+    ac = config.auto_execution
+    critic = TradeCritic(ac.critic, config.claude)
+    breakers = CircuitBreakerManager(ac)
+    auto_repo = AutoExecRepository(app.state.db.pool)
+
+    orch = getattr(app.state, "execution_orchestrator", None)
+    capital = getattr(app.state, "capital_manager", None)
+    poly = getattr(app.state, "poly_executor", None)
+    kalshi = getattr(app.state, "kalshi_executor", None)
+
+    pipeline = AutoExecutionPipeline(
+        config=config,
+        auto_config=ac,
+        orchestrator=orch,
+        critic=critic,
+        breakers=breakers,
+        auto_repo=auto_repo,
+        capital=capital,
+        poly=poly,
+        kalshi=kalshi,
+    )
+    app.state.auto_pipeline = pipeline
+    app.state.circuit_breakers = breakers
+    app.state.auto_exec_repo = auto_repo
+    logger.info("auto_execution_pipeline_initialised")
+
+
+async def _run_ticket_expiry(app: FastAPI) -> None:
+    """Periodically expire stale pending tickets.
+
+    Args:
+        app: FastAPI application with config and db on state.
+    """
+    import asyncio
+
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    config: Settings = app.state.config
+    lc = config.ticket_lifecycle
+    interval = lc.expire_interval_minutes * 60
+    max_age = lc.max_pending_hours
+
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            repo = TicketRepository(app.state.db.pool)
+            expired = await repo.auto_expire(max_age_hours=max_age)
+            if expired:
+                logger.info("ticket_expiry_cycle", expired=len(expired))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ticket_expiry_error")
 
 
 def create_app(
@@ -94,6 +214,8 @@ def create_app(
 
     # API route modules
     from arb_scanner.api.routes_alerts import router as alerts_router
+    from arb_scanner.api.routes_auto_execution import router as auto_execution_router
+    from arb_scanner.api.routes_execution import router as execution_router
     from arb_scanner.api.routes_flippening import router as flippening_router
     from arb_scanner.api.routes_health import router as health_router
     from arb_scanner.api.routes_matches import router as matches_router
@@ -112,6 +234,8 @@ def create_app(
     app.include_router(flippening_router)
     app.include_router(price_stream_router)
     app.include_router(ws_telemetry_router)
+    app.include_router(execution_router)
+    app.include_router(auto_execution_router)
 
     return app
 

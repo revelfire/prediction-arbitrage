@@ -47,6 +47,7 @@ class GameState:
     price_history: deque[PriceUpdate] = field(
         default_factory=lambda: deque(maxlen=_PRICE_HISTORY_MAXLEN),
     )
+    market_slug: str = ""
     game_start_time: datetime | None = None
     entered_live_at: datetime | None = None
     drift_accumulator: list[tuple[datetime, Decimal]] = field(default_factory=list)
@@ -82,9 +83,19 @@ class GameManager:
                 continue
             if sm.game_start_time and sm.game_start_time > now + pre_game:
                 continue
+            cat_type = getattr(sm, "category_type", "sport")
+            if cat_type == "sport":
+                if sm.game_start_time is None:
+                    logger.info("game_skipped_no_start", market_id=mid)
+                    continue
+                ewh = self._get_event_window_hours(sm.category)
+                if sm.game_start_time < now - timedelta(hours=ewh):
+                    logger.info("game_skipped_stale", market_id=mid)
+                    continue
             is_live = sm.game_start_time is not None and sm.game_start_time <= now
             phase = GamePhase.LIVE if is_live else GamePhase.UPCOMING
             cat_cfg = self._config.categories.get(sm.category)
+            slug = str(sm.market.raw_data.get("slug", ""))
             state = GameState(
                 market_id=mid,
                 market_title=sm.market.title,
@@ -95,6 +106,7 @@ class GameManager:
                 category_type=sm.category_type,
                 baseline_strategy=cat_cfg.baseline_strategy if cat_cfg else "first_price",
                 event_window_hours=cat_cfg.event_window_hours if cat_cfg else 4.0,
+                market_slug=slug,
                 game_start_time=sm.game_start_time,
             )
             self._games[mid] = state
@@ -117,9 +129,22 @@ class GameManager:
         state: GameState,
         update: PriceUpdate,
         late_join: bool,
-    ) -> Baseline:
+    ) -> Baseline | None:
         """Capture baseline odds using the configured strategy."""
         baseline = self._capture_by_strategy(state, update, late_join)
+        yes_price = float(baseline.yes_price)
+        mn = self._config.min_baseline_price
+        mx = self._config.max_baseline_price
+        if yes_price < mn or yes_price > mx:
+            logger.warning(
+                "baseline_rejected_extreme",
+                market_id=state.market_id,
+                yes_price=yes_price,
+                min_price=mn,
+                max_price=mx,
+            )
+            state.baseline = None
+            return None
         state.baseline = baseline
         state.entered_live_at = update.timestamp
         return baseline
@@ -190,6 +215,8 @@ class GameManager:
         if state.needs_baseline:
             self.capture_baseline(state, update, late_join=True)
             state.needs_baseline = False
+        elif state.baseline is not None:
+            self._recapture_if_stale(state, update)
         was_live = state.phase == GamePhase.LIVE
         self._advance_lifecycle(state, update)
         current_phase = GamePhase(state.phase.value)
@@ -253,6 +280,30 @@ class GameManager:
         """Remove a completed game from tracking."""
         self._games.pop(market_id, None)
         logger.info("game_removed", market_id=market_id)
+
+    def _get_event_window_hours(self, category: str) -> float:
+        """Return event_window_hours for a category."""
+        cat_cfg = self._config.categories.get(category)
+        return cat_cfg.event_window_hours if cat_cfg else 4.0
+
+    def _recapture_if_stale(self, state: GameState, update: PriceUpdate) -> None:
+        """Recapture baseline if deviation exceeds max_deviation_recapture_pct."""
+        bl = state.baseline
+        if bl is None or bl.yes_price <= 0:
+            return
+        yes_mid = (update.yes_bid + update.yes_ask) / 2
+        dev_pct = abs(float((yes_mid - bl.yes_price) / bl.yes_price * 100))
+        if dev_pct > self._config.max_deviation_recapture_pct:
+            old_yes = float(bl.yes_price)
+            self.capture_baseline(state, update, late_join=True)
+            new_yes = float(state.baseline.yes_price) if state.baseline else None
+            logger.info(
+                "baseline_recaptured_stale",
+                market_id=state.market_id,
+                old_yes=old_yes,
+                new_yes=new_yes,
+                deviation_pct=dev_pct,
+            )
 
     def _advance_lifecycle(self, state: GameState, update: PriceUpdate) -> None:
         """Transition game phase if conditions are met."""

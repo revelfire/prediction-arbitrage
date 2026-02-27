@@ -137,6 +137,36 @@ class TestGetSummary:
         mock_pool.fetch.assert_awaited_once_with(TQ.GET_TICKET_SUMMARY, "30")
 
 
+class TestPruneTickets:
+    """Tests for prune_tickets()."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_count(self, repo: TicketRepository, mock_pool: AsyncMock) -> None:
+        """Returns count of deleted tickets."""
+        from datetime import datetime, timezone
+
+        class FakeRecord(dict[str, Any]):
+            def __getitem__(self, key: str) -> Any:
+                return super().__getitem__(key)
+
+        mock_pool.fetch.return_value = [FakeRecord(arb_id="t1"), FakeRecord(arb_id="t2")]
+        cutoff = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        result = await repo.prune_tickets(cutoff)
+        assert result == 2
+        mock_pool.fetch.assert_awaited_once_with(TQ.PRUNE_TERMINAL_TICKETS, cutoff)
+
+    @pytest.mark.asyncio()
+    async def test_returns_zero_when_empty(
+        self, repo: TicketRepository, mock_pool: AsyncMock
+    ) -> None:
+        """Returns 0 when no tickets match."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        result = await repo.prune_tickets(cutoff)
+        assert result == 0
+
+
 class TestAutoExpire:
     """Tests for auto_expire()."""
 

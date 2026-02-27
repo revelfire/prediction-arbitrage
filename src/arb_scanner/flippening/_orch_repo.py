@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import structlog
@@ -65,6 +66,9 @@ async def persist_entry(
     event: FlippeningEvent,
     entry: EntrySignal,
     baseline: Any,
+    *,
+    min_expected_profit_usd: Decimal = Decimal("1.00"),
+    market_slug: str = "",
 ) -> None:
     """Persist entry data to the database.
 
@@ -73,12 +77,19 @@ async def persist_entry(
         event: Detected flippening event.
         entry: Entry signal.
         baseline: Baseline data.
+        min_expected_profit_usd: Minimum profit to create ticket.
+        market_slug: Polymarket slug for building market URL.
     """
     try:
         await repo.insert_baseline(baseline)
         await repo.insert_event(event)
         await repo.insert_signal(entry)
-        await repo.insert_flip_ticket(event, entry)
+        await repo.insert_flip_ticket(
+            event,
+            entry,
+            min_expected_profit_usd=min_expected_profit_usd,
+            market_slug=market_slug,
+        )
     except Exception:
         logger.exception("persist_entry_failed")
 

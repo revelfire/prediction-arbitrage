@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 import asyncpg
@@ -189,17 +190,29 @@ class FlippeningRepository:
         self,
         event: FlippeningEvent,
         entry: EntrySignal,
+        *,
+        min_expected_profit_usd: Decimal = Decimal("1.00"),
+        market_slug: str = "",
     ) -> None:
-        """Persist a flippening execution ticket (skips if unprofitable)."""
+        """Persist a flippening execution ticket (skips if below threshold).
+
+        Args:
+            event: Flippening event.
+            entry: Entry signal.
+            min_expected_profit_usd: Minimum profit to persist ticket.
+            market_slug: Polymarket slug for building market URL.
+        """
         expected_profit = entry.expected_profit_pct * entry.suggested_size_usd
-        if expected_profit <= 0:
-            logger.debug("flip_ticket_skipped_negative_profit", event_id=event.id)
+        if expected_profit < min_expected_profit_usd:
+            logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
             return
+        market_url = f"https://polymarket.com/event/{market_slug}" if market_slug else ""
         leg_1 = json.dumps(
             {
                 "action": f"BUY {entry.side.upper()}",
                 "market_id": event.market_id,
                 "market_title": event.market_title,
+                "market_url": market_url,
                 "price": str(entry.entry_price),
                 "sport": event.sport,
             }

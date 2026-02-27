@@ -290,6 +290,7 @@ class TestCreateTicket:
         entry = _entry()
         ev = _event()
         ticket = gen.create_ticket(entry, ev)
+        assert ticket is not None
         assert ticket.leg_1["action"] == "buy"
         assert ticket.leg_2["action"] == "sell"
         assert ticket.leg_1["venue"] == "polymarket"
@@ -300,6 +301,7 @@ class TestCreateTicket:
         entry = _entry()
         ev = _event()
         ticket = gen.create_ticket(entry, ev)
+        assert ticket is not None
         assert ticket.ticket_type == "flippening"
 
     def test_expected_cost_and_profit(self) -> None:
@@ -308,9 +310,28 @@ class TestCreateTicket:
         entry = _entry(entry_price="0.50", target_exit="0.605")
         ev = _event()
         ticket = gen.create_ticket(entry, ev)
+        assert ticket is not None
         # expected_cost is the dollar position (suggested_size_usd)
         assert ticket.expected_cost == Decimal("80.00")
         # num_contracts = 80 / 0.50 = 160; profit = 0.105 * 160 = 16.80
         num_contracts = Decimal("80.00") / Decimal("0.50")
         expected_profit = Decimal("0.105") * num_contracts
         assert ticket.expected_profit == expected_profit
+
+    def test_create_ticket_skips_below_min_profit(self) -> None:
+        """Ticket is None when expected profit is below config threshold."""
+        config = FlippeningConfig(enabled=True, min_expected_profit_usd=100.0)
+        gen = SignalGenerator(config)
+        entry = _entry(entry_price="0.50", target_exit="0.505")
+        ev = _event()
+        ticket = gen.create_ticket(entry, ev)
+        assert ticket is None
+
+    def test_create_ticket_respects_low_threshold(self) -> None:
+        """Ticket is created when profit exceeds low threshold."""
+        config = FlippeningConfig(enabled=True, min_expected_profit_usd=0.01)
+        gen = SignalGenerator(config)
+        entry = _entry(entry_price="0.50", target_exit="0.605")
+        ev = _event()
+        ticket = gen.create_ticket(entry, ev)
+        assert ticket is not None

@@ -54,6 +54,11 @@ def flip_watch(
         "--dry-run",
         help="Run without persistence or alerts.",
     ),
+    auto_execute: bool = typer.Option(
+        False,
+        "--auto-execute",
+        help="Enable autonomous execution pipeline.",
+    ),
 ) -> None:
     """Watch live markets for flippening opportunities."""
     try:
@@ -64,6 +69,11 @@ def flip_watch(
 
     if min_confidence > 0:
         config.flippening.min_confidence = min_confidence
+
+    if auto_execute:
+        config.auto_execution.enabled = True
+        config.auto_execution.mode = "auto"
+        logger.info("auto_execute_enabled_via_cli")
 
     category_filter = _build_category_filter(categories, sports, config)
 

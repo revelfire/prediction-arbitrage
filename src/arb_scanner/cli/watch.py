@@ -58,6 +58,9 @@ async def run_watch(
         for opp in new_opps:
             seen_keys.add(_opp_dedup_key(opp))
 
+        if not dry_run and new_opps:
+            await _feed_auto_pipeline(new_opps, config)
+
         if detector is not None:
             trend_alerts = detector.ingest(result)
             if trend_alerts:
@@ -65,6 +68,9 @@ async def run_watch(
                 if not dry_run:
                     await _persist_trend_alerts(trend_alerts, config)
             logger.info("watch_trend_check", cycle=cycle, trend_alerts=len(trend_alerts))
+
+        if not dry_run:
+            await _auto_expire_tickets(config)
 
         logger.info("watch_cycle_done", cycle=cycle, new_alerts=len(new_opps))
         await _interruptible_sleep(interval, stop_event)
@@ -138,6 +144,26 @@ async def _dispatch_trend_alerts(
         )
 
 
+async def _auto_expire_tickets(config: Settings) -> None:
+    """Expire stale pending tickets (fire-and-forget).
+
+    Args:
+        config: Application settings with lifecycle config.
+    """
+    from arb_scanner.storage.db import Database
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    try:
+        max_age = config.ticket_lifecycle.max_pending_hours
+        async with Database(config.storage.database_url) as db:
+            repo = TicketRepository(db.pool)
+            expired = await repo.auto_expire(max_age_hours=max_age)
+            if expired:
+                logger.info("watch_tickets_expired", count=len(expired))
+    except Exception:
+        logger.exception("watch_ticket_expire_failed")
+
+
 async def _persist_trend_alerts(
     alerts: list[TrendAlert],
     config: Settings,
@@ -158,6 +184,34 @@ async def _persist_trend_alerts(
                 await repo.insert_trend_alert(alert)
     except Exception:
         logger.exception("trend_alert_persist_failed")
+
+
+async def _feed_auto_pipeline(
+    opps: list[ArbOpportunity],
+    config: Settings,
+) -> None:
+    """Feed new opportunities to the auto-execution pipeline if available.
+
+    Args:
+        opps: New arbitrage opportunities.
+        config: Application settings.
+    """
+    try:
+        pipeline = getattr(config, "_auto_pipeline", None)
+        if pipeline is None:
+            return
+        for opp in opps:
+            opp_dict = {
+                "arb_id": f"{opp.poly_market.event_id}_{opp.kalshi_market.event_id}",
+                "spread_pct": float(opp.net_spread_pct),
+                "confidence": float(getattr(opp, "confidence", 0)),
+                "category": getattr(opp, "category", ""),
+                "title": opp.poly_market.title,
+                "ticket_type": "arbitrage",
+            }
+            await pipeline.process_opportunity(opp_dict, source="arb_watch")
+    except Exception:
+        logger.warning("auto_pipeline_feed_failed")
 
 
 async def _interruptible_sleep(seconds: int, stop_event: asyncio.Event) -> None:
