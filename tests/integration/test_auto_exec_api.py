@@ -127,16 +127,24 @@ def client(auto_repo: AsyncMock) -> TestClient:
 
     app.state.config = config
 
-    # Set up pipeline mock
+    # Set up pipeline mocks (split pipelines)
     pipeline = MagicMock()
     pipeline.mode = "auto"
     pipeline.set_mode = MagicMock()
     pipeline.kill = MagicMock()
-    app.state.auto_pipeline = pipeline
+    app.state.arb_pipeline = pipeline
 
-    # Set up breakers
-    breakers = CircuitBreakerManager(config.auto_execution)
-    app.state.circuit_breakers = breakers
+    flip_pipeline = MagicMock()
+    flip_pipeline.mode = "auto"
+    flip_pipeline.set_mode = MagicMock()
+    flip_pipeline.kill = MagicMock()
+    app.state.flip_pipeline = flip_pipeline
+
+    # Set up per-pipeline breakers
+    arb_breakers = CircuitBreakerManager(config.auto_execution)
+    flip_breakers = CircuitBreakerManager(config.auto_execution)
+    app.state.arb_breakers = arb_breakers
+    app.state.flip_breakers = flip_breakers
 
     app.dependency_overrides[get_config] = lambda: config
     app.dependency_overrides[get_auto_exec_repo] = lambda: auto_repo
@@ -166,11 +174,13 @@ class TestAutoExecAPIIntegration:
         assert "critic" in data
         assert data["critic"]["enabled"] is True
 
-        assert "circuit_breakers" in data
-        assert len(data["circuit_breakers"]) == 3
-        for cb in data["circuit_breakers"]:
+        assert "arb_breakers" in data
+        assert len(data["arb_breakers"]) == 3
+        for cb in data["arb_breakers"]:
             assert "breaker_type" in cb
             assert "tripped" in cb
+        assert "flip_breakers" in data
+        assert len(data["flip_breakers"]) == 3
 
     def test_enable_then_disable_flow(self, client: TestClient) -> None:
         """Full enable/disable lifecycle works end-to-end."""
@@ -231,10 +241,13 @@ class TestAutoExecAPIIntegration:
 
     def test_breaker_reset_and_verify(self, client: TestClient) -> None:
         """Reset anomaly breaker and verify state via status endpoint."""
-        # Trip the anomaly breaker
-        breakers = client.app.state.circuit_breakers  # type: ignore[union-attr]
+        # Trip the anomaly breaker on arb breakers
+        breakers = client.app.state.arb_breakers  # type: ignore[union-attr]
         breakers.check_anomaly(0.99)
         assert breakers.is_any_tripped() is True
+
+        # The reset endpoint uses app.state.circuit_breakers — set it
+        client.app.state.circuit_breakers = breakers  # type: ignore[union-attr]
 
         # Reset it
         resp = client.post(
@@ -247,8 +260,8 @@ class TestAutoExecAPIIntegration:
         # Verify via status endpoint
         status_resp = client.get("/api/auto-execution/status")
         data = status_resp.json()
-        breaker_states = data["circuit_breakers"]
-        anomaly = next(b for b in breaker_states if b["breaker_type"] == "anomaly")
+        arb_states = data["arb_breakers"]
+        anomaly = next(b for b in arb_states if b["breaker_type"] == "anomaly")
         assert anomaly["tripped"] is False
 
     def test_stats_with_days_param(self, client: TestClient) -> None:

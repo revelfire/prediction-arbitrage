@@ -21,7 +21,7 @@
     <!-- Tab Bar -->
     <div class="tab-bar">
         <span class="tab-group-label">Arbitrage</span>
-        <button class="tab-btn active" data-tab="opportunities">Opportunities</button>
+        <button class="tab-btn" data-tab="opportunities">Opportunities</button>
         <button class="tab-btn" data-tab="health">Health</button>
         <button class="tab-btn" data-tab="alerts">Alerts</button>
         <span class="tab-divider"></span>
@@ -31,15 +31,16 @@
         <button class="tab-btn" data-tab="wshealth">WS Health</button>
         <span class="tab-divider"></span>
         <span class="tab-group-label">Execution</span>
-        <button class="tab-btn" data-tab="tickets">Tickets</button>
+        <button class="tab-btn active" data-tab="tickets">Tickets</button>
         <button class="tab-btn" data-tab="autoexec">Auto-Exec</button>
+        <button class="tab-btn" data-tab="balances">Balances</button>
     </div>
 
     <!-- Content -->
     <div class="content">
 
         <!-- Opportunities Tab -->
-        <div id="tab-opportunities" class="tab-content active">
+        <div id="tab-opportunities" class="tab-content">
             <div class="section-title">Recent Opportunities</div>
             <table>
                 <thead>
@@ -153,7 +154,7 @@
         </div>
 
         <!-- Tickets Tab -->
-        <div id="tab-tickets" class="tab-content">
+        <div id="tab-tickets" class="tab-content active">
             <div class="filter-bar">
                 <label>Status:</label>
                 <select id="ticket-status-filter">
@@ -216,6 +217,17 @@
                     <tr><td colspan="8" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+
+        <!-- Auto-Exec Log Detail Modal -->
+        <div id="ae-log-modal" class="modal-overlay" style="display:none" onclick="closeAeLogModal(event)">
+            <div class="modal-content" style="max-width:620px" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <h3 id="ae-log-modal-title">Auto-Exec Detail</h3>
+                    <button class="modal-close" onclick="closeAeLogModal()">&times;</button>
+                </div>
+                <div id="ae-log-modal-body" class="modal-body">Loading...</div>
+            </div>
         </div>
 
         <!-- Ticket Detail Modal -->
@@ -501,24 +513,50 @@
                         <option value="manual">Manual</option>
                         <option value="auto">Auto</option>
                     </select>
-                    <button class="btn btn-primary btn-sm" onclick="setAutoExecMode()">Apply</button>
+                    <button id="autoexec-apply-btn" class="btn btn-primary btn-sm" onclick="setAutoExecMode()">Apply</button>
+                    <span id="ae-mode-badge" class="ae-mode-badge ae-mode-off">OFF</span>
                 </div>
                 <button id="autoexec-kill-btn" class="btn btn-danger" onclick="killAutoExec()">KILL SWITCH</button>
             </div>
 
+            <!-- Live Pipeline Activity -->
+            <div class="section-title">Live Pipeline Activity</div>
+            <div id="ae-activity-banner" class="ws-status-banner ws-idle">
+                <span id="ae-activity-dot" class="ws-status-dot"></span>
+                <span id="ae-activity-label">Waiting for auto-exec events...</span>
+            </div>
+            <div id="ae-activity-feed" class="ae-activity-feed">
+                <div class="empty-state">No activity yet</div>
+            </div>
+
             <!-- Circuit Breakers -->
-            <div class="section-title">Circuit Breakers</div>
-            <div id="breaker-indicators" class="metrics-grid">
-                <div class="metric-card" id="breaker-loss">
-                    <div class="label">Loss Breaker</div>
+            <div class="section-title">Circuit Breakers — Arb Pipeline</div>
+            <div id="arb-breaker-indicators" class="metrics-grid">
+                <div class="metric-card" id="arb-breaker-loss">
+                    <div class="label">Loss</div>
                     <div class="value breaker-ok">OK</div>
                 </div>
-                <div class="metric-card" id="breaker-failure">
-                    <div class="label">Failure Breaker</div>
+                <div class="metric-card" id="arb-breaker-failure">
+                    <div class="label">Failure</div>
                     <div class="value breaker-ok">OK</div>
                 </div>
-                <div class="metric-card" id="breaker-anomaly">
-                    <div class="label">Anomaly Breaker</div>
+                <div class="metric-card" id="arb-breaker-anomaly">
+                    <div class="label">Anomaly</div>
+                    <div class="value breaker-ok">OK</div>
+                </div>
+            </div>
+            <div class="section-title">Circuit Breakers — Flip Pipeline</div>
+            <div id="flip-breaker-indicators" class="metrics-grid">
+                <div class="metric-card" id="flip-breaker-loss">
+                    <div class="label">Loss</div>
+                    <div class="value breaker-ok">OK</div>
+                </div>
+                <div class="metric-card" id="flip-breaker-failure">
+                    <div class="label">Failure</div>
+                    <div class="value breaker-ok">OK</div>
+                </div>
+                <div class="metric-card" id="flip-breaker-anomaly">
+                    <div class="label">Anomaly</div>
                     <div class="value breaker-ok">OK</div>
                 </div>
             </div>
@@ -544,6 +582,36 @@
                 </div>
             </div>
 
+            <!-- Open Positions -->
+            <div class="section-title">Open Positions</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Open</div>
+                    <div class="value" id="ae-open-count">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Total Exposure</div>
+                    <div class="value" id="ae-open-exposure">$0.00</div>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Type</th>
+                        <th>Side</th>
+                        <th>Size</th>
+                        <th>Entry</th>
+                        <th>Hold Time</th>
+                        <th>Target</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="open-positions-tbody">
+                    <tr><td colspan="8" class="empty-state">No open positions</td></tr>
+                </tbody>
+            </table>
+
             <!-- Recent Auto-Trades -->
             <div class="section-title">Recent Auto-Trades</div>
             <table>
@@ -555,11 +623,68 @@
                         <th>Size</th>
                         <th>Critic</th>
                         <th>Status</th>
-                        <th>Duration</th>
+                        <th>Pipeline</th>
                     </tr>
                 </thead>
                 <tbody id="autoexec-log-tbody">
                     <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Balances Tab -->
+        <div id="tab-balances" class="tab-content">
+            <div class="section-title">Venue Balances</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Polymarket USDC</div>
+                    <div class="value" id="bal-poly">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Kalshi USD</div>
+                    <div class="value" id="bal-kalshi">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Total</div>
+                    <div class="value" id="bal-total">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Suggested Size</div>
+                    <div class="value" id="bal-suggested">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Exposure &amp; P&amp;L</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Current Exposure</div>
+                    <div class="value" id="bal-exposure">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Remaining Capacity</div>
+                    <div class="value" id="bal-remaining">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Daily P&amp;L</div>
+                    <div class="value" id="bal-pnl">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Open Positions</div>
+                    <div class="value" id="bal-positions">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Capital Constraints</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Constraint</th>
+                        <th>Status</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody id="bal-constraints-tbody">
+                    <tr><td colspan="3" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
         </div>

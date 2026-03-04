@@ -189,8 +189,8 @@ class TestExpectedCostProfit:
         assert ticket is not None
         assert ticket.expected_profit == Decimal("5.00")
 
-    def test_large_size_scaling(self) -> None:
-        """Verify expected values scale with large max_size."""
+    def test_large_size_capped_to_max_ticket_size(self) -> None:
+        """Verify max_size is capped to max_ticket_size_usd."""
         opp = _make_opportunity(
             cost=Decimal("0.90"),
             net_profit=Decimal("0.03"),
@@ -198,8 +198,43 @@ class TestExpectedCostProfit:
         )
         ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
         assert ticket is not None
-        assert ticket.expected_cost == Decimal("9000.00")
-        assert ticket.expected_profit == Decimal("300.00")
+        # Default cap is $500, so effective_size = 500
+        assert ticket.expected_cost == Decimal("450.00")
+        assert ticket.expected_profit == Decimal("15.00")
+
+    def test_custom_max_ticket_size(self) -> None:
+        """Verify custom max_ticket_size_usd overrides default cap."""
+        opp = _make_opportunity(
+            cost=Decimal("0.90"),
+            net_profit=Decimal("0.03"),
+            max_size=Decimal("10000"),
+        )
+        ticket = generate_ticket(
+            opp,
+            min_expected_profit_usd=Decimal("0"),
+            max_ticket_size_usd=Decimal("200"),
+        )
+        assert ticket is not None
+        assert ticket.expected_cost == Decimal("180.00")
+        assert ticket.expected_profit == Decimal("6.00")
+        assert ticket.leg_1["size"] == Decimal("200")
+        assert ticket.leg_2["size"] == Decimal("200")
+
+    def test_size_below_cap_unchanged(self) -> None:
+        """Verify sizes below cap are not modified."""
+        opp = _make_opportunity(
+            cost=Decimal("0.90"),
+            net_profit=Decimal("0.03"),
+            max_size=Decimal("100"),
+        )
+        ticket = generate_ticket(
+            opp,
+            min_expected_profit_usd=Decimal("0"),
+            max_ticket_size_usd=Decimal("500"),
+        )
+        assert ticket is not None
+        assert ticket.expected_cost == Decimal("90.00")
+        assert ticket.leg_1["size"] == Decimal("100")
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +303,27 @@ class TestMinProfitThreshold:
         opp = _make_opportunity(net_profit=Decimal("-0.01"), max_size=Decimal("100"))
         ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
         assert ticket is None
+
+
+class TestVenueIdentifiers:
+    """Verify venue-specific token/ticker identifiers are attached to legs."""
+
+    def test_includes_poly_token_and_kalshi_ticker(self) -> None:
+        """Polymarket legs include token_id and Kalshi legs include ticker."""
+        opp = _make_opportunity(buy_venue=Venue.POLYMARKET, sell_venue=Venue.KALSHI)
+        opp.poly_market.raw_data = {"clobTokenIds": '["poly-token-1"]'}
+        opp.kalshi_market.raw_data = {"ticker": "KXTEST"}
+
+        ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
+        assert ticket is not None
+        assert ticket.leg_1["token_id"] == "poly-token-1"
+        assert ticket.leg_2["ticker"] == "KXTEST"
+
+    def test_poly_token_id_falls_back_to_event_id(self) -> None:
+        """Missing Polymarket token metadata falls back to market event_id."""
+        opp = _make_opportunity(buy_venue=Venue.POLYMARKET, sell_venue=Venue.KALSHI)
+        opp.poly_market.raw_data = {}
+
+        ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
+        assert ticket is not None
+        assert ticket.leg_1["token_id"] == "poly-1"

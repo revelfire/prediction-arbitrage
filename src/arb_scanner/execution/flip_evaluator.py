@@ -1,25 +1,35 @@
-"""Criteria evaluator for auto-execution eligibility."""
+"""Criteria evaluator for flippening auto-execution eligibility."""
 
 from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
 
+import structlog
+
 from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
 from arb_scanner.models._auto_exec_config import AutoExecutionConfig
 
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(
+    module="execution.flip_evaluator",
+    pipeline="flip",
+)
 
-def evaluate_criteria(
+
+def evaluate_flip_criteria(
     opportunity: dict[str, Any],
     config: AutoExecutionConfig,
     open_positions: list[dict[str, Any]],
     daily_pnl: Decimal,
     breakers: CircuitBreakerManager,
 ) -> tuple[bool, list[str]]:
-    """Check all auto-execution eligibility criteria.
+    """Check all flippening auto-execution eligibility criteria.
+
+    Does NOT check spread bounds — large deviation IS the signal for
+    flippening mean-reversion trades.
 
     Args:
-        opportunity: The arbitrage/flippening opportunity dict.
+        opportunity: The flippening opportunity dict.
         config: Auto-execution configuration.
         open_positions: Currently open auto-exec positions.
         daily_pnl: Today's cumulative P&L.
@@ -35,12 +45,6 @@ def evaluate_criteria(
         for s in tripped:
             reasons.append(f"circuit_breaker_{s.breaker_type.value}: {s.reason}")
 
-    spread = float(opportunity.get("spread_pct", opportunity.get("net_spread_pct", 0)))
-    if spread < config.min_spread_pct:
-        reasons.append(f"spread {spread:.4f} < min {config.min_spread_pct}")
-    if spread > config.max_spread_pct:
-        reasons.append(f"spread {spread:.4f} > max {config.max_spread_pct}")
-
     confidence = float(opportunity.get("confidence", 0))
     if confidence < config.min_confidence:
         reasons.append(f"confidence {confidence:.2f} < min {config.min_confidence}")
@@ -51,17 +55,13 @@ def evaluate_criteria(
     if config.blocked_categories and category in config.blocked_categories:
         reasons.append(f"category '{category}' is blocked")
 
-    ticket_type = opportunity.get("ticket_type", "arbitrage")
-    if ticket_type not in config.allowed_ticket_types:
-        reasons.append(f"ticket_type '{ticket_type}' not allowed")
-
     loss_limit = Decimal(str(config.daily_loss_limit_usd))
     if daily_pnl < -loss_limit:
         reasons.append(
             f"daily_pnl ${float(daily_pnl):.2f} exceeds loss limit ${float(loss_limit):.2f}"
         )
 
-    max_pos = config.max_daily_trades
+    max_pos = config.max_open_positions
     if len(open_positions) >= max_pos:
         reasons.append(f"open_positions {len(open_positions)} >= max {max_pos}")
 
@@ -70,4 +70,6 @@ def evaluate_criteria(
         reasons.append(f"duplicate position for {arb_id}")
 
     eligible = len(reasons) == 0
+    if not eligible:
+        logger.info("flip_criteria_failed", reasons=reasons)
     return eligible, reasons

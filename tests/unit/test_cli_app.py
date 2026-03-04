@@ -169,7 +169,7 @@ class TestServeCommand:
         mock_create_app.assert_called_once_with(
             mock_config.return_value, no_db=False, flip_watch=False
         )
-        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8060)
 
     @patch("uvicorn.run")
     @patch("arb_scanner.api.app.create_app")
@@ -198,4 +198,4 @@ class TestServeCommand:
         mock_create_app.assert_called_once_with(
             mock_config.return_value, no_db=True, flip_watch=False
         )
-        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8060)

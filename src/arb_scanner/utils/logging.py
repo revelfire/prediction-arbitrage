@@ -50,6 +50,10 @@ def setup_logging(level: str = "INFO", json_format: bool = True) -> None:
     root_logger.addHandler(handler)
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
+    # Silence noisy HTTP request logs from httpx/httpcore
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 def get_logger(module: str) -> structlog.stdlib.BoundLogger:
     """Return a bound logger with the given module name.

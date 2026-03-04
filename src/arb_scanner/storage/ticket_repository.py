@@ -133,6 +133,14 @@ class TicketRepository:
         rows = await self._pool.fetch(TQ.GET_TICKET_ACTIONS, ticket_id)
         return [dict(row) for row in rows]
 
+    async def get_flip_token_for_market(self, market_id: str) -> str:
+        """Fetch latest known Polymarket token_id for a flippening market."""
+        row = await self._pool.fetchrow(TQ.GET_FLIP_TOKEN_BY_MARKET_ID, market_id)
+        if row is None:
+            return ""
+        token = row.get("token_id")
+        return str(token) if token is not None else ""
+
     async def get_summary(self, days: int = 30) -> list[dict[str, Any]]:
         """Fetch performance summary aggregated by category.
 

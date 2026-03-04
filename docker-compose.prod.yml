@@ -30,13 +30,13 @@ services:
   # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     image: ghcr.io/revelfire/prediction-arbitrage:latest
-    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--flip-watch"]
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8060", "--flip-watch"]
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8060:8060"
     env_file: .env
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ${KALSHI_RSA_PRIVATE_KEY_PATH:-/dev/null}:/app/kalshi_key.pem:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +56,7 @@ services:
     env_file: .env
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy

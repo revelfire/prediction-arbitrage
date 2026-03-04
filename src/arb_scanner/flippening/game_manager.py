@@ -38,6 +38,7 @@ class GameState:
     token_id: str
     sport: str
     phase: GamePhase
+    no_token_id: str = ""
     category: str = ""
     category_type: str = "sport"
     baseline_strategy: str = "first_price"
@@ -100,6 +101,7 @@ class GameManager:
                 market_id=mid,
                 market_title=sm.market.title,
                 token_id=sm.token_id,
+                no_token_id=sm.no_token_id,
                 sport=sm.sport,
                 phase=phase,
                 category=sm.category,

@@ -186,3 +186,11 @@ FROM markets
 WHERE title_embedding IS NOT NULL
   AND (venue, event_id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]));
 """
+
+GET_PENDING_ARB_PAIR_IDS = """
+SELECT DISTINCT o.poly_event_id, o.kalshi_event_id
+FROM execution_tickets t
+JOIN arb_opportunities o ON t.arb_id = o.id
+WHERE t.status = 'pending'
+  AND COALESCE(t.ticket_type, 'arbitrage') = 'arbitrage';
+"""

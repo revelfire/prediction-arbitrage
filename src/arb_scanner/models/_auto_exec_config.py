@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -17,6 +19,7 @@ class CriticConfig(BaseModel):
     max_risk_flags: int = 3
     price_staleness_seconds: int = 60
     min_book_depth_contracts: int = 10
+    max_consecutive_timeouts: int = 3
 
 
 class AutoExecutionConfig(BaseModel):
@@ -36,9 +39,26 @@ class AutoExecutionConfig(BaseModel):
     daily_loss_limit_usd: float = 200.0
     max_consecutive_failures: int = 3
     max_daily_trades: int = 50
+    max_open_positions: int = 10
     cooldown_seconds: int = 30
-    require_both_venues: bool = True
     allowed_categories: list[str] = []
     blocked_categories: list[str] = []
     allowed_ticket_types: list[str] = ["arbitrage", "flippening"]
+    stop_loss_aggression_pct: float = 0.02
     critic: CriticConfig = CriticConfig()
+    arb_overrides: dict[str, Any] = {}
+    flip_overrides: dict[str, Any] = {}
+
+    def effective_config(self, pipeline_type: str) -> AutoExecutionConfig:
+        """Return a copy with per-pipeline overrides applied.
+
+        Args:
+            pipeline_type: Either ``"arb"`` or ``"flip"``.
+
+        Returns:
+            A new config with the appropriate overrides merged.
+        """
+        overrides = self.arb_overrides if pipeline_type == "arb" else self.flip_overrides
+        if not overrides:
+            return self.model_copy()
+        return self.model_copy(update=overrides)

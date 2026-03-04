@@ -132,6 +132,14 @@ ORDER BY cycle_timestamp DESC
 LIMIT $1;
 """
 
+HAS_PENDING_FLIP_TICKET = """
+SELECT 1 FROM execution_tickets
+WHERE ticket_type = 'flippening'
+  AND status = 'pending'
+  AND leg_1->>'market_id' = $1
+LIMIT 1;
+"""
+
 INSERT_FLIP_TICKET = """
 INSERT INTO execution_tickets (
     arb_id, leg_1, leg_2, expected_cost, expected_profit, status, ticket_type,

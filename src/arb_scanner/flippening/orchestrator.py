@@ -10,6 +10,7 @@ import structlog
 
 from arb_scanner.flippening._orch_alerts import handle_discovery_health
 from arb_scanner.flippening._orch_processing import process_update
+from arb_scanner.flippening.alert_buffer import AlertBuffer
 from arb_scanner.flippening.price_ring_buffer import (
     PriceRingBuffer,
     set_shared_buffer,
@@ -80,7 +81,9 @@ async def run_flip_watch(
     if not dry_run:
         repo = await create_repo(config)
         tick_repo = await create_tick_repo(config)
+        await _check_orphaned_positions(config)
     tick_buffer = TickBuffer(tick_repo, flip_cfg)
+    alert_buffer = AlertBuffer() if not dry_run else None
 
     price_buffer = PriceRingBuffer()
     set_shared_buffer(price_buffer)
@@ -98,6 +101,7 @@ async def run_flip_watch(
             repo,
             tick_repo,
             tick_buffer,
+            alert_buffer,
             http_client,
             dry_run,
         )
@@ -116,6 +120,7 @@ async def _run_main_loop(
     repo: Any,
     tick_repo: Any,
     tick_buffer: TickBuffer,
+    alert_buffer: AlertBuffer | None,
     http_client: httpx.AsyncClient,
     dry_run: bool,
 ) -> None:
@@ -166,11 +171,18 @@ async def _run_main_loop(
                 http_client,
                 dry_run,
                 tick_repo=tick_repo,
+                alert_buffer=alert_buffer,
             )
             now = asyncio.get_event_loop().time()
             if now - timers.last_tick_flush > config.flippening.tick_flush_interval_seconds:
                 await tick_buffer.flush()
                 timers.last_tick_flush = now
+            alert_due = (
+                now - timers.last_alert_flush > config.flippening.alert_batch_interval_seconds
+            )
+            if alert_buffer is not None and alert_due:
+                await alert_buffer.flush(config, http_client)
+                timers.last_alert_flush = now
             if now - timers.last_discovery > _DISCOVERY_INTERVAL_SECONDS:
                 prev_health = await _periodic_discovery(
                     config,
@@ -207,6 +219,8 @@ async def _run_main_loop(
         logger.info("flip_watch_shutting_down")
     finally:
         await tick_buffer.flush()
+        if alert_buffer is not None:
+            await alert_buffer.flush(config, http_client)
         await stream.close()
 
 
@@ -219,6 +233,7 @@ class _LoopTimers:
         self.last_discovery: float = _now
         self.last_persist: float = _now
         self.last_tick_flush: float = _now
+        self.last_alert_flush: float = _now
         self.stall_count: int = 0
         self.last_stall_received: int = 0
         self.last_drift_alert: float = 0.0
@@ -276,19 +291,67 @@ async def _periodic_discovery(
         return prev_health
 
 
+async def _check_orphaned_positions(config: Settings) -> None:
+    """Alert on any open positions left over from a previous session.
+
+    Queries flippening_auto_positions for open rows and dispatches a
+    Slack/Discord warning listing each orphaned position. No automatic
+    action is taken — the operator must close them manually.
+
+    Args:
+        config: Application settings with DB URL and notification webhooks.
+    """
+    try:
+        from arb_scanner.execution.flip_position_repo import FlipPositionRepo
+        from arb_scanner.flippening.alert_formatter import dispatch_flip_alert
+        from arb_scanner.storage.db import Database
+
+        db = Database(config.storage.database_url)
+        await db.connect()
+        try:
+            repo = FlipPositionRepo(db.pool)
+            orphans = await repo.get_orphaned_positions()
+        finally:
+            await db.disconnect()
+
+        if not orphans:
+            return
+
+        logger.warning("orphaned_flip_positions_detected", count=len(orphans))
+        lines = [f":warning: *{len(orphans)} orphaned flip position(s) from prior session:*"]
+        for p in orphans:
+            lines.append(
+                f"  • `{p['market_id']}` | {p['side'].upper()}"
+                f" | {p['size_contracts']} contracts"
+                f" @ ${float(p['entry_price']):.3f}"
+                f" | arb_id: `{p['arb_id'][:12]}...`"
+            )
+        lines.append("_These positions must be closed manually on Polymarket._")
+        msg = "\n".join(lines)
+
+        notif = config.notifications
+        slack = {"text": msg} if notif.effective_flippening_slack else None
+        discord = {"content": msg} if notif.discord_webhook else None
+        if slack or discord:
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                await dispatch_flip_alert(
+                    slack,
+                    discord,
+                    slack_url=notif.effective_flippening_slack,
+                    discord_url=notif.discord_webhook,
+                    client=client,
+                )
+    except Exception:
+        logger.exception("orphan_check_failed")
+
+
 def _resolve_categories(
     all_categories: dict[str, CategoryConfig],
     filter_list: list[str] | None,
 ) -> dict[str, CategoryConfig]:
-    """Resolve active categories from config and optional filter.
-
-    Args:
-        all_categories: All configured categories.
-        filter_list: Optional category/sport filter list.
-
-    Returns:
-        Dict of category_id -> CategoryConfig for active categories.
-    """
+    """Resolve active categories from config and optional filter."""
     if filter_list:
         return {k: v for k, v in all_categories.items() if k in filter_list and v.enabled}
     return {k: v for k, v in all_categories.items() if v.enabled}

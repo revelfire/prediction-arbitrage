@@ -113,42 +113,87 @@ def _init_execution(app: FastAPI, config: Settings) -> None:
 
 
 def _init_auto_execution(app: FastAPI, config: Settings) -> None:
-    """Wire up auto-execution pipeline components on app state.
+    """Wire up split auto-execution pipelines on app state.
+
+    Creates independent arb and flip pipelines with separate breakers
+    but a shared capital manager.
 
     Args:
         app: FastAPI application.
         config: Application settings.
     """
-    from arb_scanner.execution.auto_pipeline import AutoExecutionPipeline
+    from arb_scanner.execution.arb_critic import ArbTradeCritic
+    from arb_scanner.execution.arb_pipeline import ArbAutoExecutionPipeline
     from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
-    from arb_scanner.execution.trade_critic import TradeCritic
+    from arb_scanner.execution.flip_critic import FlipTradeCritic
+    from arb_scanner.execution.flip_exit_executor import FlipExitExecutor
+    from arb_scanner.execution.flip_pipeline import FlipAutoExecutionPipeline
+    from arb_scanner.execution.flip_position_repo import FlipPositionRepo
     from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+    from arb_scanner.storage.execution_repository import ExecutionRepository
 
     ac = config.auto_execution
-    critic = TradeCritic(ac.critic, config.claude)
-    breakers = CircuitBreakerManager(ac)
     auto_repo = AutoExecRepository(app.state.db.pool)
+    position_repo = FlipPositionRepo(app.state.db.pool)
+    exec_repo = ExecutionRepository(app.state.db.pool)
 
     orch = getattr(app.state, "execution_orchestrator", None)
     capital = getattr(app.state, "capital_manager", None)
     poly = getattr(app.state, "poly_executor", None)
     kalshi = getattr(app.state, "kalshi_executor", None)
 
-    pipeline = AutoExecutionPipeline(
+    # Independent circuit breakers per pipeline
+    arb_breakers = CircuitBreakerManager(ac)
+    flip_breakers = CircuitBreakerManager(ac)
+
+    # Arb pipeline: two-leg execution via orchestrator
+    arb_critic = ArbTradeCritic(ac.critic, config.claude)
+    arb_pipeline = ArbAutoExecutionPipeline(
         config=config,
         auto_config=ac,
         orchestrator=orch,
-        critic=critic,
-        breakers=breakers,
-        auto_repo=auto_repo,
+        critic=arb_critic,
+        breakers=arb_breakers,
         capital=capital,
         poly=poly,
         kalshi=kalshi,
+        auto_repo=auto_repo,
     )
-    app.state.auto_pipeline = pipeline
-    app.state.circuit_breakers = breakers
+
+    # Flip pipeline: single-leg execution via PolymarketExecutor
+    flip_critic = FlipTradeCritic(ac.critic, config.claude)
+    exit_executor = FlipExitExecutor(
+        poly=poly,
+        exec_repo=exec_repo,
+        position_repo=position_repo,
+        stop_loss_aggression_pct=ac.stop_loss_aggression_pct,
+    )
+    flip_pipeline = FlipAutoExecutionPipeline(
+        config=config,
+        auto_config=ac,
+        critic=flip_critic,
+        breakers=flip_breakers,
+        capital=capital,
+        poly=poly,
+        position_repo=position_repo,
+        auto_repo=auto_repo,
+        exec_repo=exec_repo,
+        exit_executor=exit_executor,
+    )
+
+    # Store on app.state for routes
+    app.state.arb_pipeline = arb_pipeline
+    app.state.flip_pipeline = flip_pipeline
+    app.state.arb_breakers = arb_breakers
+    app.state.flip_breakers = flip_breakers
     app.state.auto_exec_repo = auto_repo
-    logger.info("auto_execution_pipeline_initialised")
+    app.state.flip_position_repo = position_repo
+    app.state.flip_exit_executor = exit_executor
+
+    # Sidecar refs for CLI and flippening orchestrator access
+    object.__setattr__(config, "_arb_pipeline", arb_pipeline)
+    object.__setattr__(config, "_flip_pipeline", flip_pipeline)
+    logger.info("split_pipelines_initialised", arb="ready", flip="ready")
 
 
 async def _run_ticket_expiry(app: FastAPI) -> None:
@@ -195,6 +240,13 @@ def create_app(
     Returns:
         Configured FastAPI instance.
     """
+    from arb_scanner.utils.logging import setup_logging
+
+    setup_logging(
+        level=config.logging.level,
+        json_format=config.logging.format == "json",
+    )
+
     app = FastAPI(
         title="Arb Scanner Dashboard",
         version="0.1.0",

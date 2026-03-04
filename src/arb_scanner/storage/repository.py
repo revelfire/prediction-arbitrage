@@ -245,6 +245,15 @@ class Repository:
             ticket.status,
         )
 
+    async def get_pending_arb_pair_ids(self) -> set[tuple[str, str]]:
+        """Return (poly_event_id, kalshi_event_id) pairs that have a pending arb ticket.
+
+        Returns:
+            Set of (poly_event_id, kalshi_event_id) tuples.
+        """
+        rows = await self._pool.fetch(Q.GET_PENDING_ARB_PAIR_IDS)
+        return {(r["poly_event_id"], r["kalshi_event_id"]) for r in rows}
+
     async def get_pending_tickets(self) -> list[dict[str, Any]]:
         """Fetch all execution tickets with pending status.
 
@@ -341,7 +350,7 @@ class Repository:
             log.candidate_pairs,
             log.llm_evaluations,
             log.opportunities_found,
-            json.dumps(log.errors),
+            log.errors,
         )
 
     async def upsert_scan_log(self, log: ScanLog) -> None:
@@ -360,7 +369,7 @@ class Repository:
             log.candidate_pairs,
             log.llm_evaluations,
             log.opportunities_found,
-            json.dumps(log.errors),
+            log.errors,
         )
 
 

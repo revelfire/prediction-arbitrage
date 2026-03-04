@@ -132,8 +132,12 @@ def _build_opportunity(
     """
     if net <= _ZERO:
         return None
+    if cost <= _ZERO or cost < thresholds.min_cost_per_contract:
+        return None
     spread_pct = net / cost
     if spread_pct < thresholds.min_net_spread_pct:
+        return None
+    if spread_pct > thresholds.max_net_spread_pct:
         return None
     if max_size < thresholds.min_size_usd:
         return None
@@ -184,6 +188,20 @@ def calculate_arb(
     """
     if not match.safe_to_arb:
         logger.info("match_not_safe", poly=poly_market.event_id, kalshi=kalshi_market.event_id)
+        return None
+
+    # Skip markets where any ask price is below floor (missing CLOB data)
+    floor = thresholds.min_ask_price
+    poly_has_prices = poly_market.yes_ask >= floor and poly_market.no_ask >= floor
+    kalshi_has_prices = kalshi_market.yes_ask >= floor and kalshi_market.no_ask >= floor
+    if not poly_has_prices or not kalshi_has_prices:
+        logger.debug(
+            "phantom_price_skip",
+            poly=poly_market.event_id,
+            kalshi=kalshi_market.event_id,
+            poly_yes=str(poly_market.yes_ask),
+            kalshi_yes=str(kalshi_market.yes_ask),
+        )
         return None
 
     # Direction A: buy YES on Poly, buy NO on Kalshi

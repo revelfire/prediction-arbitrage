@@ -197,7 +197,7 @@ async def _feed_auto_pipeline(
         config: Application settings.
     """
     try:
-        pipeline = getattr(config, "_auto_pipeline", None)
+        pipeline = getattr(config, "_arb_pipeline", None)
         if pipeline is None:
             return
         for opp in opps:
@@ -211,7 +211,7 @@ async def _feed_auto_pipeline(
             }
             await pipeline.process_opportunity(opp_dict, source="arb_watch")
     except Exception:
-        logger.warning("auto_pipeline_feed_failed")
+        logger.warning("arb_pipeline_feed_failed")
 
 
 async def _interruptible_sleep(seconds: int, stop_event: asyncio.Event) -> None:

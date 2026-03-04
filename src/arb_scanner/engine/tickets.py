@@ -5,6 +5,7 @@ for human operator review and approval.
 """
 
 from decimal import Decimal
+import json
 
 import structlog
 
@@ -37,6 +38,8 @@ def _build_leg(
     price: Decimal,
     size: Decimal,
     market_url: str = "",
+    token_id: str = "",
+    ticker: str = "",
 ) -> dict[str, object]:
     """Build a single leg dictionary for an execution ticket.
 
@@ -60,6 +63,10 @@ def _build_leg(
     }
     if market_url:
         leg["market_url"] = market_url
+    if token_id:
+        leg["token_id"] = token_id
+    if ticker:
+        leg["ticker"] = ticker
     return leg
 
 
@@ -79,10 +86,37 @@ def _get_prices(
     return opp.kalshi_market.yes_ask, opp.poly_market.no_ask
 
 
+def _extract_poly_token_id(market: Market) -> str:
+    """Extract a Polymarket CLOB token id from raw market data."""
+    clob_ids = market.raw_data.get("clobTokenIds")
+    if isinstance(clob_ids, str) and clob_ids:
+        try:
+            parsed = json.loads(clob_ids)
+            if isinstance(parsed, list) and parsed:
+                return str(parsed[0])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if isinstance(clob_ids, list) and clob_ids:
+        return str(clob_ids[0])
+    cid = market.raw_data.get("conditionId")
+    if isinstance(cid, str) and cid:
+        return cid
+    return market.event_id
+
+
+def _extract_kalshi_ticker(market: Market) -> str:
+    """Extract a Kalshi market ticker from raw market data."""
+    ticker = market.raw_data.get("ticker")
+    if isinstance(ticker, str) and ticker:
+        return ticker
+    return market.event_id
+
+
 def generate_ticket(
     opp: ArbOpportunity,
     *,
     min_expected_profit_usd: Decimal = Decimal("1.00"),
+    max_ticket_size_usd: Decimal = Decimal("500"),
 ) -> ExecutionTicket | None:
     """Generate an execution ticket from an arb opportunity.
 
@@ -93,11 +127,13 @@ def generate_ticket(
     Args:
         opp: The arb opportunity to convert into a ticket.
         min_expected_profit_usd: Minimum expected profit to create ticket.
+        max_ticket_size_usd: Cap on theoretical position size in USD.
 
     Returns:
         An ExecutionTicket with pending status, or None if unprofitable.
     """
-    expected_profit = opp.net_profit * opp.max_size
+    effective_size = min(opp.max_size, max_ticket_size_usd)
+    expected_profit = opp.net_profit * effective_size
     if expected_profit < min_expected_profit_usd:
         logger.debug("ticket_skipped_below_min_profit", arb_id=opp.id)
         return None
@@ -109,22 +145,26 @@ def generate_ticket(
         buy_market.title,
         "YES",
         yes_price,
-        opp.max_size,
+        effective_size,
         _market_url(buy_market),
+        token_id=_extract_poly_token_id(buy_market) if opp.buy_venue == Venue.POLYMARKET else "",
+        ticker=_extract_kalshi_ticker(buy_market) if opp.buy_venue == Venue.KALSHI else "",
     )
     leg_2 = _build_leg(
         opp.sell_venue,
         sell_market.title,
         "NO",
         no_price,
-        opp.max_size,
+        effective_size,
         _market_url(sell_market),
+        token_id=_extract_poly_token_id(sell_market) if opp.sell_venue == Venue.POLYMARKET else "",
+        ticker=_extract_kalshi_ticker(sell_market) if opp.sell_venue == Venue.KALSHI else "",
     )
     ticket = ExecutionTicket(
         arb_id=opp.id,
         leg_1=leg_1,
         leg_2=leg_2,
-        expected_cost=opp.cost_per_contract * opp.max_size,
+        expected_cost=opp.cost_per_contract * effective_size,
         expected_profit=expected_profit,
         status="pending",
     )

@@ -46,6 +46,7 @@ INSERT INTO execution_results (
     id, arb_id, total_cost_usd, actual_spread,
     slippage_from_ticket, poly_order_id, kalshi_order_id, status
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (arb_id) DO NOTHING
 """
 
 GET_RESULT = """

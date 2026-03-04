@@ -11,6 +11,7 @@ import pytest
 from arb_scanner.execution.capital_manager import CapitalManager
 from arb_scanner.execution.orchestrator import (
     ExecutionOrchestrator,
+    _current_best_ask,
     _extract_market_id,
     _map_side,
     _parse_leg,
@@ -73,6 +74,7 @@ def _make_orch(
     exec_repo.insert_order = AsyncMock()
     exec_repo.update_order_status = AsyncMock()
     exec_repo.insert_result = AsyncMock()
+    exec_repo.get_result = AsyncMock(return_value=None)
     exec_repo.get_open_orders = AsyncMock(return_value=[])
 
     ticket_repo = AsyncMock()
@@ -101,6 +103,7 @@ def _make_orch(
     }
     ticket_repo.get_ticket = AsyncMock(return_value=default_ticket)
     ticket_repo.update_status = AsyncMock()
+    ticket_repo.get_flip_token_for_market = AsyncMock(return_value="")
 
     return ExecutionOrchestrator(
         config=config,
@@ -110,6 +113,33 @@ def _make_orch(
         exec_repo=exec_repo,
         ticket_repo=ticket_repo,
     )
+
+
+def _flip_ticket() -> dict[str, object]:
+    """Build a flippening-style single-venue ticket payload."""
+    return {
+        "arb_id": "flip-1",
+        "ticket_type": "flippening",
+        "status": "approved",
+        "expected_cost": "10.00",
+        "leg_1": json.dumps(
+            {
+                "action": "BUY YES",
+                "side": "yes",
+                "price": "0.50",
+                "token_id": "tok-flip-1",
+                "market_id": "m-flip",
+                "market_title": "Flip ticket",
+            }
+        ),
+        "leg_2": json.dumps(
+            {
+                "action": "SELL YES at target",
+                "target_price": "0.60",
+                "stop_loss": "0.45",
+            }
+        ),
+    }
 
 
 class TestPreflight:
@@ -122,6 +152,8 @@ class TestPreflight:
         result = await orch.preflight("t1")
         assert result.all_passed is True
         assert len(result.checks) > 0
+        assert result.poly_depth_contracts is not None
+        assert result.kalshi_depth_contracts is not None
 
     @pytest.mark.asyncio()
     async def test_ticket_not_found(self) -> None:
@@ -140,6 +172,68 @@ class TestPreflight:
         result = await orch.preflight("t1")
         enabled_check = next(c for c in result.checks if c.name == "enabled")
         assert enabled_check.passed is False
+
+    @pytest.mark.asyncio()
+    async def test_flippening_preflight_is_single_venue(self) -> None:
+        """Flippening preflight checks liquidity only on Polymarket entry leg."""
+        orch = _make_orch(ticket=_flip_ticket())
+        orch._kalshi.is_configured.return_value = False
+        orch._poly.get_book_depth = AsyncMock(
+            return_value={
+                "asks": [{"price": "0.50", "size": "500"}],
+                "bids": [],
+            }
+        )
+        result = await orch.preflight("flip-1")
+        assert result.all_passed is True
+        assert result.poly_depth_contracts is not None
+        assert result.kalshi_depth_contracts is None
+        orch._kalshi.get_book_depth.assert_not_awaited()
+        cred_check = next(c for c in result.checks if c.name == "credentials")
+        assert cred_check.passed is True
+
+    @pytest.mark.asyncio()
+    async def test_flippening_preflight_backfills_missing_token(self) -> None:
+        """Legacy flip tickets can resolve token_id from repository baseline data."""
+        ticket = _flip_ticket()
+        leg_1 = json.loads(str(ticket["leg_1"]))
+        leg_1.pop("token_id", None)
+        ticket["leg_1"] = json.dumps(leg_1)
+        orch = _make_orch(ticket=ticket)
+        orch._ticket_repo.get_flip_token_for_market = AsyncMock(return_value="tok-from-baseline")
+        orch._poly.get_book_depth = AsyncMock(
+            return_value={
+                "asks": [{"price": "0.50", "size": "500"}],
+                "bids": [],
+            }
+        )
+
+        result = await orch.preflight("flip-1")
+
+        assert result.all_passed is True
+        orch._ticket_repo.get_flip_token_for_market.assert_awaited_once_with("m-flip")
+
+    @pytest.mark.asyncio()
+    async def test_flippening_preflight_backfills_token_from_market_url(self) -> None:
+        """If baseline lookup misses, token_id can be resolved from market URL metadata."""
+        ticket = _flip_ticket()
+        leg_1 = json.loads(str(ticket["leg_1"]))
+        leg_1.pop("token_id", None)
+        ticket["leg_1"] = json.dumps(leg_1)
+        orch = _make_orch(ticket=ticket)
+        orch._ticket_repo.get_flip_token_for_market = AsyncMock(return_value="")
+        orch._lookup_token_from_market_url = AsyncMock(return_value="tok-from-url")  # type: ignore[method-assign]
+        orch._poly.get_book_depth = AsyncMock(
+            return_value={
+                "asks": [{"price": "0.50", "size": "500"}],
+                "bids": [],
+            }
+        )
+
+        result = await orch.preflight("flip-1")
+
+        assert result.all_passed is True
+        orch._lookup_token_from_market_url.assert_awaited()
 
 
 class TestExecute:
@@ -187,6 +281,39 @@ class TestExecute:
         orch = _make_orch()
         await orch.execute("t1", Decimal("10"))
         assert orch._capital.current_exposure > Decimal("0")
+
+    @pytest.mark.asyncio()
+    async def test_flippening_exec_places_only_poly_leg(self) -> None:
+        """Flippening execution places one Polymarket leg."""
+        orch = _make_orch(ticket=_flip_ticket())
+        result = await orch.execute("flip-1", Decimal("10"))
+        assert result.status == "complete"
+        assert result.total_cost_usd == Decimal("10")
+        orch._poly.place_order.assert_awaited_once()
+        orch._kalshi.place_order.assert_not_awaited()
+        assert orch._exec_repo.insert_order.await_count == 1
+
+    @pytest.mark.asyncio()
+    async def test_duplicate_execution_returns_existing_result(self) -> None:
+        """Returns existing result without re-placing orders when result already exists."""
+        orch = _make_orch()
+        existing = {
+            "id": "result-existing",
+            "arb_id": "t1",
+            "total_cost_usd": Decimal("10"),
+            "actual_spread": None,
+            "slippage_from_ticket": None,
+            "poly_order_id": None,
+            "kalshi_order_id": None,
+            "status": "complete",
+            "created_at": None,
+        }
+        orch._exec_repo.get_result = AsyncMock(return_value=existing)
+        result = await orch.execute("t1", Decimal("10"))
+        assert result.id == "result-existing"
+        assert result.status == "complete"
+        orch._poly.place_order.assert_not_awaited()
+        orch._kalshi.place_order.assert_not_awaited()
 
 
 class TestCancelOrder:
@@ -243,3 +370,43 @@ class TestHelpers:
         """Falls back to token_id when market_id missing."""
         ticket = {"leg_1": json.dumps({"token_id": "tok1"})}
         assert _extract_market_id(ticket) == "tok1"
+
+    def test_current_best_ask(self) -> None:
+        """Extracts lowest ask from processed order book."""
+        book = {"asks": [{"price": "0.55", "size": "100"}, {"price": "0.60", "size": "50"}]}
+        assert _current_best_ask(book) == Decimal("0.55")
+
+    def test_current_best_ask_empty(self) -> None:
+        """Returns zero for empty asks."""
+        assert _current_best_ask({"asks": []}) == Decimal("0")
+        assert _current_best_ask({}) == Decimal("0")
+
+
+class TestSlippageUsesCurrentPrice:
+    """Verify preflight slippage uses current best ask, not stale ticket price."""
+
+    @pytest.mark.asyncio()
+    async def test_flip_slippage_uses_book_price_not_ticket_price(self) -> None:
+        """Flippening ticket with stale price should not show absurd slippage."""
+        ticket = _flip_ticket()
+        leg_1 = json.loads(str(ticket["leg_1"]))
+        leg_1["price"] = "0.21"  # stale spike price
+        ticket["leg_1"] = json.dumps(leg_1)
+
+        orch = _make_orch(ticket=ticket)
+        orch._poly.get_book_depth = AsyncMock(
+            return_value={
+                "asks": [
+                    {"price": "0.58", "size": "200"},
+                    {"price": "0.59", "size": "300"},
+                ],
+                "bids": [],
+            }
+        )
+
+        result = await orch.preflight("flip-1")
+        # Slippage should be measured against current best ask (0.58),
+        # not stale ticket price (0.21). With enough depth at 0.58,
+        # slippage should be near-zero, not 175%.
+        assert result.estimated_slippage_poly is not None
+        assert result.estimated_slippage_poly < Decimal("0.10")

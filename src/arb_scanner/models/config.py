@@ -37,7 +37,7 @@ class KalshiVenueConfig(BaseModel):
 
     base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     enabled: bool = True
-    rate_limit_per_sec: int = 10
+    rate_limit_per_sec: int = 5
     min_volume_24h: Decimal = Decimal("0")
     max_markets: int = 0
     exclude_ticker_prefixes: list[str] = ["KXMVESPORTSMULTIGAME"]
@@ -85,6 +85,10 @@ class ArbThresholds(BaseModel):
     min_size_usd: Decimal = Decimal("10")
     thin_liquidity_threshold: Decimal = Decimal("50")
     min_expected_profit_usd: Decimal = Decimal("1.00")
+    max_ticket_size_usd: Decimal = Decimal("500")
+    min_ask_price: Decimal = Decimal("0.02")
+    max_net_spread_pct: Decimal = Decimal("1.00")
+    min_cost_per_contract: Decimal = Decimal("0.10")
 
 
 class NotificationConfig(BaseModel):
@@ -145,7 +149,7 @@ class DashboardConfig(BaseModel):
 
     enabled: bool = True
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8060
     auth_token: str | None = None
 
 
@@ -199,6 +203,7 @@ class CategoryConfig(BaseModel):
     reversion_target_pct: float | None = None
     stop_loss_pct: float | None = None
     max_hold_minutes: int | None = None
+    min_hold_seconds: int | None = None
     late_join_penalty: float | None = None
     event_window_hours: float = 4.0
     discovery_keywords: list[str] = []
@@ -242,6 +247,7 @@ class FlippeningConfig(BaseModel):
     base_position_usd: float = 100.0
     max_position_usd: float = 500.0
     max_hold_minutes: int = 45
+    min_hold_seconds: int = 30
     pre_game_window_minutes: int = 30
     ws_reconnect_max_seconds: int = 60
     late_join_penalty: float = 0.80
@@ -268,6 +274,8 @@ class FlippeningConfig(BaseModel):
     min_baseline_price: float = 0.05
     max_baseline_price: float = 0.95
     max_deviation_recapture_pct: float = 500.0
+    alert_batch_interval_seconds: float = 30.0
+    alert_max_per_batch: int = 10
 
     @model_validator(mode="after")
     def migrate_sports_to_categories(self) -> FlippeningConfig:
@@ -298,13 +306,15 @@ class PolyExecConfig(BaseModel):
 
     chain_id: int = 137
     clob_api_url: str = "https://clob.polymarket.com"
+    signature_type: int = 0
+    funder: str = ""
     usdc_contract: str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 
 class KalshiExecConfig(BaseModel):
     """Kalshi execution venue configuration."""
 
-    api_base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
+    api_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
 
 
 class ExecutionConfig(BaseModel):
@@ -322,7 +332,7 @@ class ExecutionConfig(BaseModel):
     max_open_positions: int = 5
     max_per_market_pct: float = 0.10
     cooldown_after_loss_seconds: int = 300
-    min_book_depth_contracts: int = 20
+    min_book_depth_contracts: int = 5
     polymarket: PolyExecConfig = PolyExecConfig()
     kalshi: KalshiExecConfig = KalshiExecConfig()
 

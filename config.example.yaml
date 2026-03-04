@@ -5,13 +5,13 @@ venues:
     enabled: true
     rate_limit_per_sec: 10
     min_volume_24h: 100
-    max_markets: 500
+    max_markets: 1000
   kalshi:
     base_url: "https://api.elections.kalshi.com/trade-api/v2"
     enabled: true
-    rate_limit_per_sec: 5  # Kalshi Basic tier: 10 reads/sec, keep headroom
+    rate_limit_per_sec: 3  # Kalshi Basic tier: 20 reads/sec, conservative to avoid blacklist
     min_volume_24h: 100
-    max_markets: 500
+    max_markets: 1000
     exclude_ticker_prefixes:  # Skip multi-game parlays that can't match single-event Poly markets
       - "KXMVESPORTSMULTIGAME"
 
@@ -42,6 +42,8 @@ arb_thresholds:
   min_net_spread_pct: 0.02
   min_size_usd: 10
   thin_liquidity_threshold: 50
+  max_ticket_size_usd: 500   # Cap theoretical ticket size (prevents absurd 24h-volume-based costs)
+  min_ask_price: 0.02        # Skip markets with ask prices below this (likely missing CLOB data)
 
 notifications:
   slack_webhook: "${ARBITRAGE_SLACK_WEBHOOK_URL}"
@@ -63,18 +65,102 @@ trend_alerts:
 dashboard:
   enabled: true
   host: "0.0.0.0"
-  port: 8000
+  port: 8060
   # auth_token: "${DASHBOARD_AUTH_TOKEN}"  # Set to require bearer token for dashboard access
 
 flippening:
   enabled: true
-  sports:
-    - nba
-    - nhl
-    - nfl
-    - mlb
-    - epl
-    - ufc
+  categories:
+    # --- Sports (category_type: sport) ---
+    # Requires game_start_time; filtered by event_window_hours after start.
+    nba:
+      category_type: sport
+      baseline_strategy: first_price
+      spike_threshold_pct: 0.15
+      confidence_modifier: 1.0
+    nhl:
+      category_type: sport
+      baseline_strategy: first_price
+    nfl:
+      category_type: sport
+      baseline_strategy: first_price
+      spike_threshold_pct: 0.12
+      confidence_modifier: 1.1
+    mlb:
+      category_type: sport
+      baseline_strategy: first_price
+    epl:
+      category_type: sport
+      baseline_strategy: first_price
+    ufc:
+      category_type: sport
+      baseline_strategy: first_price
+    ncaa:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 3
+      spike_threshold_pct: 0.15
+      discovery_slugs: ["ncaa-", "march-madness-"]
+      discovery_tags: ["ncaa", "march-madness"]
+      discovery_keywords: ["march madness", "ncaa tournament"]
+    ucl:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 3
+      discovery_slugs: ["ucl-", "champions-league-"]
+      discovery_tags: ["ucl", "champions-league"]
+    esports:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 6
+      spike_threshold_pct: 0.15
+      discovery_slugs: ["rocket-league-", "counter-strike-", "league-of-legends-", "valorant-", "dota-2-", "val-", "cs-", "rl-", "lol-"]
+      discovery_tags: ["esports", "blast", "valorant", "games"]
+    f1:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 4
+      discovery_slugs: ["f1-", "formula-1-"]
+      discovery_tags: ["f1", "formula1"]
+    # --- Non-sport categories ---
+    # No game_start_time required; bypass stale-game filter.
+    oscars:
+      category_type: entertainment
+      baseline_strategy: pre_event_snapshot
+      baseline_window_minutes: 30
+      event_window_hours: 6
+      spike_threshold_pct: 0.20
+      max_hold_minutes: 60
+      discovery_slugs: ["oscars-", "academy-awards-"]
+      discovery_tags: ["oscars"]
+    btc_threshold:
+      category_type: crypto
+      baseline_strategy: rolling_window
+      baseline_window_minutes: 30
+      event_window_hours: 24
+      spike_threshold_pct: 0.08
+      max_hold_minutes: 120
+      discovery_slugs: ["bitcoin-", "what-price-will-bitcoin-"]
+      discovery_tags: ["bitcoin", "btc"]
+    fed_meeting:
+      category_type: economics
+      baseline_strategy: pre_event_snapshot
+      baseline_window_minutes: 60
+      event_window_hours: 4
+      spike_threshold_pct: 0.10
+      max_hold_minutes: 90
+      discovery_slugs: ["fed-decision-", "fed-rate-"]
+      discovery_keywords: ["fomc", "fed rate"]
+    earnings:
+      category_type: corporate
+      baseline_strategy: pre_event_snapshot
+      baseline_window_minutes: 60
+      event_window_hours: 12
+      spike_threshold_pct: 0.10
+      max_hold_minutes: 120
+      discovery_slugs: ["earnings-"]
+      discovery_tags: ["earnings", "earnings-calls"]
+  # Global defaults (overridden per-category above)
   spike_threshold_pct: 0.15
   spike_window_minutes: 10
   min_confidence: 0.60
@@ -87,36 +173,80 @@ flippening:
   ws_reconnect_max_seconds: 60
   late_join_penalty: 0.80
   polling_interval_seconds: 5.0
+  capture_ticks: true
+  tick_retention_days: 90
+  min_baseline_price: 0.05
+  max_baseline_price: 0.95
+  max_deviation_recapture_pct: 500.0
   confidence_weights:
     magnitude: 0.45
     strength: 0.30
     speed: 0.25
-  sport_overrides:
-    nfl:
-      spike_threshold_pct: 0.12
-      confidence_modifier: 1.1
-    nba:
-      spike_threshold_pct: 0.15
-      confidence_modifier: 1.0
-  # manual_market_ids:
-  #   - market_id: "0x1234..."
-  #     sport: "nba"
-  # excluded_market_ids:
-  #   - "0xdead..."
-  # sport_keywords:
-  #   nba: ["lakers", "celtics", "warriors"]
-  min_hit_rate_pct: 0.01
-  discovery_alert_cooldown_minutes: 60
+  # min_hit_rate_pct: 0.01
+  # discovery_alert_cooldown_minutes: 60
   # ws_telemetry_interval_seconds: 60
   # ws_schema_match_pct: 0.50
   # orderbook_cache_ttl_seconds: 10.0
   # orderbook_cache_max_size: 200
   # synthetic_spread_penalty: 0.85
   # ws_telemetry_persist_interval_seconds: 300
-  # capture_ticks: true
-  # tick_retention_days: 90
   # tick_buffer_size: 100
   # tick_flush_interval_seconds: 5.0
+
+# One-click trade execution (requires wallet credentials in .env)
+execution:
+  enabled: false
+  max_size_usd: 100.0
+  max_slippage_pct: 0.02
+  price_staleness_seconds: 30
+  pct_of_balance: 0.02
+  max_pct_per_venue: 0.05
+  max_exposure_pct: 0.25
+  min_reserve_usd: 50.0
+  daily_loss_limit_usd: 100.0
+  max_open_positions: 5
+  max_per_market_pct: 0.10
+  cooldown_after_loss_seconds: 300
+  min_book_depth_contracts: 20
+  polymarket:
+    chain_id: 137
+    clob_api_url: "https://clob.polymarket.com"
+    signature_type: 0  # 0=EOA, 2=proxy wallet (MetaMask/Rabby Polymarket accounts)
+    funder: ""         # required for signature_type=2 (your funded proxy wallet address)
+
+# Autonomous execution pipeline (requires execution to be enabled)
+auto_execution:
+  enabled: false
+  mode: "off"  # off | monitor | auto
+  min_spread_pct: 0.03
+  max_spread_pct: 0.50
+  min_confidence: 0.70
+  min_liquidity_usd: 100.0
+  max_size_usd: 50.0
+  min_size_usd: 5.0
+  base_size_usd: 25.0
+  max_per_market_usd: 100.0
+  max_slippage_pct: 0.02
+  daily_loss_limit_usd: 200.0
+  max_consecutive_failures: 3
+  max_daily_trades: 50
+  max_open_positions: 10  # Hard cap on simultaneous open positions (set to 1 for safe testing)
+  cooldown_seconds: 30
+  require_both_venues: true
+  allowed_categories: []
+  blocked_categories: []
+  allowed_ticket_types:
+    - arbitrage
+    - flippening
+  critic:
+    enabled: true
+    model: "claude-haiku-4-5-20251001"
+    timeout_seconds: 5.0
+    skip_below_spread_pct: 0.05
+    anomaly_spread_pct: 0.30
+    max_risk_flags: 3
+    price_staleness_seconds: 60
+    min_book_depth_contracts: 10
 
 storage:
   database_url: "${DATABASE_URL}"

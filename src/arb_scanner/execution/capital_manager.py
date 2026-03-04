@@ -27,6 +27,7 @@ class CapitalManager:
         config: ExecutionConfig,
         poly_get_balance: object,
         kalshi_get_balance: object,
+        db_pool: object | None = None,
     ) -> None:
         """Initialize capital manager.
 
@@ -34,10 +35,12 @@ class CapitalManager:
             config: Execution configuration with capital limits.
             poly_get_balance: Async callable returning Polymarket balance.
             kalshi_get_balance: Async callable returning Kalshi balance.
+            db_pool: Optional asyncpg pool for state persistence.
         """
         self._config = config
         self._poly_get_balance = poly_get_balance
         self._kalshi_get_balance = kalshi_get_balance
+        self._db_pool = db_pool
         self._poly_balance: Decimal = _ZERO
         self._kalshi_balance: Decimal = _ZERO
         self._daily_pnl: Decimal = _ZERO
@@ -72,17 +75,40 @@ class CapitalManager:
         return self._daily_pnl
 
     async def refresh_balances(self) -> tuple[Decimal, Decimal]:
-        """Fetch live balances from both venues.
+        """Fetch live balances from both venues concurrently.
+
+        Each venue is fetched independently so one failure does not
+        prevent the other from updating.
 
         Returns:
             Tuple of (poly_balance, kalshi_balance).
         """
+        import asyncio
         from typing import Any
 
         poly_fn: Any = self._poly_get_balance
         kalshi_fn: Any = self._kalshi_get_balance
-        self._poly_balance = await poly_fn()
-        self._kalshi_balance = await kalshi_fn()
+
+        async def _safe_poly() -> Decimal:
+            try:
+                result: Decimal = await poly_fn()
+                return result
+            except Exception as exc:
+                logger.warning("poly_balance_refresh_failed", error=str(exc))
+                return self._poly_balance
+
+        async def _safe_kalshi() -> Decimal:
+            try:
+                result: Decimal = await kalshi_fn()
+                return result
+            except Exception as exc:
+                logger.warning("kalshi_balance_refresh_failed", error=str(exc))
+                return self._kalshi_balance
+
+        self._poly_balance, self._kalshi_balance = await asyncio.gather(
+            _safe_poly(),
+            _safe_kalshi(),
+        )
         logger.info(
             "balances_refreshed",
             poly=str(self._poly_balance),
@@ -226,6 +252,7 @@ class CapitalManager:
                 pnl=str(pnl),
                 daily_pnl=str(self._daily_pnl),
             )
+        self._schedule_snapshot()
 
     def close_position(self, market_id: str) -> None:
         """Remove a market from open positions.
@@ -234,6 +261,17 @@ class CapitalManager:
             market_id: The market identifier to close.
         """
         self._open_positions.pop(market_id, None)
+        self._schedule_snapshot()
+
+    def _schedule_snapshot(self) -> None:
+        """Fire-and-forget snapshot to database."""
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.snapshot_state())
+        except RuntimeError:
+            pass
 
     def _maybe_reset_daily(self) -> None:
         """Reset daily P&L at UTC midnight."""
@@ -241,3 +279,63 @@ class CapitalManager:
         if self._daily_pnl_date != today:
             self._daily_pnl = _ZERO
             self._daily_pnl_date = today
+
+    async def snapshot_state(self) -> None:
+        """Persist current state to database for crash recovery."""
+        if self._db_pool is None:
+            return
+        try:
+            import json
+            from typing import Any
+
+            pool: Any = self._db_pool
+            positions_json = json.dumps({k: str(v) for k, v in self._open_positions.items()})
+            await pool.execute(
+                """
+                UPDATE capital_manager_state
+                SET daily_pnl = $1,
+                    daily_pnl_date = $2,
+                    last_loss_at = $3,
+                    open_positions = $4::jsonb,
+                    updated_at = NOW()
+                WHERE id = 1
+                """,
+                float(self._daily_pnl),
+                self._daily_pnl_date,
+                self._last_loss_at,
+                positions_json,
+            )
+        except Exception:
+            logger.warning("capital_state_snapshot_failed")
+
+    async def restore_state(self) -> None:
+        """Restore state from database after restart."""
+        if self._db_pool is None:
+            return
+        try:
+            import json
+            from typing import Any
+
+            pool: Any = self._db_pool
+            row = await pool.fetchrow(
+                "SELECT daily_pnl, daily_pnl_date, last_loss_at, open_positions "
+                "FROM capital_manager_state WHERE id = 1"
+            )
+            if row is None:
+                return
+            self._daily_pnl = Decimal(str(row["daily_pnl"]))
+            self._daily_pnl_date = row["daily_pnl_date"] or ""
+            self._last_loss_at = row["last_loss_at"]
+            raw_pos = row["open_positions"]
+            if isinstance(raw_pos, str):
+                raw_pos = json.loads(raw_pos)
+            if isinstance(raw_pos, dict):
+                self._open_positions = {k: Decimal(str(v)) for k, v in raw_pos.items()}
+            self._maybe_reset_daily()
+            logger.info(
+                "capital_state_restored",
+                daily_pnl=str(self._daily_pnl),
+                open_positions=len(self._open_positions),
+            )
+        except Exception:
+            logger.warning("capital_state_restore_failed")

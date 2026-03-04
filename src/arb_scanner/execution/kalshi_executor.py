@@ -19,6 +19,8 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 )
 
 _ZERO = Decimal("0")
+_ONE = Decimal("1")
+_API_PREFIX = "/trade-api/v2"
 
 
 class KalshiExecutor:
@@ -64,7 +66,7 @@ class KalshiExecutor:
         if not key_path.exists():
             raise RuntimeError(f"RSA key file not found: {key_path}")
         try:
-            from cryptography.hazmat.primitives.serialization import (  # type: ignore[import-not-found]
+            from cryptography.hazmat.primitives.serialization import (
                 load_pem_private_key,
             )
         except ImportError as exc:
@@ -90,8 +92,8 @@ class KalshiExecutor:
         Returns:
             Dict of auth headers to include in the request.
         """
-        from cryptography.hazmat.primitives import hashes  # type: ignore[import-not-found]
-        from cryptography.hazmat.primitives.asymmetric import padding  # type: ignore[import-not-found]
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
 
         key = self._load_private_key()
         timestamp_ms = str(int(time.time() * 1000))
@@ -137,8 +139,9 @@ class KalshiExecutor:
         """
         try:
             http = await self._get_http()
-            path = "/trade-api/v2/portfolio/orders"
-            headers = self._sign_request("POST", path)
+            rel_path = "/portfolio/orders"
+            sign_path = f"{_API_PREFIX}{rel_path}"
+            headers = self._sign_request("POST", sign_path)
             is_yes = "yes" in req.side
             price_cents = int(req.price * 100)
             body: dict[str, Any] = {
@@ -149,21 +152,25 @@ class KalshiExecutor:
                 "yes_price" if is_yes else "no_price": price_cents,
                 "count": req.size_contracts,
             }
-            resp = await http.post(path, json=body, headers=headers)
+            resp = await http.post(rel_path, json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             order = data.get("order", data)
             order_id = str(order.get("order_id", ""))
+            raw_fill = order.get("avg_price_dollars_fp") or order.get("avg_price")
+            fill_price = Decimal(str(raw_fill)) if raw_fill else None
             logger.info(
                 "kalshi_order_placed",
                 order_id=order_id,
                 ticker=req.ticker,
                 price_cents=price_cents,
+                fill_price=str(fill_price) if fill_price else None,
                 count=req.size_contracts,
             )
             return OrderResponse(
                 venue_order_id=order_id,
                 status="submitted",
+                fill_price=fill_price,
             )
         except Exception as exc:
             logger.error("kalshi_order_failed", error=str(exc))
@@ -183,9 +190,10 @@ class KalshiExecutor:
         """
         try:
             http = await self._get_http()
-            path = f"/trade-api/v2/portfolio/orders/{venue_order_id}"
-            headers = self._sign_request("DELETE", path)
-            resp = await http.delete(path, headers=headers)
+            rel_path = f"/portfolio/orders/{venue_order_id}"
+            sign_path = f"{_API_PREFIX}{rel_path}"
+            headers = self._sign_request("DELETE", sign_path)
+            resp = await http.delete(rel_path, headers=headers)
             resp.raise_for_status()
             logger.info("kalshi_order_cancelled", order_id=venue_order_id)
             return True
@@ -200,18 +208,29 @@ class KalshiExecutor:
             Available USD balance.
         """
         try:
+            logger.info("kalshi_balance_fetch_start")
             http = await self._get_http()
-            path = "/trade-api/v2/portfolio/balance"
-            headers = self._sign_request("GET", path)
-            resp = await http.get(path, headers=headers)
+            rel_path = "/portfolio/balance"
+            sign_path = f"{_API_PREFIX}{rel_path}"
+            headers = self._sign_request("GET", sign_path)
+            resp = await http.get(rel_path, headers=headers)
+            logger.info(
+                "kalshi_balance_response",
+                status=resp.status_code,
+                url=str(resp.url),
+            )
             resp.raise_for_status()
             data = resp.json()
             bal_cents = data.get("balance", 0)
             result = Decimal(str(bal_cents)) / Decimal("100")
-            logger.debug("kalshi_balance", balance=str(result))
+            logger.info("kalshi_balance_ok", balance=str(result))
             return result
         except Exception as exc:
-            logger.error("kalshi_balance_failed", error=str(exc))
+            logger.error(
+                "kalshi_balance_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             return _ZERO
 
     async def get_book_depth(self, token_or_ticker: str) -> dict[str, Any]:
@@ -225,11 +244,13 @@ class KalshiExecutor:
         """
         try:
             http = await self._get_http()
-            path = f"/trade-api/v2/orderbook/{token_or_ticker}"
-            resp = await http.get(path)
+            rel_path = f"/orderbook/{token_or_ticker}"
+            resp = await http.get(rel_path)
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
             result: dict[str, Any] = data.get("orderbook", data)
+            if "yes" in result or "no" in result:
+                return _normalize_kalshi_orderbook(result)
             return result
         except Exception as exc:
             logger.error("kalshi_book_failed", ticker=token_or_ticker, error=str(exc))
@@ -240,3 +261,71 @@ class KalshiExecutor:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
+
+def _normalize_kalshi_orderbook(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Kalshi bids-only book into explicit asks for YES/NO sides."""
+    yes_bids = _parse_kalshi_bids(raw.get("yes"))
+    no_bids = _parse_kalshi_bids(raw.get("no"))
+    asks_yes = _asks_from_opposite_bids(no_bids)
+    asks_no = _asks_from_opposite_bids(yes_bids)
+    return {
+        "yes": raw.get("yes", []),
+        "no": raw.get("no", []),
+        "bids_yes": yes_bids,
+        "bids_no": no_bids,
+        "asks_yes": asks_yes,
+        "asks_no": asks_no,
+        # Backward-compatible default for codepaths expecting `asks`.
+        "asks": asks_yes,
+        "bids": yes_bids,
+    }
+
+
+def _parse_kalshi_bids(levels: Any) -> list[dict[str, str]]:
+    """Parse Kalshi [price, size] bid levels into dict levels."""
+    if not isinstance(levels, list):
+        return []
+    parsed: list[dict[str, str]] = []
+    for lv in levels:
+        if not isinstance(lv, list) or len(lv) < 2:
+            continue
+        price = _clamp_price(_to_decimal(lv[0]))
+        size = _to_size(lv[1])
+        if price <= _ZERO or size <= 0:
+            continue
+        parsed.append({"price": str(price), "size": str(size)})
+    return parsed
+
+
+def _asks_from_opposite_bids(opposite_bids: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Convert opposite-side bids into asks (price = 1 - bid)."""
+    asks: list[dict[str, str]] = []
+    for bid in reversed(opposite_bids):
+        price = _clamp_price(_ONE - _to_decimal(bid.get("price", "0")))
+        size = _to_size(bid.get("size", "0"))
+        if price <= _ZERO or size <= 0:
+            continue
+        asks.append({"price": str(price), "size": str(size)})
+    return asks
+
+
+def _to_decimal(value: Any) -> Decimal:
+    """Convert arbitrary value into Decimal, falling back to zero."""
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return _ZERO
+
+
+def _to_size(value: Any) -> int:
+    """Convert size value to int contracts."""
+    try:
+        return int(float(value))
+    except Exception:
+        return 0
+
+
+def _clamp_price(price: Decimal) -> Decimal:
+    """Clamp price into [0, 1]."""
+    return max(_ZERO, min(_ONE, price))

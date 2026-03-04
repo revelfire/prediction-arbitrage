@@ -27,13 +27,14 @@ services:
   # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     build: .
-    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8000", "--flip-watch"]
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8060", "--flip-watch"]
     ports:
-      - "${DASHBOARD_PORT:-8000}:8000"
+      - "${DASHBOARD_PORT:-8060}:8060"
     env_file: .env
     volumes:
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy
@@ -49,6 +50,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy

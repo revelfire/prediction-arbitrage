@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 import structlog
 
+from arb_scanner.flippening._orch_exit import _feed_exit_pipeline
+from arb_scanner.flippening.alert_buffer import AlertBuffer
 from arb_scanner.flippening.game_manager import GameManager
 from arb_scanner.flippening.price_ring_buffer import (
     PriceTick,
@@ -39,6 +41,7 @@ async def process_update(
     http_client: httpx.AsyncClient,
     dry_run: bool,
     tick_repo: Any = None,
+    alert_buffer: AlertBuffer | None = None,
 ) -> None:
     """Process a single price update through the pipeline.
 
@@ -52,6 +55,7 @@ async def process_update(
         http_client: Shared HTTP client for webhooks.
         dry_run: Whether to skip persistence and alerts.
         tick_repo: TickRepository for drift persistence (None if dry_run).
+        alert_buffer: AlertBuffer for batched dispatch (None in dry_run).
     """
     event, exit_sig, drift_info = game_mgr.process(update)
 
@@ -71,6 +75,8 @@ async def process_update(
     if state.baseline is not None and state.active_signal is None and event is None:
         event = spike_detector.check_spike(update, state.baseline, state.price_history)
 
+    if event is not None:
+        event.no_token_id = getattr(state, "no_token_id", "")
     if event is not None and not game_mgr.has_open_signal(update.market_id):
         await handle_entry(
             event,
@@ -82,13 +88,23 @@ async def process_update(
             repo,
             http_client,
             dry_run,
+            alert_buffer=alert_buffer,
         )
 
     if state.active_signal is not None and exit_sig is None:
         exit_sig = signal_gen.check_exit(update, state.active_signal)
 
     if exit_sig is not None:
-        await handle_exit(exit_sig, state, game_mgr, config, repo, http_client, dry_run)
+        await handle_exit(
+            exit_sig,
+            state,
+            game_mgr,
+            config,
+            repo,
+            http_client,
+            dry_run,
+            alert_buffer=alert_buffer,
+        )
 
 
 def _push_price_tick(update: PriceUpdate, state: Any) -> None:
@@ -133,6 +149,8 @@ async def handle_entry(
     repo: Any,
     http_client: httpx.AsyncClient,
     dry_run: bool,
+    *,
+    alert_buffer: AlertBuffer | None = None,
 ) -> None:
     """Handle a new flippening entry signal.
 
@@ -146,8 +164,8 @@ async def handle_entry(
         repo: FlippeningRepository (None if dry_run).
         http_client: Shared HTTP client.
         dry_run: Whether to skip persistence and alerts.
+        alert_buffer: AlertBuffer for batched dispatch (None in dry_run).
     """
-    from arb_scanner.flippening._orch_alerts import dispatch_entry_alert
     from arb_scanner.flippening._orch_repo import persist_entry
 
     current_ask = (
@@ -182,7 +200,9 @@ async def handle_entry(
             min_expected_profit_usd=min_profit,
             market_slug=slug,
         )
-        await dispatch_entry_alert(event, entry, config, http_client)
+        if alert_buffer is not None:
+            has_open = await _has_open_position(config, event.market_id)
+            alert_buffer.append_entry(event, entry, has_open_position=has_open)
         await _feed_auto_pipeline(event, entry, config)
 
 
@@ -194,6 +214,8 @@ async def handle_exit(
     repo: Any,
     http_client: httpx.AsyncClient,
     dry_run: bool,
+    *,
+    alert_buffer: AlertBuffer | None = None,
 ) -> None:
     """Handle a flippening exit signal.
 
@@ -205,8 +227,8 @@ async def handle_exit(
         repo: FlippeningRepository (None if dry_run).
         http_client: Shared HTTP client.
         dry_run: Whether to skip persistence and alerts.
+        alert_buffer: AlertBuffer for batched dispatch (None in dry_run).
     """
-    from arb_scanner.flippening._orch_alerts import dispatch_exit_alert
     from arb_scanner.flippening._orch_repo import persist_exit
 
     entry: EntrySignal | None = state.active_signal
@@ -225,6 +247,7 @@ async def handle_exit(
         event = FlippeningEvent(
             id=entry.event_id,
             market_id=state.market_id,
+            token_id=state.token_id,
             market_title=state.market_title,
             baseline_yes=state.baseline.yes_price if state.baseline else exit_sig.exit_price,
             spike_price=entry.entry_price,
@@ -236,7 +259,9 @@ async def handle_exit(
             category_type=getattr(state, "category_type", "sport"),
             detected_at=entry.created_at,
         )
-        await dispatch_exit_alert(event, entry, exit_sig, config, http_client)
+        if alert_buffer is not None:
+            alert_buffer.append_exit(event, entry, exit_sig)
+        await _feed_exit_pipeline(event, entry, exit_sig, config)
 
 
 async def _feed_auto_pipeline(
@@ -252,19 +277,46 @@ async def _feed_auto_pipeline(
         config: Application settings.
     """
     try:
-        from arb_scanner.execution.auto_pipeline import AutoExecutionPipeline
+        from arb_scanner.execution.flip_pipeline import FlipAutoExecutionPipeline
 
-        pipeline: AutoExecutionPipeline | None = getattr(config, "_auto_pipeline", None)
+        pipeline: FlipAutoExecutionPipeline | None = getattr(config, "_flip_pipeline", None)
         if pipeline is None or pipeline.mode != "auto":
             return
-        opp = {
+        opp: dict[str, object] = {
             "arb_id": event.id,
             "spread_pct": float(event.spike_magnitude_pct),
             "confidence": float(event.confidence),
             "category": event.category,
             "title": event.market_title,
             "ticket_type": "flippening",
+            "market_id": event.market_id,
+            "token_id": event.token_for_side(entry.side),
+            "side": entry.side,
+            "entry_price": float(entry.entry_price),
+            "max_hold_minutes": entry.max_hold_minutes,
         }
         await pipeline.process_opportunity(opp, source="flippening")
     except Exception:
-        logger.warning("auto_pipeline_feed_failed")
+        logger.warning("flip_pipeline_feed_failed")
+
+
+async def _has_open_position(config: Settings, market_id: str) -> bool:
+    """Return True if an auto-exec position is currently open for market_id.
+
+    Args:
+        config: Application settings (carries _flip_pipeline sidecar).
+        market_id: Polymarket market identifier.
+
+    Returns:
+        True when a live position exists, False otherwise or on error.
+    """
+    try:
+        pipeline = getattr(config, "_flip_pipeline", None)
+        if pipeline is None:
+            return False
+        pos_repo = getattr(pipeline, "_position_repo", None)
+        if pos_repo is None:
+            return False
+        return await pos_repo.get_open_position(market_id) is not None
+    except Exception:
+        return False

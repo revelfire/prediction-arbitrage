@@ -42,6 +42,16 @@ WHERE ticket_id = $1
 ORDER BY created_at ASC
 """
 
+GET_FLIP_TOKEN_BY_MARKET_ID = """
+SELECT token_id
+FROM flippening_baselines
+WHERE market_id = $1
+  AND token_id IS NOT NULL
+  AND token_id <> ''
+ORDER BY captured_at DESC
+LIMIT 1
+"""
+
 GET_TICKET_SUMMARY = """
 WITH ticket_stats AS (
     SELECT

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from arb_scanner.api.deps import get_auto_exec_repo, get_config
+from arb_scanner.execution.activity_feed import get_history, subscribe, unsubscribe
 from arb_scanner.models.auto_execution import AutoExecMode
 from arb_scanner.models.config import Settings
 
@@ -44,13 +49,14 @@ async def auto_exec_status(
     Returns:
         Status dict.
     """
-    pipeline = getattr(request.app.state, "auto_pipeline", None)
     ac = config.auto_execution
+    arb_pipeline = getattr(request.app.state, "arb_pipeline", None)
+    mode = arb_pipeline.mode if arb_pipeline else "off"
 
     result: dict[str, Any] = {
         "enabled": ac.enabled,
-        "mode": pipeline.mode if pipeline else "off",
-        "initialised": pipeline is not None,
+        "mode": mode,
+        "initialised": arb_pipeline is not None,
         "config": {
             "min_spread_pct": ac.min_spread_pct,
             "max_spread_pct": ac.max_spread_pct,
@@ -65,12 +71,17 @@ async def auto_exec_status(
             "enabled": ac.critic.enabled,
             "model": ac.critic.model,
         },
-        "circuit_breakers": [],
+        "arb_breakers": [],
+        "flip_breakers": [],
     }
 
-    breakers = getattr(request.app.state, "circuit_breakers", None)
-    if breakers:
-        result["circuit_breakers"] = [s.model_dump(mode="json") for s in breakers.get_state()]
+    # Per-pipeline breaker state
+    arb_breakers = getattr(request.app.state, "arb_breakers", None)
+    flip_breakers = getattr(request.app.state, "flip_breakers", None)
+    if arb_breakers:
+        result["arb_breakers"] = [s.model_dump(mode="json") for s in arb_breakers.get_state()]
+    if flip_breakers:
+        result["flip_breakers"] = [s.model_dump(mode="json") for s in flip_breakers.get_state()]
 
     return result
 
@@ -91,6 +102,9 @@ async def enable_auto_exec(
     """
     pipeline = _require_pipeline(request)
     pipeline.set_mode(body.mode)
+    flip = getattr(request.app.state, "flip_pipeline", None)
+    if flip is not None:
+        flip.set_mode(body.mode)
     logger.info("auto_exec_mode_set", mode=body.mode)
     return {"mode": pipeline.mode, "status": "ok"}
 
@@ -109,6 +123,9 @@ async def disable_auto_exec(
     """
     pipeline = _require_pipeline(request)
     pipeline.kill()
+    flip = getattr(request.app.state, "flip_pipeline", None)
+    if flip is not None:
+        flip.kill()
     logger.warning("auto_exec_killed")
     return {"mode": "off", "status": "killed"}
 
@@ -137,22 +154,41 @@ async def auto_exec_log(
 
 @router.get("/positions")
 async def auto_exec_positions(
+    request: Request,
     repo: Any = Depends(get_auto_exec_repo),
 ) -> list[dict[str, Any]]:
-    """Return currently open auto-execution positions.
+    """Return all open positions (arb + flippening).
 
     Args:
+        request: The incoming HTTP request.
         repo: Auto-execution repository.
 
     Returns:
-        List of position dicts.
+        List of position dicts with string-coerced values.
     """
+    positions: list[dict[str, Any]] = []
     try:
-        result: list[dict[str, Any]] = await repo.get_open_positions()
-        return result
+        arb_rows: list[dict[str, Any]] = await repo.get_open_positions()
+        for row in arb_rows:
+            row["pipeline_type"] = "arb"
+        positions.extend(arb_rows)
     except Exception as exc:
         logger.error("auto_exec_positions_failed", error=str(exc))
-        raise HTTPException(503, "Database unavailable") from exc
+
+    flip_repo = getattr(request.app.state, "flip_position_repo", None)
+    if flip_repo is not None:
+        try:
+            flip_rows = await flip_repo.get_orphaned_positions()
+            for row in flip_rows:
+                d = {k: (str(v) if v is not None else None) for k, v in dict(row).items()}
+                d["pipeline_type"] = "flip"
+                positions.append(d)
+        except Exception as exc:
+            logger.error("flip_positions_failed", error=str(exc))
+
+    if not positions:
+        return []
+    return positions
 
 
 @router.get("/stats")
@@ -211,6 +247,55 @@ async def reset_circuit_breaker(
     }
 
 
+@router.get("/activity")
+async def activity_history(limit: int = 60) -> list[dict[str, Any]]:
+    """Return recent pipeline activity events (newest last).
+
+    Args:
+        limit: Max events to return.
+
+    Returns:
+        List of activity event dicts.
+    """
+    return get_history(limit=limit)
+
+
+@router.get("/activity-stream")
+async def activity_stream() -> StreamingResponse:
+    """SSE endpoint streaming live auto-execution pipeline activity.
+
+    Returns:
+        StreamingResponse with text/event-stream content type.
+    """
+    return StreamingResponse(
+        _stream_activity(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _stream_activity() -> AsyncGenerator[str, None]:
+    """Generate SSE events from the shared activity feed.
+
+    Yields:
+        Formatted SSE message strings.
+    """
+    q = subscribe()
+    try:
+        # Send history snapshot first
+        history = get_history(limit=30)
+        yield f"event: history\ndata: {json.dumps(history)}\n\n"
+        # Then stream live events
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=20.0)
+                yield f"event: activity\ndata: {json.dumps(event)}\n\n"
+            except TimeoutError:
+                yield "event: heartbeat\ndata: {}\n\n"
+    finally:
+        unsubscribe(q)
+
+
 def _require_pipeline(request: Request) -> Any:
     """Extract auto-execution pipeline from app state.
 
@@ -218,12 +303,12 @@ def _require_pipeline(request: Request) -> Any:
         request: The incoming HTTP request.
 
     Returns:
-        AutoExecutionPipeline instance.
+        Pipeline instance (arb by default).
 
     Raises:
         HTTPException: 503 when pipeline not initialised.
     """
-    pipeline = getattr(request.app.state, "auto_pipeline", None)
+    pipeline = getattr(request.app.state, "arb_pipeline", None)
     if pipeline is None:
         raise HTTPException(503, "Auto-execution pipeline not available")
     return pipeline

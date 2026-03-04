@@ -135,7 +135,12 @@ class SignalGenerator:
             ExitSignal if exit condition met, else None.
         """
         current_bid = update.yes_bid if entry.side == "yes" else update.no_bid
-        elapsed_min = (update.timestamp - entry.created_at).total_seconds() / 60.0
+        elapsed_sec = (update.timestamp - entry.created_at).total_seconds()
+        elapsed_min = elapsed_sec / 60.0
+
+        min_hold = self._resolve_min_hold_seconds(entry)
+        if elapsed_sec < min_hold:
+            return None
 
         if current_bid >= entry.target_exit_price:
             return _build_exit(
@@ -170,10 +175,13 @@ class SignalGenerator:
         if expected_profit < min_profit:
             logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
             return None
+        side_token = event.token_for_side(entry.side)
         leg_1: dict[str, object] = {
             "venue": "polymarket",
             "action": "buy",
             "side": entry.side,
+            "token_id": side_token,
+            "market_id": event.market_id,
             "price": str(entry.entry_price),
             "size_usd": str(entry.suggested_size_usd),
             "contracts": str(num_contracts.quantize(Decimal("0.01"))),
@@ -182,6 +190,8 @@ class SignalGenerator:
             "venue": "polymarket",
             "action": "sell",
             "side": entry.side,
+            "token_id": side_token,
+            "market_id": event.market_id,
             "price": str(entry.target_exit_price),
             "size_usd": str(entry.suggested_size_usd),
             "contracts": str(num_contracts.quantize(Decimal("0.01"))),
@@ -196,6 +206,17 @@ class SignalGenerator:
             ticket_type="flippening",
             status="pending",
         )
+
+    def _resolve_min_hold_seconds(self, entry: EntrySignal) -> float:
+        """Resolve the minimum hold duration before exit checks begin.
+
+        Args:
+            entry: Active entry signal.
+
+        Returns:
+            Minimum hold duration in seconds.
+        """
+        return float(self._config.min_hold_seconds)
 
 
 def _determine_side(event: FlippeningEvent, baseline: Baseline) -> str:
