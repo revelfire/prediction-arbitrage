@@ -868,17 +868,21 @@ async function refreshFlippenings() {
         if (active.length === 0) {
             activeTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No active flippenings</td></tr>';
         } else {
-            activeTbody.innerHTML = active.map(a => `
-                <tr>
-                    <td>${a.category || a.sport || ''}</td>
+            activeTbody.innerHTML = active.map(a => {
+                const cat = a.category || a.sport || '';
+                const title = a.market_title || '';
+                const label = title ? (title.length > 30 ? title.substring(0, 30) + '...' : title) : cat;
+                const catBadge = cat ? `<span style="color:var(--text-secondary);font-size:10px">${cat}</span> ` : '';
+                return `<tr>
+                    <td title="${title}">${catBadge}${label}</td>
                     <td>${a.side || ''}</td>
-                    <td>${formatUSD(a.price)}</td>
+                    <td>${a.entry_price ? formatUSD(a.entry_price) : (a.price ? formatUSD(a.price) : '-')}</td>
                     <td>${a.target_exit ? formatUSD(a.target_exit) : '-'}</td>
                     <td>${a.stop_loss ? formatUSD(a.stop_loss) : '-'}</td>
                     <td>${a.suggested_size ? formatUSD(a.suggested_size) : '-'}</td>
                     <td>${a.confidence ? formatPct(a.confidence) : '-'}</td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         }
     }
 

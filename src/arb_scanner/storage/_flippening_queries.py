@@ -25,13 +25,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 """
 
 GET_ACTIVE_SIGNALS = """
-SELECT
+SELECT DISTINCT ON (e.market_id)
     e.id AS event_id,
     e.market_id,
     e.market_title,
     e.sport,
     e.confidence,
     e.detected_at,
+    e.category,
+    e.category_type,
     s.id AS signal_id,
     s.side,
     s.price AS entry_price,
@@ -44,7 +46,7 @@ JOIN flippening_events e ON s.event_id = e.id
 LEFT JOIN flippening_signals x
     ON x.event_id = s.event_id AND x.signal_type = 'exit'
 WHERE s.signal_type = 'entry' AND x.id IS NULL
-ORDER BY s.created_at DESC
+ORDER BY e.market_id, s.created_at DESC
 LIMIT $1
 """
 
