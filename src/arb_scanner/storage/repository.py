@@ -350,7 +350,7 @@ class Repository:
             log.candidate_pairs,
             log.llm_evaluations,
             log.opportunities_found,
-            log.errors,
+            json.dumps(log.errors),
         )
 
     async def upsert_scan_log(self, log: ScanLog) -> None:
@@ -369,7 +369,7 @@ class Repository:
             log.candidate_pairs,
             log.llm_evaluations,
             log.opportunities_found,
-            log.errors,
+            json.dumps(log.errors),
         )
 
 
