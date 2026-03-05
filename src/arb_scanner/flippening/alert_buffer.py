@@ -92,21 +92,18 @@ class AlertBuffer:
         entry: EntrySignal,
         exit_signal: ExitSignal,
     ) -> None:
-        """Buffer an exit alert (sync, non-blocking).
-
-        Deduplicates by market_id, keeping the latest exit.
+        """Accept exit alert (silenced — only logged, not dispatched).
 
         Args:
             event: Original flippening event.
             entry: Entry signal that was active.
             exit_signal: Exit signal with P&L.
         """
-        score = float(exit_signal.realized_pnl_pct)
-        self._exits[event.market_id] = _BufferedAlert(
-            event=event,
-            entry=entry,
-            exit_signal=exit_signal,
-            score=score,
+        logger.info(
+            "exit_signal_logged",
+            market_id=event.market_id,
+            reason=exit_signal.exit_reason.value,
+            pnl=float(exit_signal.realized_pnl),
         )
 
     async def flush(self, config: Settings, client: httpx.AsyncClient) -> int:

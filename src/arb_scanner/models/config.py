@@ -274,7 +274,7 @@ class FlippeningConfig(BaseModel):
     min_baseline_price: float = 0.05
     max_baseline_price: float = 0.95
     max_deviation_recapture_pct: float = 500.0
-    alert_batch_interval_seconds: float = 30.0
+    alert_batch_interval_seconds: float = 600.0
     alert_max_per_batch: int = 10
 
     @model_validator(mode="after")

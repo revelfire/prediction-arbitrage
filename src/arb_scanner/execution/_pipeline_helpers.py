@@ -97,18 +97,8 @@ async def persist_and_notify(entry: AutoExecLogEntry, infra: PipelineInfra) -> N
 
 
 async def dispatch_geoblock(arb_id: str, infra: PipelineInfra) -> None:
-    """Dispatch a geographic restriction alert."""
-    try:
-        from arb_scanner.notifications.auto_exec_webhook import dispatch_geoblock_alert
-
-        notif = infra.config.notifications
-        await dispatch_geoblock_alert(
-            arb_id,
-            slack_url=notif.effective_auto_exec_slack,
-            discord_url=notif.discord_webhook,
-        )
-    except Exception:
-        infra.log.exception("geoblock_notification_failed")
+    """Log geographic restriction (webhook silenced to reduce noise)."""
+    infra.log.warning("geoblock_detected", arb_id=arb_id)
 
 
 async def record_rejection(
@@ -175,7 +165,9 @@ async def _persist_log(entry: AutoExecLogEntry, infra: PipelineInfra) -> None:
 
 
 async def _dispatch_notification(entry: AutoExecLogEntry, infra: PipelineInfra) -> None:
-    """Dispatch webhook notification for a log entry."""
+    """Dispatch webhook notification only for executed trades."""
+    if entry.status != "executed":
+        return
     try:
         from arb_scanner.notifications.auto_exec_webhook import dispatch_auto_exec_alert
 
@@ -190,21 +182,7 @@ async def _dispatch_notification(entry: AutoExecLogEntry, infra: PipelineInfra) 
 
 
 async def _dispatch_breaker(reasons: list[str], infra: PipelineInfra) -> None:
-    """Dispatch circuit breaker trip notifications."""
-    try:
-        from arb_scanner.notifications.auto_exec_webhook import dispatch_breaker_alert
-
-        notif = infra.config.notifications
-        for reason in reasons:
-            if reason.startswith("circuit_breaker_"):
-                parts = reason.split(": ", 1)
-                btype = parts[0].removeprefix("circuit_breaker_")
-                detail = parts[1] if len(parts) > 1 else reason
-                await dispatch_breaker_alert(
-                    btype,
-                    detail,
-                    slack_url=notif.effective_auto_exec_slack,
-                    discord_url=notif.discord_webhook,
-                )
-    except Exception:
-        infra.log.exception("breaker_notification_failed")
+    """Log circuit breaker trips (webhook silenced to reduce noise)."""
+    for reason in reasons:
+        if reason.startswith("circuit_breaker_"):
+            infra.log.warning("breaker_tripped", reason=reason)

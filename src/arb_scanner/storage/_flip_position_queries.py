@@ -52,9 +52,18 @@ WHERE status = 'open'
 ORDER BY opened_at ASC
 """
 
-GET_ORPHANED_POSITIONS = f"""
-SELECT {_POS_COLS}
-FROM flippening_auto_positions
-WHERE status = 'open'
-ORDER BY opened_at ASC
+GET_ORPHANED_POSITIONS = """
+SELECT p.id, p.arb_id, p.market_id, p.token_id, p.side,
+       p.size_contracts, p.entry_price, p.entry_order_id,
+       p.status, p.opened_at, p.max_hold_minutes,
+       COALESCE(NULLIF(p.market_title, ''), e.market_title, '') AS market_title,
+       COALESCE(NULLIF(p.market_slug, ''), '') AS market_slug
+FROM flippening_auto_positions p
+LEFT JOIN LATERAL (
+    SELECT market_title FROM flippening_events
+    WHERE market_id = p.market_id
+    ORDER BY detected_at DESC LIMIT 1
+) e ON true
+WHERE p.status = 'open'
+ORDER BY p.opened_at ASC
 """

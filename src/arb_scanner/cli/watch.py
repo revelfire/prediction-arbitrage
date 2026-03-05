@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -12,11 +13,12 @@ from arb_scanner.cli.orchestrator import run_scan
 from arb_scanner.models.analytics import TrendAlert
 from arb_scanner.models.arbitrage import ArbOpportunity
 from arb_scanner.models.config import NotificationConfig, Settings
-from arb_scanner.notifications.alert_webhook import dispatch_trend_alert
 from arb_scanner.notifications.trend_detector import TrendDetector
 from arb_scanner.notifications.webhook import dispatch_webhook
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="cli.watch")
+
+_OPP_BATCH_INTERVAL_S = 600.0  # 10 minutes between ticket batches
 
 
 async def run_watch(
@@ -42,6 +44,8 @@ async def run_watch(
     notif = config.notifications
     min_spread = Decimal(str(notif.min_spread_to_notify_pct))
     cycle = 0
+    opp_buffer: list[ArbOpportunity] = []
+    last_opp_flush = 0.0
 
     while not stop_event.is_set():
         cycle += 1
@@ -54,9 +58,15 @@ async def run_watch(
             continue
 
         new_opps = _extract_new_opps(result, seen_keys, min_spread)
-        await _notify_new_opps(new_opps, notif)
+        opp_buffer.extend(new_opps)
         for opp in new_opps:
             seen_keys.add(_opp_dedup_key(opp))
+
+        now = time.monotonic()
+        if opp_buffer and (now - last_opp_flush) >= _OPP_BATCH_INTERVAL_S:
+            await _notify_new_opps(opp_buffer, notif)
+            opp_buffer.clear()
+            last_opp_flush = now
 
         if not dry_run and new_opps:
             await _feed_auto_pipeline(new_opps, config)
@@ -128,19 +138,17 @@ async def _dispatch_trend_alerts(
     alerts: list[TrendAlert],
     notif: NotificationConfig,
 ) -> None:
-    """Dispatch trend alert webhooks.
+    """Log trend alerts (webhook silenced to reduce channel noise).
 
     Args:
-        alerts: Trend alerts to dispatch.
-        notif: NotificationConfig with webhook URLs and enabled flag.
+        alerts: Trend alerts to log.
+        notif: NotificationConfig (unused — webhooks disabled).
     """
-    if not notif.enabled:
-        return
     for alert in alerts:
-        await dispatch_trend_alert(
-            alert,
-            slack_url=notif.slack_webhook,
-            discord_url=notif.discord_webhook,
+        logger.info(
+            "trend_alert_logged",
+            alert_type=alert.alert_type.value,
+            message=alert.message,
         )
 
 

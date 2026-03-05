@@ -109,11 +109,11 @@ class TestAlertBufferAppend:
         buf.append_entry(_event(), _entry())
         assert buf.pending == 1
 
-    def test_append_exit_basic(self) -> None:
-        """Appending an exit increments pending count."""
+    def test_append_exit_silenced(self) -> None:
+        """Exit alerts are logged only, not buffered for dispatch."""
         buf = AlertBuffer()
         buf.append_exit(_event(), _entry(), _exit_signal())
-        assert buf.pending == 1
+        assert buf.pending == 0
 
     def test_entry_dedup_keeps_higher_score(self) -> None:
         """Duplicate market_id keeps the higher-scoring entry."""
@@ -130,19 +130,19 @@ class TestAlertBufferAppend:
         buf.append_entry(_event(confidence="0.50"), _entry(profit_pct="0.10"))
         assert buf.pending == 1
 
-    def test_exit_dedup_replaces(self) -> None:
-        """Duplicate market_id exit always replaces (keeps latest)."""
+    def test_exit_dedup_silenced(self) -> None:
+        """Duplicate exits are silenced — nothing is buffered."""
         buf = AlertBuffer()
         buf.append_exit(_event(), _entry(), _exit_signal(pnl_pct="0.10"))
         buf.append_exit(_event(), _entry(), _exit_signal(pnl_pct="0.30"))
-        assert buf.pending == 1
+        assert buf.pending == 0
 
     def test_entry_and_exit_independent(self) -> None:
-        """Entry and exit for same market_id are tracked separately."""
+        """Entry is buffered; exit is silenced — only 1 pending."""
         buf = AlertBuffer()
         buf.append_entry(_event(), _entry())
         buf.append_exit(_event(), _entry(), _exit_signal())
-        assert buf.pending == 2
+        assert buf.pending == 1
 
 
 class TestAlertBufferFlush:
@@ -159,10 +159,10 @@ class TestAlertBufferFlush:
 
     @pytest.mark.asyncio
     async def test_flush_dispatches_and_clears(self) -> None:
-        """Flush dispatches alerts and clears the buffer."""
+        """Flush dispatches entry alerts and clears the buffer."""
         buf = AlertBuffer()
         buf.append_entry(_event(), _entry())
-        buf.append_exit(_event(market_id="m2"), _entry(), _exit_signal())
+        buf.append_entry(_event(market_id="m2"), _entry())
 
         config = _settings()
         client = AsyncMock()
@@ -233,8 +233,8 @@ class TestAlertBufferFlush:
         assert high_pos < low_pos
 
     @pytest.mark.asyncio
-    async def test_flush_entries_fill_before_exits(self) -> None:
-        """Entries fill the batch first, then exits fill remaining slots."""
+    async def test_flush_entries_only(self) -> None:
+        """Only entries are dispatched (exits silenced)."""
         buf = AlertBuffer()
         for i in range(8):
             buf.append_entry(
@@ -256,8 +256,8 @@ class TestAlertBufferFlush:
         ):
             result = await buf.flush(config, client)
 
-        # 8 entries + 2 exits = 10 (cap)
-        assert result == 10
+        # Only 8 entries dispatched (exits are silenced)
+        assert result == 8
 
     @pytest.mark.asyncio
     async def test_flush_swallows_exceptions(self) -> None:
