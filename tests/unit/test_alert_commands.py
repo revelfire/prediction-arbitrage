@@ -51,27 +51,27 @@ class TestAlertsHelp:
 
     def test_help_exits_zero(self) -> None:
         """alerts --help exits with code 0."""
-        result = runner.invoke(app, ["alerts", "--help"])
+        result = runner.invoke(app, ["alerts", "--help"], color=False)
         assert result.exit_code == 0
 
     def test_help_shows_last_option(self) -> None:
         """alerts --help mentions the --last option."""
-        result = runner.invoke(app, ["alerts", "--help"])
+        result = runner.invoke(app, ["alerts", "--help"], color=False)
         assert "--last" in result.output
 
     def test_help_shows_type_option(self) -> None:
         """alerts --help mentions the --type option."""
-        result = runner.invoke(app, ["alerts", "--help"])
+        result = runner.invoke(app, ["alerts", "--help"], color=False)
         assert "--type" in result.output
 
     def test_help_shows_format_option(self) -> None:
         """alerts --help mentions the --format option."""
-        result = runner.invoke(app, ["alerts", "--help"])
+        result = runner.invoke(app, ["alerts", "--help"], color=False)
         assert "--format" in result.output
 
     def test_alerts_in_top_level_help(self) -> None:
         """Top-level --help lists the alerts command."""
-        result = runner.invoke(app, ["--help"])
+        result = runner.invoke(app, ["--help"], color=False)
         assert "alerts" in result.output
 
 

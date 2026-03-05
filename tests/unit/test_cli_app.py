@@ -83,7 +83,7 @@ class TestHelpText:
 
     def test_top_level_help(self) -> None:
         """Top-level --help shows all commands."""
-        result = runner.invoke(app, ["--help"])
+        result = runner.invoke(app, ["--help"], color=False)
         assert result.exit_code == 0
         assert "scan" in result.output
         assert "watch" in result.output
@@ -94,7 +94,7 @@ class TestHelpText:
 
     def test_scan_help(self) -> None:
         """Scan --help shows options."""
-        result = runner.invoke(app, ["scan", "--help"])
+        result = runner.invoke(app, ["scan", "--help"], color=False)
         assert result.exit_code == 0
         assert "--dry-run" in result.output
         assert "--min-spread" in result.output
@@ -102,34 +102,34 @@ class TestHelpText:
 
     def test_watch_help(self) -> None:
         """Watch --help shows options."""
-        result = runner.invoke(app, ["watch", "--help"])
+        result = runner.invoke(app, ["watch", "--help"], color=False)
         assert result.exit_code == 0
         assert "--interval" in result.output
         assert "--min-spread" in result.output
 
     def test_report_help(self) -> None:
         """Report --help shows options."""
-        result = runner.invoke(app, ["report", "--help"])
+        result = runner.invoke(app, ["report", "--help"], color=False)
         assert result.exit_code == 0
         assert "--last" in result.output
         assert "--format" in result.output
 
     def test_match_audit_help(self) -> None:
         """Match-audit --help shows options."""
-        result = runner.invoke(app, ["match-audit", "--help"])
+        result = runner.invoke(app, ["match-audit", "--help"], color=False)
         assert result.exit_code == 0
         assert "--include-expired" in result.output
         assert "--min-confidence" in result.output
 
     def test_migrate_help(self) -> None:
         """Migrate --help shows description."""
-        result = runner.invoke(app, ["migrate", "--help"])
+        result = runner.invoke(app, ["migrate", "--help"], color=False)
         assert result.exit_code == 0
         assert "migration" in result.output.lower()
 
     def test_serve_help(self) -> None:
         """Serve --help shows options."""
-        result = runner.invoke(app, ["serve", "--help"])
+        result = runner.invoke(app, ["serve", "--help"], color=False)
         assert result.exit_code == 0
         assert "--host" in result.output
         assert "--port" in result.output
