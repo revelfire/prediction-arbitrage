@@ -1398,6 +1398,10 @@ function startAutoRefresh() {
 let _aeSSE = null;
 
 const _AE_EVENT_META = {
+    mode_changed:    { icon: '⚙',  label: 'Mode Changed',    cls: 'ae-info' },
+    refeed_start:    { icon: '🔄', label: 'Re-feeding',      cls: 'ae-active' },
+    refeed_done:     { icon: '✓',  label: 'Re-feed Done',    cls: 'ae-ok' },
+    refeed_empty:    { icon: '·',  label: 'No Missed Signals',cls: 'ae-info' },
     considering:     { icon: '🔍', label: 'Considering',     cls: 'ae-info' },
     criteria_passed: { icon: '✓',  label: 'Criteria OK',     cls: 'ae-ok' },
     criteria_failed: { icon: '✗',  label: 'Criteria Fail',   cls: 'ae-bad' },
@@ -1413,10 +1417,14 @@ const _AE_EVENT_META = {
     placed_complete: { icon: '💰', label: 'Filled',          cls: 'ae-ok' },
     placed_partial:  { icon: '⚠️', label: 'Partial Fill',    cls: 'ae-warn' },
     placed_failed:   { icon: '✗',  label: 'Order Failed',    cls: 'ae-bad' },
+    placed_executed: { icon: '💰', label: 'Executed',        cls: 'ae-ok' },
 };
 
 function _aeDetail(ev) {
     const t = ev.type;
+    if (t === 'mode_changed')    return `→ ${ev.mode || ''}`;
+    if (t === 'refeed_start')    return `${ev.count || 0} missed signal(s)`;
+    if (t === 'refeed_done')     return `${ev.fed || 0} fed to pipeline`;
     if (t === 'considering') return `${ev.spread || ''} conf ${ev.confidence || ''}`;
     if (t === 'criteria_failed') return (ev.reasons || []).slice(0, 2).join('; ');
     if (t === 'size_computed')   return ev.size_usd != null ? `$${parseFloat(ev.size_usd).toFixed(2)}` : '';

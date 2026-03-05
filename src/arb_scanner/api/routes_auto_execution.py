@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from arb_scanner.api.deps import get_auto_exec_repo, get_config
-from arb_scanner.execution.activity_feed import get_history, subscribe, unsubscribe
+from arb_scanner.execution.activity_feed import get_history, push_activity, subscribe, unsubscribe
 from arb_scanner.models.auto_execution import AutoExecMode
 from arb_scanner.models.config import Settings
 
@@ -105,6 +105,11 @@ async def enable_auto_exec(
     flip = getattr(request.app.state, "flip_pipeline", None)
     if flip is not None:
         flip.set_mode(body.mode)
+    push_activity("mode_changed", "system", pipeline="system", mode=body.mode)
+    if body.mode == "auto" and flip is not None:
+        db = getattr(request.app.state, "db", None)
+        if db is not None:
+            asyncio.ensure_future(_refeed_active_signals(flip, db.pool))
     logger.info("auto_exec_mode_set", mode=body.mode)
     return {"mode": pipeline.mode, "status": "ok"}
 
@@ -294,6 +299,44 @@ async def _stream_activity() -> AsyncGenerator[str, None]:
                 yield "event: heartbeat\ndata: {}\n\n"
     finally:
         unsubscribe(q)
+
+
+async def _refeed_active_signals(flip: Any, pool: Any) -> None:
+    """Re-feed active flip signals missed while mode was off.
+
+    Args:
+        flip: FlipAutoExecutionPipeline instance.
+        pool: asyncpg connection pool.
+    """
+    from arb_scanner.storage._flippening_queries import GET_REFEEDABLE_SIGNALS
+
+    try:
+        rows = await pool.fetch(GET_REFEEDABLE_SIGNALS, 20)
+        if not rows:
+            push_activity("refeed_empty", "system", pipeline="flip")
+            return
+        push_activity("refeed_start", "system", pipeline="flip", count=len(rows))
+        fed = 0
+        for row in rows:
+            opp: dict[str, object] = {
+                "arb_id": str(row["event_id"]),
+                "spread_pct": float(row["spike_magnitude"]),
+                "confidence": float(row["confidence"]),
+                "category": row["category"] or "",
+                "title": row["market_title"] or "",
+                "ticket_type": "flippening",
+                "market_id": row["market_id"],
+                "token_id": row["token_id"] or "",
+                "side": row["side"],
+                "entry_price": float(row["entry_price"]),
+                "market_slug": "",
+            }
+            result = await flip.process_opportunity(opp, source="refeed")
+            if result is not None:
+                fed += 1
+        push_activity("refeed_done", "system", pipeline="flip", fed=fed)
+    except Exception:
+        logger.warning("refeed_active_signals_failed")
 
 
 def _require_pipeline(request: Request) -> Any:
