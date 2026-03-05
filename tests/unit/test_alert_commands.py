@@ -23,6 +23,7 @@ def _plain(result: Any) -> str:
     """Strip ANSI escape codes from CLI runner output."""
     return _ANSI_RE.sub("", result.output)
 
+
 _DT1 = datetime(2026, 2, 22, 10, 30, tzinfo=timezone.utc)
 _DT2 = datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc)
 
