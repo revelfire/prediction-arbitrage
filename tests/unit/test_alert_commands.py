@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -14,6 +15,13 @@ from arb_scanner.models.analytics import AlertType, TrendAlert
 from arb_scanner.notifications.reporter import format_alerts_table
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(result: Any) -> str:
+    """Strip ANSI escape codes from CLI runner output."""
+    return _ANSI_RE.sub("", result.output)
 
 _DT1 = datetime(2026, 2, 22, 10, 30, tzinfo=timezone.utc)
 _DT2 = datetime(2026, 2, 22, 14, 0, tzinfo=timezone.utc)
@@ -51,28 +59,28 @@ class TestAlertsHelp:
 
     def test_help_exits_zero(self) -> None:
         """alerts --help exits with code 0."""
-        result = runner.invoke(app, ["alerts", "--help"], color=False)
+        result = runner.invoke(app, ["alerts", "--help"])
         assert result.exit_code == 0
 
     def test_help_shows_last_option(self) -> None:
         """alerts --help mentions the --last option."""
-        result = runner.invoke(app, ["alerts", "--help"], color=False)
-        assert "--last" in result.output
+        result = runner.invoke(app, ["alerts", "--help"])
+        assert "--last" in _plain(result)
 
     def test_help_shows_type_option(self) -> None:
         """alerts --help mentions the --type option."""
-        result = runner.invoke(app, ["alerts", "--help"], color=False)
-        assert "--type" in result.output
+        result = runner.invoke(app, ["alerts", "--help"])
+        assert "--type" in _plain(result)
 
     def test_help_shows_format_option(self) -> None:
         """alerts --help mentions the --format option."""
-        result = runner.invoke(app, ["alerts", "--help"], color=False)
-        assert "--format" in result.output
+        result = runner.invoke(app, ["alerts", "--help"])
+        assert "--format" in _plain(result)
 
     def test_alerts_in_top_level_help(self) -> None:
         """Top-level --help lists the alerts command."""
-        result = runner.invoke(app, ["--help"], color=False)
-        assert "alerts" in result.output
+        result = runner.invoke(app, ["--help"])
+        assert "alerts" in _plain(result)
 
 
 class TestAlertsWithMockedDB:
