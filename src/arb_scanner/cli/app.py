@@ -104,7 +104,7 @@ def watch(
 
 
 async def _run_watch_with_signals(config: Any) -> None:
-    """Set up signal handlers and run the watch loop."""
+    """Set up signal handlers, init arb pipeline, and run the watch loop."""
     from arb_scanner.cli.watch import run_watch
 
     stop_event = asyncio.Event()
@@ -113,9 +113,77 @@ async def _run_watch_with_signals(config: Any) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
+    db = await _maybe_init_arb_pipeline(config)
     logger.info("watch_started", interval=config.scanning.interval_seconds)
-    await run_watch(config, stop_event)
+    try:
+        await run_watch(config, stop_event)
+    finally:
+        if db is not None:
+            await db.disconnect()
     logger.info("watch_stopped")
+
+
+async def _maybe_init_arb_pipeline(config: Any) -> Any:
+    """Initialise arb auto-execution pipeline for the watch loop.
+
+    Returns the Database instance (for cleanup) or None if skipped.
+    """
+    ac = config.auto_execution
+    if not ac.enabled or ac.mode == "off":
+        logger.info("arb_pipeline_skipped", reason="auto_execution_disabled")
+        return None
+    try:
+        from arb_scanner.execution.arb_critic import ArbTradeCritic
+        from arb_scanner.execution.arb_pipeline import ArbAutoExecutionPipeline
+        from arb_scanner.execution.capital_manager import CapitalManager
+        from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
+        from arb_scanner.execution.kalshi_executor import KalshiExecutor
+        from arb_scanner.execution.polymarket_executor import PolymarketExecutor
+        from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+        from arb_scanner.storage.db import Database
+
+        db = Database(config.database.url)
+        await db.connect()
+        pool = db.pool
+        auto_repo = AutoExecRepository(pool)
+        poly = PolymarketExecutor(config.execution.polymarket)
+        kalshi = KalshiExecutor(config.execution.kalshi)
+        capital = CapitalManager(
+            config.execution, poly.get_balance, kalshi.get_balance,
+        )
+        breakers = CircuitBreakerManager(ac)
+        critic = ArbTradeCritic(ac.critic, config.claude)
+        from arb_scanner.execution.orchestrator import ExecutionOrchestrator
+        from arb_scanner.storage.execution_repository import ExecutionRepository
+        from arb_scanner.storage.ticket_repository import TicketRepository
+
+        exec_repo = ExecutionRepository(pool)
+        ticket_repo = TicketRepository(pool)
+        orch = ExecutionOrchestrator(
+            config=config.execution,
+            capital=capital,
+            poly=poly,
+            kalshi=kalshi,
+            exec_repo=exec_repo,
+            ticket_repo=ticket_repo,
+        )
+        pipeline = ArbAutoExecutionPipeline(
+            config=config,
+            auto_config=ac,
+            orchestrator=orch,
+            critic=critic,
+            breakers=breakers,
+            capital=capital,
+            poly=poly,
+            kalshi=kalshi,
+            auto_repo=auto_repo,
+        )
+        object.__setattr__(config, "_arb_pipeline", pipeline)
+        logger.info("arb_pipeline_initialised", mode=str(ac.mode))
+        return db
+    except Exception:
+        logger.exception("arb_pipeline_init_failed")
+        return None
 
 
 @app.command()
