@@ -1612,25 +1612,28 @@ async function refreshOpenPositions() {
     setText('ae-open-count', String(data.length));
     const exposure = data.reduce((sum, p) => sum + parseFloat(p.entry_cost_usd || p.entry_price || 0), 0);
     setText('ae-open-exposure', formatUSD(exposure));
+    _positionCache = {};
     tbody.innerHTML = data.map(p => {
-        const market = p.market_id || p.poly_market_id || p.kalshi_ticker || p.arb_id || '-';
-        const shortMarket = market.length > 24 ? market.substring(0, 24) + '...' : market;
+        const arbId = p.arb_id || '';
+        _positionCache[arbId] = p;
+        const title = p.market_title || '';
+        const market = title || p.market_id || p.poly_market_id || p.kalshi_ticker || arbId || '-';
+        const shortMarket = market.length > 32 ? market.substring(0, 32) + '...' : market;
         const side = p.side || '-';
         const size = p.size_contracts ? `${p.size_contracts} ct` : (p.entry_cost_usd ? formatUSD(p.entry_cost_usd) : '-');
         const entry = p.entry_price ? formatUSD(p.entry_price) : (p.entry_spread ? formatPct(p.entry_spread) : '-');
         const maxHold = p.max_hold_minutes ? parseInt(p.max_hold_minutes) : null;
         const target = maxHold ? `${maxHold}m` : '-';
         const holdClass = holdTimeClass(p.opened_at, maxHold);
-        const arbId = p.arb_id || '';
         const posType = p.pipeline_type || (p.market_id ? 'flip' : 'arb');
         const typeBadge = posType === 'flip'
             ? '<span class="badge badge-approved">Flip</span>'
             : '<span class="badge badge-pending">Arb</span>';
         const closeBtn = posType === 'flip'
-            ? `<button class="btn btn-danger btn-sm" onclick="closePosition('${arbId}')">Close</button>`
+            ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closePosition('${arbId}')">Close</button>`
             : '<span style="color:var(--text-secondary);font-size:11px">atomic</span>';
-        return `<tr>
-            <td title="${market}">${shortMarket}</td>
+        return `<tr style="cursor:pointer" onclick="openPositionDetail('${arbId}')">
+            <td title="${title || market}">${shortMarket}</td>
             <td>${typeBadge}</td>
             <td>${side}</td>
             <td>${size}</td>
@@ -1640,6 +1643,66 @@ async function refreshOpenPositions() {
             <td>${closeBtn}</td>
         </tr>`;
     }).join('');
+}
+
+let _positionCache = {};
+
+function openPositionDetail(arbId) {
+    const p = _positionCache[arbId];
+    if (!p) return;
+    const modal = el('position-modal');
+    const body = el('position-modal-body');
+    const titleEl = el('position-modal-title');
+    if (!modal || !body) return;
+
+    const title = p.market_title || p.market_id || arbId;
+    if (titleEl) titleEl.textContent = 'Position Detail';
+
+    const slug = p.market_slug || '';
+    const marketUrl = slug ? `https://polymarket.com/event/${slug}` : '';
+    const marketLink = marketUrl
+        ? `<a href="${marketUrl}" target="_blank" rel="noopener" class="market-link">${title}</a>`
+        : title;
+
+    const posType = p.pipeline_type || 'flip';
+    const side = p.side || '-';
+    const size = p.size_contracts ? `${p.size_contracts} contracts` : '-';
+    const entry = p.entry_price ? formatUSD(p.entry_price) : '-';
+    const maxHold = p.max_hold_minutes ? `${parseInt(p.max_hold_minutes)}m` : '-';
+    const holdTime = formatHoldTime(p.opened_at);
+    const opened = p.opened_at ? new Date(p.opened_at).toLocaleString() : '-';
+    const tokenId = p.token_id || '-';
+    const shortToken = tokenId.length > 16 ? tokenId.substring(0, 8) + '...' + tokenId.slice(-6) : tokenId;
+    const marketId = p.market_id || '-';
+
+    const closeBtnHtml = posType === 'flip'
+        ? `<button class="btn btn-danger btn-sm" onclick="closePosition('${arbId}'); closePositionModal();">Close Position</button>`
+        : '';
+
+    body.innerHTML = `
+        <div class="detail-section">
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Market</span><span class="detail-value">${marketLink}</span></div>
+                <div class="detail-row"><span class="detail-label">Pipeline</span><span class="detail-value">${posType.toUpperCase()}</span></div>
+                <div class="detail-row"><span class="detail-label">Side</span><span class="detail-value">${side.toUpperCase()}</span></div>
+                <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${size}</span></div>
+                <div class="detail-row"><span class="detail-label">Entry Price</span><span class="detail-value">${entry}</span></div>
+                <div class="detail-row"><span class="detail-label">Hold Time</span><span class="detail-value">${holdTime}</span></div>
+                <div class="detail-row"><span class="detail-label">Max Hold</span><span class="detail-value">${maxHold}</span></div>
+                <div class="detail-row"><span class="detail-label">Opened</span><span class="detail-value">${opened}</span></div>
+                <div class="detail-row"><span class="detail-label">Market ID</span><span class="detail-value" style="font-size:11px;word-break:break-all">${marketId}</span></div>
+                <div class="detail-row"><span class="detail-label">Token ID</span><span class="detail-value" style="font-size:11px" title="${tokenId}">${shortToken}</span></div>
+            </div>
+        </div>
+        ${closeBtnHtml ? `<div class="modal-actions" style="margin-top:12px">${closeBtnHtml}</div>` : ''}
+    `;
+    modal.style.display = 'flex';
+}
+
+function closePositionModal(event) {
+    if (event && event.target !== event.currentTarget) return;
+    const modal = el('position-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 async function closePosition(arbId) {

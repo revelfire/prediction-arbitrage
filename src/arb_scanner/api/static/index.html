@@ -230,6 +230,17 @@
             </div>
         </div>
 
+        <!-- Position Detail Modal -->
+        <div id="position-modal" class="modal-overlay" style="display:none" onclick="closePositionModal(event)">
+            <div class="modal-content" style="max-width:560px" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <h3 id="position-modal-title">Position Detail</h3>
+                    <button class="modal-close" onclick="closePositionModal()">&times;</button>
+                </div>
+                <div id="position-modal-body" class="modal-body">Loading...</div>
+            </div>
+        </div>
+
         <!-- Ticket Detail Modal -->
         <div id="ticket-modal" class="modal-overlay" style="display:none">
             <div class="modal-content">

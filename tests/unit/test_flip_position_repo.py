@@ -69,6 +69,8 @@ class TestInsertPosition:
             Decimal("0.63"),
             "order-uuid",
             None,
+            "",
+            "",
         )
 
 

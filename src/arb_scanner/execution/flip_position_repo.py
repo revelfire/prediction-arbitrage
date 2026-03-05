@@ -43,6 +43,8 @@ class FlipPositionRepo:
         entry_price: Decimal,
         entry_order_id: str = "",
         max_hold_minutes: int | None = None,
+        market_title: str = "",
+        market_slug: str = "",
     ) -> str:
         """Insert a new open position after a successful entry order.
 
@@ -55,6 +57,8 @@ class FlipPositionRepo:
             entry_price: Price per contract at entry.
             entry_order_id: Internal execution order UUID (optional).
             max_hold_minutes: Target hold duration from entry signal.
+            market_title: Human-readable market title for display.
+            market_slug: Polymarket slug for building market URLs.
 
         Returns:
             New position ID string.
@@ -69,6 +73,8 @@ class FlipPositionRepo:
             entry_price,
             entry_order_id,
             max_hold_minutes,
+            market_title,
+            market_slug,
         )
         position_id: str = row["id"]
         logger.info("flip_position_inserted", market_id=market_id, side=side)

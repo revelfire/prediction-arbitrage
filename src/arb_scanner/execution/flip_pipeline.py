@@ -261,6 +261,8 @@ class FlipAutoExecutionPipeline:
                 entry_price=Decimal(str(ep)),
                 entry_order_id="",
                 max_hold_minutes=int(raw_hold) if raw_hold is not None else None,
+                market_title=str(opp.get("title", opp.get("market_title", ""))),
+                market_slug=str(opp.get("market_slug", "")),
             )
         except Exception:
             logger.warning("flip_position_register_failed", arb_id=arb_id)

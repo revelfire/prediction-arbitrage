@@ -203,7 +203,7 @@ async def handle_entry(
         if alert_buffer is not None:
             has_open = await _has_open_position(config, event.market_id)
             alert_buffer.append_entry(event, entry, has_open_position=has_open)
-        await _feed_auto_pipeline(event, entry, config)
+        await _feed_auto_pipeline(event, entry, config, market_slug=slug)
 
 
 async def handle_exit(
@@ -268,6 +268,8 @@ async def _feed_auto_pipeline(
     event: FlippeningEvent,
     entry: EntrySignal,
     config: Settings,
+    *,
+    market_slug: str = "",
 ) -> None:
     """Feed a flippening entry to the auto-execution pipeline if available.
 
@@ -275,6 +277,7 @@ async def _feed_auto_pipeline(
         event: Detected flippening event.
         entry: Entry signal.
         config: Application settings.
+        market_slug: Polymarket slug for building market URLs.
     """
     try:
         from arb_scanner.execution.flip_pipeline import FlipAutoExecutionPipeline
@@ -294,6 +297,7 @@ async def _feed_auto_pipeline(
             "side": entry.side,
             "entry_price": float(entry.entry_price),
             "max_hold_minutes": entry.max_hold_minutes,
+            "market_slug": market_slug,
         }
         await pipeline.process_opportunity(opp, source="flippening")
     except Exception:
