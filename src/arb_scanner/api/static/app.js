@@ -1398,6 +1398,8 @@ function startAutoRefresh() {
 let _aeSSE = null;
 
 const _AE_EVENT_META = {
+    startup_expired: { icon: '🧹', label: 'Expired',         cls: 'ae-warn' },
+    startup_abandoned:{ icon: '⏰', label: 'Hold Exceeded',   cls: 'ae-bad' },
     mode_changed:    { icon: '⚙',  label: 'Mode Changed',    cls: 'ae-info' },
     refeed_start:    { icon: '🔄', label: 'Re-feeding',      cls: 'ae-active' },
     refeed_done:     { icon: '✓',  label: 'Re-feed Done',    cls: 'ae-ok' },
@@ -1422,6 +1424,8 @@ const _AE_EVENT_META = {
 
 function _aeDetail(ev) {
     const t = ev.type;
+    if (t === 'startup_expired')  return `${ev.count || 0} stale ${ev.kind || 'items'} cancelled`;
+    if (t === 'startup_abandoned') return ev.title ? `${ev.title.substring(0, 35)} — held ${ev.held_min || '?'}m` : `held past limit`;
     if (t === 'mode_changed')    return `→ ${ev.mode || ''}`;
     if (t === 'refeed_start')    return `${ev.count || 0} missed signal(s)`;
     if (t === 'refeed_done')     return `${ev.fed || 0} fed to pipeline`;

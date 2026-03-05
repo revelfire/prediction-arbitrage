@@ -44,6 +44,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not no_db and config.auto_execution.enabled and app.state.db is not None:
         _init_auto_execution(app, config)
 
+    if not no_db and app.state.db is not None:
+        await _startup_cleanup(app, config)
+
     flip_task: asyncio.Task[None] | None = None
     if flip_watch and not no_db:
         from arb_scanner.flippening.orchestrator import run_flip_watch
@@ -194,6 +197,77 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
     object.__setattr__(config, "_arb_pipeline", arb_pipeline)
     object.__setattr__(config, "_flip_pipeline", flip_pipeline)
     logger.info("split_pipelines_initialised", arb="ready", flip="ready")
+
+
+async def _startup_cleanup(app: FastAPI, config: Settings) -> None:
+    """Expire stale tickets and abandon positions past hold time.
+
+    Runs once at startup so that stale state from a prior session is
+    cleaned up immediately instead of waiting for the periodic timer.
+
+    Args:
+        app: FastAPI application with db and repos on state.
+        config: Application settings.
+    """
+    from arb_scanner.execution.activity_feed import push_activity
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    total = 0
+
+    try:
+        pool = app.state.db.pool
+    except (RuntimeError, AttributeError):
+        logger.info("startup_cleanup_skipped", reason="no_pool")
+        return
+
+    try:
+        ticket_repo = TicketRepository(pool)
+        expired = await ticket_repo.auto_expire(config.ticket_lifecycle.max_pending_hours)
+        if expired:
+            total += len(expired)
+            push_activity(
+                "startup_expired", "system", pipeline="system",
+                kind="tickets", count=len(expired),
+            )
+            logger.info("startup_expired_tickets", count=len(expired))
+    except Exception:
+        logger.exception("startup_ticket_expire_failed")
+
+    flip_repo = getattr(app.state, "flip_position_repo", None)
+    if flip_repo is not None:
+        try:
+            abandoned = await flip_repo.abandon_expired()
+            if abandoned:
+                total += len(abandoned)
+                for p in abandoned:
+                    push_activity(
+                        "startup_abandoned", p["arb_id"], pipeline="flip",
+                        market_id=p["market_id"],
+                        title=p.get("market_title", ""),
+                        held_min=round(float(p.get("held_minutes", 0)), 1),
+                    )
+                logger.info("startup_abandoned_flip", count=len(abandoned))
+        except Exception:
+            logger.exception("startup_flip_abandon_failed")
+
+    auto_repo = getattr(app.state, "auto_exec_repo", None)
+    if auto_repo is not None:
+        try:
+            abandoned = await auto_repo.abandon_expired()
+            if abandoned:
+                total += len(abandoned)
+                for p in abandoned:
+                    push_activity(
+                        "startup_abandoned", p["arb_id"], pipeline="arb",
+                        poly_market=p.get("poly_market_id", ""),
+                        kalshi_ticker=p.get("kalshi_ticker", ""),
+                    )
+                logger.info("startup_abandoned_arb", count=len(abandoned))
+        except Exception:
+            logger.exception("startup_arb_abandon_failed")
+
+    if total:
+        logger.info("startup_cleanup_complete", total_cleaned=total)
 
 
 async def _run_ticket_expiry(app: FastAPI) -> None:

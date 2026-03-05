@@ -154,6 +154,18 @@ class FlipPositionRepo:
         rows = await self._pool.fetch(Q.GET_OPEN_POSITIONS_LIST)
         return [dict(r) for r in rows]
 
+    async def abandon_expired(self) -> list[dict[str, Any]]:
+        """Abandon open positions that exceeded their max hold time.
+
+        Returns:
+            List of abandoned position dicts.
+        """
+        rows = await self._pool.fetch(Q.ABANDON_EXPIRED_POSITIONS)
+        abandoned = [dict(r) for r in rows]
+        if abandoned:
+            logger.warning("flip_positions_abandoned", count=len(abandoned))
+        return abandoned
+
     async def get_orphaned_positions(self) -> list[dict[str, Any]]:
         """Return all open positions, used for startup orphan detection.
 

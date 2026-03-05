@@ -292,11 +292,11 @@ async def _periodic_discovery(
 
 
 async def _check_orphaned_positions(config: Settings) -> None:
-    """Alert on any open positions left over from a previous session.
+    """Abandon expired positions and alert on remaining orphans.
 
-    Queries flippening_auto_positions for open rows and dispatches a
-    Slack/Discord warning listing each orphaned position. No automatic
-    action is taken — the operator must close them manually.
+    First marks any positions past their max_hold_minutes as abandoned,
+    then alerts operators about remaining open positions that are still
+    within their hold window.
 
     Args:
         config: Application settings with DB URL and notification webhooks.
@@ -310,23 +310,40 @@ async def _check_orphaned_positions(config: Settings) -> None:
         await db.connect()
         try:
             repo = FlipPositionRepo(db.pool)
+            abandoned = await repo.abandon_expired()
+            if abandoned:
+                logger.warning("startup_abandoned_flip", count=len(abandoned))
             orphans = await repo.get_orphaned_positions()
         finally:
             await db.disconnect()
 
-        if not orphans:
+        if not orphans and not abandoned:
             return
 
-        logger.warning("orphaned_flip_positions_detected", count=len(orphans))
-        lines = [f":warning: *{len(orphans)} orphaned flip position(s) from prior session:*"]
-        for p in orphans:
+        lines: list[str] = []
+        if abandoned:
             lines.append(
-                f"  • `{p['market_id']}` | {p['side'].upper()}"
-                f" | {p['size_contracts']} contracts"
-                f" @ ${float(p['entry_price']):.3f}"
-                f" | arb_id: `{p['arb_id'][:12]}...`"
+                f":no_entry: *{len(abandoned)} position(s) auto-cancelled"
+                f" (exceeded hold time):*"
             )
-        lines.append("_These positions must be closed manually on Polymarket._")
+            for p in abandoned:
+                held = round(float(p.get("held_minutes", 0)), 1)
+                lines.append(
+                    f"  • `{p['market_id']}` | {p.get('market_title', '')}"
+                    f" | held {held}m / max {p.get('max_hold_minutes', '?')}m"
+                )
+        if orphans:
+            lines.append(
+                f":warning: *{len(orphans)} open position(s) from prior session:*"
+            )
+            for p in orphans:
+                lines.append(
+                    f"  • `{p['market_id']}` | {p['side'].upper()}"
+                    f" | {p['size_contracts']} contracts"
+                    f" @ ${float(p['entry_price']):.3f}"
+                    f" | arb_id: `{p['arb_id'][:12]}...`"
+                )
+            lines.append("_Open positions must be closed manually._")
         msg = "\n".join(lines)
 
         notif = config.notifications

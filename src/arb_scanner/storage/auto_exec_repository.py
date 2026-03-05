@@ -6,7 +6,13 @@ import json
 from decimal import Decimal
 from typing import Any
 
+import structlog
+
 from arb_scanner.storage import _auto_exec_queries as AQ
+
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(
+    module="storage.auto_exec_repository",
+)
 
 
 class AutoExecRepository:
@@ -195,6 +201,18 @@ class AutoExecRepository:
         """
         rows = await self._pool.fetch(AQ.GET_OPEN_POSITIONS)
         return [dict(r) for r in rows]
+
+    async def abandon_expired(self) -> list[dict[str, Any]]:
+        """Abandon open arb positions past their max hold time.
+
+        Returns:
+            List of abandoned position dicts.
+        """
+        rows = await self._pool.fetch(AQ.ABANDON_EXPIRED_POSITIONS)
+        abandoned = [dict(r) for r in rows]
+        if abandoned:
+            logger.warning("arb_positions_abandoned", count=len(abandoned))
+        return abandoned
 
     async def get_daily_stats(self, days: int = 1) -> dict[str, Any]:
         """Get aggregate stats for a time window.

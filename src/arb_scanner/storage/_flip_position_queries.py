@@ -52,6 +52,18 @@ WHERE status = 'open'
 ORDER BY opened_at ASC
 """
 
+ABANDON_EXPIRED_POSITIONS = """
+UPDATE flippening_auto_positions
+SET status = 'abandoned',
+    exit_reason = 'hold_time_exceeded',
+    closed_at = NOW()
+WHERE status = 'open'
+  AND max_hold_minutes IS NOT NULL
+  AND opened_at + (max_hold_minutes || ' minutes')::INTERVAL < NOW()
+RETURNING id, arb_id, market_id, market_title, max_hold_minutes,
+          EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60 AS held_minutes
+"""
+
 GET_ORPHANED_POSITIONS = """
 SELECT p.id, p.arb_id, p.market_id, p.token_id, p.side,
        p.size_contracts, p.entry_price, p.entry_order_id,
