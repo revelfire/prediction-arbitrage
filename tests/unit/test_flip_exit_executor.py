@@ -208,19 +208,20 @@ class TestExecuteExitFailure:
 class TestBuildSellRequest:
     """_build_sell_request() unit tests."""
 
-    def test_reversion_uses_exact_exit_price(self) -> None:
-        """REVERSION exit uses the exact exit_price (no aggression)."""
+    def test_reversion_applies_base_aggression(self) -> None:
+        """REVERSION exit applies base aggression discount to hit bids."""
         exit_sig = _make_exit(ExitReason.REVERSION)
         pos = _make_position(side="yes")
         req = _build_sell_request(pos, exit_sig, Decimal("0.02"))
-        assert req.price == Decimal("0.60").quantize(Decimal("0.0001"))
+        expected = (Decimal("0.60") * Decimal("0.98")).quantize(Decimal("0.0001"))
+        assert req.price == expected
 
-    def test_stop_loss_discounts_price(self) -> None:
-        """STOP_LOSS exit applies the aggression discount."""
+    def test_stop_loss_applies_double_aggression(self) -> None:
+        """STOP_LOSS exit applies 2x aggression for faster fills."""
         exit_sig = _make_exit(ExitReason.STOP_LOSS)
         pos = _make_position(side="yes")
         req = _build_sell_request(pos, exit_sig, Decimal("0.02"))
-        expected = (Decimal("0.60") * Decimal("0.98")).quantize(Decimal("0.0001"))
+        expected = (Decimal("0.60") * Decimal("0.96")).quantize(Decimal("0.0001"))
         assert req.price == expected
 
     def test_sell_yes_side(self) -> None:

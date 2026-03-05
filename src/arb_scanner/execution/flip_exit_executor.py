@@ -136,18 +136,23 @@ def _build_sell_request(
 ) -> OrderRequest:
     """Construct a sell OrderRequest from an open position and exit signal.
 
+    Applies a price discount so the limit sell hits the bid rather than
+    sitting on the ask.  Stop-loss exits get double aggression for
+    faster fills.
+
     Args:
         position: Open position record from DB.
         exit_sig: Exit signal with target price.
-        aggression: Additional price discount for stop-loss exits.
+        aggression: Base price discount fraction (e.g. 0.02 = 2%).
 
     Returns:
         OrderRequest ready for PolymarketExecutor.place_order().
     """
     price = Decimal(str(exit_sig.exit_price))
+    discount = aggression
     if exit_sig.exit_reason == ExitReason.STOP_LOSS:
-        price = price * (1 - aggression)
-    price = price.quantize(Decimal("0.0001"))
+        discount = aggression * 2
+    price = (price * (1 - discount)).quantize(Decimal("0.0001"))
 
     side_str = position["side"]
     sell_side: OrderSide = f"sell_{side_str}"  # type: ignore[assignment]
