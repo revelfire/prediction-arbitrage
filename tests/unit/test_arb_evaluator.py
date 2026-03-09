@@ -119,11 +119,25 @@ class TestArbEvaluatorVerification:
         assert ok_low is False
         assert ok_high is False
 
-    def test_no_ticket_type_in_source(self) -> None:
-        """The arb_evaluator source contains no ticket_type conditionals."""
-        import inspect
+    def test_rejects_disallowed_ticket_type(self) -> None:
+        """Disallowed ticket_type triggers rejection."""
+        ok, reasons = evaluate_arb_criteria(
+            _opp(ticket_type="unknown"),
+            _config(allowed_ticket_types=["arbitrage", "flippening"]),
+            [],
+            Decimal("0"),
+            _breakers(),
+        )
+        assert ok is False
+        assert any("ticket_type" in r for r in reasons)
 
-        import arb_scanner.execution.arb_evaluator as mod
-
-        src = inspect.getsource(mod)
-        assert "ticket_type" not in src
+    def test_allows_valid_ticket_type(self) -> None:
+        """Valid ticket_type passes the check."""
+        ok, _ = evaluate_arb_criteria(
+            _opp(ticket_type="arbitrage"),
+            _config(allowed_ticket_types=["arbitrage", "flippening"]),
+            [],
+            Decimal("0"),
+            _breakers(),
+        )
+        assert ok is True

@@ -17,6 +17,10 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.orderbook_cache",
 )
 
+_MAX_CONCURRENT_FETCHES = 5
+_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_COOLDOWN = 30.0
+
 
 @dataclass
 class CacheEntry:
@@ -50,11 +54,14 @@ class OrderBookCache:
         self._max_size = max_size
         self._ttl = ttl_seconds
         self._limiter = rate_limiter or RateLimiter(5)
+        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_FETCHES)
         self._cache: dict[str, CacheEntry] = {}
         self._pending: set[str] = set()
         self._access_order: list[str] = []
         self.hits: int = 0
         self.misses: int = 0
+        self._consecutive_failures: int = 0
+        self._circuit_open_until: float = 0.0
 
     async def enrich(
         self,
@@ -132,13 +139,20 @@ class OrderBookCache:
     def _schedule_fetch(self, token_id: str, client: httpx.AsyncClient) -> None:
         """Schedule a background book fetch if not already pending.
 
+        Skips scheduling when the circuit breaker is open (too many
+        consecutive failures) to avoid flooding the event loop.
+
         Args:
             token_id: Token to fetch.
             client: HTTP client.
         """
-        if token_id not in self._pending:
-            self._pending.add(token_id)
-            asyncio.create_task(self._fetch_book(token_id, client))
+        if token_id in self._pending:
+            return
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._circuit_open_until:
+            return
+        self._pending.add(token_id)
+        asyncio.create_task(self._fetch_book(token_id, client))
 
     async def _fetch_book(
         self,
@@ -147,23 +161,42 @@ class OrderBookCache:
     ) -> None:
         """Fetch order book from CLOB API and update cache.
 
+        Uses a semaphore to cap concurrent HTTP requests and a circuit
+        breaker to back off after repeated failures.
+
         Args:
             token_id: CLOB token identifier.
             client: HTTP client.
         """
         try:
-            async with self._limiter.acquire():
-                resp = await client.get(
-                    "/book",
-                    params={"token_id": token_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            async with self._semaphore:
+                async with self._limiter.acquire():
+                    resp = await client.get(
+                        "/book",
+                        params={"token_id": token_id},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
             entry = self._parse_book(data)
             if entry is not None:
                 self._update_cache(token_id, entry)
-        except Exception:
-            logger.warning("orderbook_fetch_failed", token_id=token_id)
+                self._consecutive_failures = 0
+        except Exception as exc:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                loop = asyncio.get_running_loop()
+                self._circuit_open_until = loop.time() + _CIRCUIT_BREAKER_COOLDOWN
+                logger.warning(
+                    "orderbook_circuit_open",
+                    consecutive_failures=self._consecutive_failures,
+                    cooldown_seconds=_CIRCUIT_BREAKER_COOLDOWN,
+                )
+            logger.warning(
+                "orderbook_fetch_failed",
+                token_id=token_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
         finally:
             self._pending.discard(token_id)
 

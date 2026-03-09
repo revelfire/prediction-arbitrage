@@ -44,6 +44,11 @@ from arb_scanner.cli import flippening_commands as _flippening  # noqa: E402
 
 _flippening.register(app)
 
+# Register backtesting commands (import-trades, portfolio, backtest-report).
+from arb_scanner.cli import backtesting_commands as _backtesting  # noqa: E402
+
+_backtesting.register(app)
+
 
 @app.command()
 def scan(
@@ -149,7 +154,9 @@ async def _maybe_init_arb_pipeline(config: Any) -> Any:
         poly = PolymarketExecutor(config.execution.polymarket)
         kalshi = KalshiExecutor(config.execution.kalshi)
         capital = CapitalManager(
-            config.execution, poly.get_balance, kalshi.get_balance,
+            config.execution,
+            poly.get_balance,
+            kalshi.get_balance,
         )
         breakers = CircuitBreakerManager(ac)
         critic = ArbTradeCritic(ac.critic, config.claude)

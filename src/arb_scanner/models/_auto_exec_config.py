@@ -29,7 +29,7 @@ class AutoExecutionConfig(BaseModel):
     mode: str = "off"
     min_spread_pct: float = 0.03
     max_spread_pct: float = 0.50
-    min_confidence: float = 0.70
+    min_confidence: float = 0.65
     min_liquidity_usd: float = 100.0
     max_size_usd: float = 50.0
     min_size_usd: float = 5.0

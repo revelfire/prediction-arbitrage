@@ -117,6 +117,23 @@ async def get_auto_exec_repo(request: Request) -> Any:
     return AutoExecRepository(db.pool)
 
 
+async def get_backtest_repo(request: Request) -> Any:
+    """Provide a BacktestingRepository from the app's database pool.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        BacktestingRepository backed by the shared connection pool.
+    """
+    from arb_scanner.storage.backtesting_repository import (
+        BacktestingRepository,
+    )
+
+    db = _require_db(request)
+    return BacktestingRepository(db.pool)
+
+
 async def get_config(request: Request) -> Settings:
     """Provide the application Settings.
 

@@ -48,6 +48,20 @@ def _push(event_type: str, arb_id: str, **fields: object) -> None:
         pass
 
 
+def _compute_market_exposure(
+    positions: list[dict[str, Any]],
+    market_id: str,
+) -> Decimal:
+    """Compute current USD exposure for a specific market."""
+    total = Decimal("0")
+    for p in positions:
+        if p.get("market_id") == market_id:
+            ep = Decimal(str(p.get("entry_price", 0)))
+            contracts = int(p.get("size_contracts", 0))
+            total += ep * contracts
+    return total
+
+
 class FlipAutoExecutionPipeline:
     """Orchestrates autonomous flippening trade execution via PolymarketExecutor."""
 
@@ -135,35 +149,50 @@ class FlipAutoExecutionPipeline:
         _push("considering", run.arb_id, title=title, spread=f"{run.spread:.1%}")
 
         positions = await self._get_flip_positions()
+        daily_count = await self._get_daily_trade_count()
         eligible, reasons = evaluate_flip_criteria(
             opp,
             self._ac,
             positions,
             self._infra.capital.daily_pnl,
             self._infra.breakers,
+            daily_trade_count=daily_count,
         )
         if not eligible:
             _push("criteria_failed", run.arb_id, title=title, reasons=reasons)
-            return await record_rejection(run, reasons, self._infra)
+            return await record_rejection(run, reasons, self._infra, title=title)
 
         _push("criteria_passed", run.arb_id, title=title)
         await self._infra.capital.refresh_balances()
+        market_id = str(opp.get("market_id", ""))
+        market_exposure = _compute_market_exposure(positions, market_id)
         size = compute_auto_size(
             run.spread,
             self._ac.min_spread_pct,
             self._ac,
-            self._infra.capital.current_exposure,
+            market_exposure,
             self._infra.capital.total_balance,
         )
         if size is None:
             _push("size_rejected", run.arb_id, title=title)
-            return await record_rejection(run, ["size_below_minimum"], self._infra)
+            return await record_rejection(
+                run,
+                ["size_below_minimum"],
+                self._infra,
+                title=title,
+            )
 
         ctx = self._build_market_context(opp, run.spread, run.confidence)
         verdict = await self._critic.evaluate({"arb_id": run.arb_id}, ctx)
         if not verdict.approved:
             _push("critic_rejected", run.arb_id, title=title, reasoning=verdict.reasoning)
-            return await record_critic_rejection(run, size, verdict, self._infra)
+            return await record_critic_rejection(
+                run,
+                size,
+                verdict,
+                self._infra,
+                title=title,
+            )
 
         _push("placing", run.arb_id, title=title, size_usd=float(size))
         return await self._place_order(opp, run, size, verdict)
@@ -176,7 +205,21 @@ class FlipAutoExecutionPipeline:
         verdict: Any,
     ) -> Any:
         """Place a single-leg Polymarket order for a flip trade."""
+        title = str(opp.get("title", opp.get("market_title", "")))
         try:
+            token_id = str(opp.get("token_id", ""))
+            if not token_id:
+                logger.error("flip_order_no_token_id", arb_id=run.arb_id)
+                entry = build_entry(
+                    run,
+                    "rejected",
+                    size_usd=size,
+                    verdict=verdict,
+                    criteria_snapshot={"rejection_reasons": ["missing_token_id"]},
+                    title=title,
+                )
+                await persist_and_notify(entry, self._infra)
+                return entry
             entry_price = Decimal(str(opp.get("entry_price", 0.5)))
             side = str(opp.get("side", "yes")).lower()
             buy_side: OrderSide = f"buy_{side}"  # type: ignore[assignment]
@@ -187,21 +230,33 @@ class FlipAutoExecutionPipeline:
                 price=entry_price.quantize(Decimal("0.0001")),
                 size_usd=size,
                 size_contracts=contracts,
-                token_id=str(opp.get("token_id", "")),
+                token_id=token_id,
             )
             resp = await self._poly.place_order(req)
             log_status, register = self._map_status(resp.status)
             if register:
-                await self._register_position(run.arb_id, opp, size)
+                await self._register_position(run.arb_id, opp, size, resp=resp)
             if resp.error_message and is_geoblock(resp.error_message):
                 await dispatch_geoblock(run.arb_id, self._infra)
-            entry = build_entry(run, log_status, size_usd=size, verdict=verdict)
+            entry = build_entry(
+                run,
+                log_status,
+                size_usd=size,
+                verdict=verdict,
+                title=title,
+            )
         except Exception as exc:
             self._infra.breakers.record_failure()
             logger.error("flip_order_failed", arb_id=run.arb_id, error=str(exc))
             if is_geoblock(str(exc)):
                 await dispatch_geoblock(run.arb_id, self._infra)
-            entry = build_entry(run, "failed", size_usd=size, verdict=verdict)
+            entry = build_entry(
+                run,
+                "failed",
+                size_usd=size,
+                verdict=verdict,
+                title=title,
+            )
 
         _push(f"placed_{entry.status}", run.arb_id, title=opp.get("title", ""))
         await persist_and_notify(entry, self._infra)
@@ -242,22 +297,41 @@ class FlipAutoExecutionPipeline:
         except Exception:
             return []
 
+    async def _get_daily_trade_count(self) -> int:
+        """Query today's executed trade count from audit log."""
+        try:
+            count: int = await self._infra.auto_repo.get_daily_trade_count()
+            return count
+        except Exception:
+            return 0
+
     async def _register_position(
         self,
         arb_id: str,
         opp: dict[str, Any],
         size: Decimal,
+        *,
+        resp: Any = None,
     ) -> None:
         """Record an open position after successful entry."""
         ep = float(opp.get("entry_price", 0.5))
+        if resp is not None and resp.fill_price is not None:
+            ep = float(resp.fill_price)
         raw_hold = opp.get("max_hold_minutes")
+        contracts = int(float(size) / ep) if ep > 0 else 0
+        if resp is not None and resp.status == "partially_filled":
+            logger.warning(
+                "flip_partial_fill",
+                arb_id=arb_id,
+                requested_contracts=contracts,
+            )
         try:
             await self._position_repo.insert_position(
                 arb_id=arb_id,
                 market_id=str(opp.get("market_id", arb_id)),
                 token_id=str(opp.get("token_id", "")),
                 side=str(opp.get("side", "yes")),
-                size_contracts=int(float(size) / ep) if ep > 0 else 0,
+                size_contracts=contracts,
                 entry_price=Decimal(str(ep)),
                 entry_order_id="",
                 max_hold_minutes=int(raw_hold) if raw_hold is not None else None,

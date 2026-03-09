@@ -14,7 +14,7 @@ from arb_scanner.models.analytics import TrendAlert
 from arb_scanner.models.arbitrage import ArbOpportunity
 from arb_scanner.models.config import NotificationConfig, Settings
 from arb_scanner.notifications.trend_detector import TrendDetector
-from arb_scanner.notifications.webhook import dispatch_webhook
+from arb_scanner.notifications.webhook import dispatch_webhook_batch
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="cli.watch")
 
@@ -118,7 +118,7 @@ async def _notify_new_opps(
     opps: list[ArbOpportunity],
     notif: NotificationConfig,
 ) -> None:
-    """Dispatch webhook notifications for new opportunities.
+    """Dispatch a single batched webhook for new opportunities.
 
     Args:
         opps: New opportunities to notify about.
@@ -126,12 +126,11 @@ async def _notify_new_opps(
     """
     if not notif.enabled:
         return
-    for opp in opps:
-        await dispatch_webhook(
-            opp,
-            slack_url=notif.slack_webhook,
-            discord_url=notif.discord_webhook,
-        )
+    await dispatch_webhook_batch(
+        opps,
+        slack_url=notif.slack_webhook,
+        discord_url=notif.discord_webhook,
+    )
 
 
 async def _dispatch_trend_alerts(
@@ -209,17 +208,66 @@ async def _feed_auto_pipeline(
         if pipeline is None:
             return
         for opp in opps:
-            opp_dict = {
-                "arb_id": f"{opp.poly_market.event_id}_{opp.kalshi_market.event_id}",
-                "spread_pct": float(opp.net_spread_pct),
-                "confidence": float(getattr(opp, "confidence", 0)),
-                "category": getattr(opp, "category", ""),
-                "title": opp.poly_market.title,
-                "ticket_type": "arbitrage",
-            }
+            opp_dict = _build_arb_opp_dict(opp)
             await pipeline.process_opportunity(opp_dict, source="arb_watch")
     except Exception:
         logger.warning("arb_pipeline_feed_failed")
+
+
+def _build_arb_opp_dict(opp: ArbOpportunity) -> dict[str, object]:
+    """Build execution-compatible dict from an ArbOpportunity.
+
+    Args:
+        opp: Arbitrage opportunity.
+
+    Returns:
+        Dict with leg data for slippage checks and execution.
+    """
+    poly_token = _extract_poly_token(opp)
+    return {
+        "arb_id": f"{opp.poly_market.event_id}_{opp.kalshi_market.event_id}",
+        "spread_pct": float(opp.net_spread_pct),
+        "confidence": float(getattr(opp, "confidence", 0)),
+        "category": getattr(opp, "category", ""),
+        "title": opp.poly_market.title,
+        "ticket_type": "arbitrage",
+        "poly_market_id": opp.poly_market.event_id,
+        "kalshi_market_id": opp.kalshi_market.event_id,
+        "leg_1": {
+            "venue": "polymarket",
+            "token_id": poly_token,
+            "price": float(opp.poly_market.yes_ask),
+        },
+        "leg_2": {
+            "venue": "kalshi",
+            "market_id": opp.kalshi_market.event_id,
+            "price": float(opp.kalshi_market.yes_ask),
+        },
+    }
+
+
+def _extract_poly_token(opp: ArbOpportunity) -> str:
+    """Extract Polymarket CLOB token ID from raw market data.
+
+    Args:
+        opp: Arbitrage opportunity with poly_market.
+
+    Returns:
+        First token ID string, or empty string if unavailable.
+    """
+    import json as _json
+
+    raw_ids = opp.poly_market.raw_data.get("clobTokenIds", "")
+    if isinstance(raw_ids, list) and raw_ids:
+        return str(raw_ids[0])
+    if isinstance(raw_ids, str) and raw_ids:
+        try:
+            parsed = _json.loads(raw_ids)
+            if isinstance(parsed, list) and parsed:
+                return str(parsed[0])
+        except (ValueError, _json.JSONDecodeError):
+            pass
+    return ""
 
 
 async def _interruptible_sleep(seconds: int, stop_event: asyncio.Event) -> None:

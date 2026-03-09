@@ -33,6 +33,7 @@ class BreakerResetBody(BaseModel):
     """Request body for circuit breaker reset."""
 
     breaker_type: str
+    pipeline: str = "all"
 
 
 @router.get("/status")
@@ -226,30 +227,18 @@ async def reset_circuit_breaker(
     """Manually reset a circuit breaker.
 
     Args:
-        body: Breaker type to reset.
+        body: Breaker type and pipeline target.
         request: The incoming HTTP request.
 
     Returns:
         Updated breaker states.
     """
-    breakers = getattr(request.app.state, "circuit_breakers", None)
-    if breakers is None:
-        raise HTTPException(503, "Auto-execution not initialised")
-
+    targets = _get_breaker_targets(request, body.pipeline)
     bt = body.breaker_type
-    if bt == "anomaly":
-        breakers.reset_anomaly()
-    elif bt == "all":
-        breakers.reset_all()
-    else:
-        raise HTTPException(400, f"Unknown breaker type: {bt}")
-
-    logger.info("circuit_breaker_manual_reset", breaker_type=bt)
-    return {
-        "status": "reset",
-        "breaker_type": bt,
-        "circuit_breakers": [s.model_dump(mode="json") for s in breakers.get_state()],
-    }
+    for _name, breakers in targets:
+        _reset_breaker(breakers, bt)
+    logger.info("circuit_breaker_manual_reset", breaker_type=bt, pipeline=body.pipeline)
+    return _breaker_reset_response(bt, body.pipeline, targets)
 
 
 @router.get("/activity")
@@ -301,6 +290,83 @@ async def _stream_activity() -> AsyncGenerator[str, None]:
         unsubscribe(q)
 
 
+def _get_breaker_targets(
+    request: Request,
+    pipeline: str,
+) -> list[tuple[str, Any]]:
+    """Resolve circuit breaker targets by pipeline name.
+
+    Args:
+        request: HTTP request with app state.
+        pipeline: One of 'arb', 'flip', or 'all'.
+
+    Returns:
+        List of (name, breaker_manager) tuples.
+
+    Raises:
+        HTTPException: If no breakers are initialised.
+    """
+    targets: list[tuple[str, Any]] = []
+    if pipeline in ("arb", "all"):
+        arb_b = getattr(request.app.state, "arb_breakers", None)
+        if arb_b:
+            targets.append(("arb", arb_b))
+    if pipeline in ("flip", "all"):
+        flip_b = getattr(request.app.state, "flip_breakers", None)
+        if flip_b:
+            targets.append(("flip", flip_b))
+    if not targets:
+        raise HTTPException(503, "No circuit breakers initialised")
+    return targets
+
+
+def _reset_breaker(breakers: Any, bt: str) -> None:
+    """Reset a specific breaker type on a manager.
+
+    Args:
+        breakers: CircuitBreakerManager instance.
+        bt: Breaker type: 'failure', 'loss', 'anomaly', or 'all'.
+
+    Raises:
+        HTTPException: If breaker type is unknown.
+    """
+    if bt == "failure":
+        breakers.reset_failure()
+    elif bt == "loss":
+        breakers.reset_loss()
+    elif bt == "anomaly":
+        breakers.reset_anomaly()
+    elif bt == "all":
+        breakers.reset_all()
+    else:
+        raise HTTPException(400, f"Unknown breaker type: {bt}")
+
+
+def _breaker_reset_response(
+    bt: str,
+    pipeline: str,
+    targets: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Build response dict after breaker reset.
+
+    Args:
+        bt: Breaker type that was reset.
+        pipeline: Pipeline target.
+        targets: List of (name, breaker_manager) tuples.
+
+    Returns:
+        Response dict with updated breaker states.
+    """
+    result: dict[str, Any] = {
+        "status": "reset",
+        "breaker_type": bt,
+        "pipeline": pipeline,
+    }
+    for name, breakers in targets:
+        result[f"{name}_breakers"] = [s.model_dump(mode="json") for s in breakers.get_state()]
+    return result
+
+
 async def _refeed_active_signals(flip: Any, pool: Any) -> None:
     """Re-feed active flip signals missed while mode was off.
 
@@ -318,6 +384,14 @@ async def _refeed_active_signals(flip: Any, pool: Any) -> None:
         push_activity("refeed_start", "system", pipeline="flip", count=len(rows))
         fed = 0
         for row in rows:
+            token_id = row["token_id"] or ""
+            if not token_id:
+                logger.warning(
+                    "refeed_skip_no_token",
+                    event_id=str(row["event_id"]),
+                    market_id=row["market_id"],
+                )
+                continue
             opp: dict[str, object] = {
                 "arb_id": str(row["event_id"]),
                 "spread_pct": float(row["spike_magnitude"]),
@@ -326,7 +400,7 @@ async def _refeed_active_signals(flip: Any, pool: Any) -> None:
                 "title": row["market_title"] or "",
                 "ticket_type": "flippening",
                 "market_id": row["market_id"],
-                "token_id": row["token_id"] or "",
+                "token_id": token_id,
                 "side": row["side"],
                 "entry_price": float(row["entry_price"]),
                 "market_slug": "",

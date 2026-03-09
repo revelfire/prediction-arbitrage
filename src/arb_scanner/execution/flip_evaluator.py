@@ -22,6 +22,7 @@ def evaluate_flip_criteria(
     open_positions: list[dict[str, Any]],
     daily_pnl: Decimal,
     breakers: CircuitBreakerManager,
+    daily_trade_count: int = 0,
 ) -> tuple[bool, list[str]]:
     """Check all flippening auto-execution eligibility criteria.
 
@@ -34,6 +35,7 @@ def evaluate_flip_criteria(
         open_positions: Currently open auto-exec positions.
         daily_pnl: Today's cumulative P&L.
         breakers: Circuit breaker manager.
+        daily_trade_count: Number of executed trades today (UTC).
 
     Returns:
         Tuple of (eligible, rejection_reasons).
@@ -68,6 +70,17 @@ def evaluate_flip_criteria(
     arb_id = opportunity.get("arb_id", "")
     if arb_id and any(p.get("arb_id") == arb_id for p in open_positions):
         reasons.append(f"duplicate position for {arb_id}")
+
+    ticket_type = str(opportunity.get("ticket_type", ""))
+    if (
+        config.allowed_ticket_types
+        and ticket_type
+        and ticket_type not in config.allowed_ticket_types
+    ):
+        reasons.append(f"ticket_type '{ticket_type}' not in allowed list")
+
+    if config.max_daily_trades > 0 and daily_trade_count >= config.max_daily_trades:
+        reasons.append(f"daily_trades {daily_trade_count} >= max {config.max_daily_trades}")
 
     eligible = len(reasons) == 0
     if not eligible:

@@ -34,6 +34,9 @@
         <button class="tab-btn active" data-tab="tickets">Tickets</button>
         <button class="tab-btn" data-tab="autoexec">Auto-Exec</button>
         <button class="tab-btn" data-tab="balances">Balances</button>
+        <span class="tab-divider"></span>
+        <span class="tab-group-label">Analysis</span>
+        <button class="tab-btn" data-tab="backtesting">Backtesting</button>
     </div>
 
     <!-- Content -->
@@ -561,14 +564,17 @@
                 <div class="metric-card" id="flip-breaker-loss">
                     <div class="label">Loss</div>
                     <div class="value breaker-ok">OK</div>
+                    <button class="btn btn-sm btn-danger breaker-reset-btn" style="display:none;margin-top:6px" onclick="resetBreaker('loss')">Reset</button>
                 </div>
                 <div class="metric-card" id="flip-breaker-failure">
                     <div class="label">Failure</div>
                     <div class="value breaker-ok">OK</div>
+                    <button class="btn btn-sm btn-danger breaker-reset-btn" style="display:none;margin-top:6px" onclick="resetBreaker('failure')">Reset</button>
                 </div>
                 <div class="metric-card" id="flip-breaker-anomaly">
                     <div class="label">Anomaly</div>
                     <div class="value breaker-ok">OK</div>
+                    <button class="btn btn-sm btn-danger breaker-reset-btn" style="display:none;margin-top:6px" onclick="resetBreaker('anomaly')">Reset</button>
                 </div>
             </div>
 
@@ -629,7 +635,8 @@
                 <thead>
                     <tr>
                         <th>Time</th>
-                        <th>Arb ID</th>
+                        <th>Name</th>
+                        <th>Source</th>
                         <th>Spread</th>
                         <th>Size</th>
                         <th>Critic</th>
@@ -638,7 +645,7 @@
                     </tr>
                 </thead>
                 <tbody id="autoexec-log-tbody">
-                    <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+                    <tr><td colspan="9" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -698,6 +705,98 @@
                     <tr><td colspan="3" class="empty-state">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+
+        <!-- Backtesting Tab -->
+        <div id="tab-backtesting" class="tab-content">
+            <!-- Portfolio Summary Cards -->
+            <div class="section-title">Portfolio Summary</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Net P&L</div>
+                    <div class="value" id="bt-net-pnl">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Win Rate</div>
+                    <div class="value" id="bt-win-rate">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">ROI</div>
+                    <div class="value" id="bt-roi">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Capital Deployed</div>
+                    <div class="value" id="bt-capital">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Trades</div>
+                    <div class="value" id="bt-trade-count">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Total Fees</div>
+                    <div class="value" id="bt-fees">-</div>
+                </div>
+            </div>
+
+            <!-- P&L Chart -->
+            <div class="section-title">Daily P&L</div>
+            <div class="chart-container">
+                <canvas id="bt-pnl-chart"></canvas>
+            </div>
+
+            <!-- Signal Alignment -->
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 250px;">
+                    <div class="section-title">Signal Alignment</div>
+                    <div class="chart-container" style="max-height: 250px;">
+                        <canvas id="bt-signal-chart"></canvas>
+                    </div>
+                </div>
+                <div style="flex: 2; min-width: 400px;">
+                    <div class="section-title">Category Performance</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Win Rate</th>
+                                <th>Avg P&L</th>
+                                <th>Trades</th>
+                                <th>Total P&L</th>
+                                <th>Profit Factor</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bt-category-tbody">
+                            <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Trade History -->
+            <div class="section-title">Trade History</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Market</th>
+                        <th>Action</th>
+                        <th>USDC</th>
+                        <th>Tokens</th>
+                        <th>Token Name</th>
+                    </tr>
+                </thead>
+                <tbody id="bt-trades-tbody">
+                    <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+
+            <!-- CSV Import -->
+            <div class="section-title">Import Trades</div>
+            <div style="padding: 1rem; border: 2px dashed #4a4a6a; border-radius: 8px; text-align: center;">
+                <input type="file" id="bt-csv-input" accept=".csv" style="display: none;">
+                <button class="btn btn-primary" onclick="document.getElementById('bt-csv-input').click()">Upload Polymarket CSV</button>
+                <span id="bt-import-status" style="margin-left: 1rem; color: #a0a0b0;"></span>
+            </div>
         </div>
 
     </div>

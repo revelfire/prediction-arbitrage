@@ -47,6 +47,7 @@ class CircuitBreakerManager:
             True if any breaker is tripped.
         """
         self._auto_reset_loss()
+        self._auto_reset_failure()
         return self._loss_tripped or self._failure_tripped or self._anomaly_tripped
 
     def check_loss(self, daily_pnl: Decimal) -> bool:
@@ -131,6 +132,13 @@ class CircuitBreakerManager:
             return True
         return False
 
+    def reset_loss(self) -> None:
+        """Manually reset the loss breaker."""
+        self._loss_tripped = False
+        self._loss_tripped_at = None
+        self._loss_reason = ""
+        logger.info("circuit_breaker_reset", breaker="loss")
+
     def reset_anomaly(self) -> None:
         """Manually acknowledge and reset the anomaly breaker."""
         self._anomaly_tripped = False
@@ -157,6 +165,7 @@ class CircuitBreakerManager:
             List of breaker states.
         """
         self._auto_reset_loss()
+        self._auto_reset_failure()
         return [
             CircuitBreakerState(
                 breaker_type=CircuitBreakerType.loss,
@@ -178,6 +187,27 @@ class CircuitBreakerManager:
                 requires_ack=True,
             ),
         ]
+
+    def reset_failure(self) -> None:
+        """Manually reset the failure breaker."""
+        self._failure_count = 0
+        self._failure_tripped = False
+        self._failure_tripped_at = None
+        self._failure_reason = ""
+        logger.info("circuit_breaker_reset", breaker="failure")
+
+    def _auto_reset_failure(self) -> None:
+        """Reset failure breaker after 15 minutes."""
+        if not self._failure_tripped or self._failure_tripped_at is None:
+            return
+        now = datetime.now(timezone.utc)
+        elapsed = (now - self._failure_tripped_at).total_seconds()
+        if elapsed >= 900:  # 15 minutes
+            self._failure_count = 0
+            self._failure_tripped = False
+            self._failure_tripped_at = None
+            self._failure_reason = ""
+            logger.info("circuit_breaker_auto_reset", breaker="failure", elapsed_s=elapsed)
 
     def _auto_reset_loss(self) -> None:
         """Reset loss breaker at UTC midnight."""

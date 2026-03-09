@@ -143,13 +143,14 @@ class KalshiExecutor:
             sign_path = f"{_API_PREFIX}{rel_path}"
             headers = self._sign_request("POST", sign_path)
             is_yes = "yes" in req.side
-            price_cents = int(req.price * 100)
+            price_fp = str(round(float(req.price), 2))
+            price_key = "yes_price_dollars_fp" if is_yes else "no_price_dollars_fp"
             body: dict[str, Any] = {
                 "ticker": req.ticker,
                 "action": "buy",
                 "type": "limit",
                 "side": "yes" if is_yes else "no",
-                "yes_price" if is_yes else "no_price": price_cents,
+                price_key: price_fp,
                 "count": req.size_contracts,
             }
             resp = await http.post(rel_path, json=body, headers=headers)
@@ -163,7 +164,7 @@ class KalshiExecutor:
                 "kalshi_order_placed",
                 order_id=order_id,
                 ticker=req.ticker,
-                price_cents=price_cents,
+                price=price_fp,
                 fill_price=str(fill_price) if fill_price else None,
                 count=req.size_contracts,
             )
@@ -221,8 +222,10 @@ class KalshiExecutor:
             )
             resp.raise_for_status()
             data = resp.json()
-            bal_cents = data.get("balance", 0)
-            result = Decimal(str(bal_cents)) / Decimal("100")
+            if "balance_dollars" in data:
+                result = Decimal(str(data["balance_dollars"])).quantize(Decimal("0.01"))
+            else:
+                result = Decimal(str(data.get("balance", 0))) / Decimal("100")
             logger.info("kalshi_balance_ok", balance=str(result))
             return result
         except Exception as exc:

@@ -52,7 +52,7 @@ class TestAutoExecutionConfig:
         assert ac.mode == "off"
         assert ac.min_spread_pct == 0.03
         assert ac.max_spread_pct == 0.50
-        assert ac.min_confidence == 0.70
+        assert ac.min_confidence == 0.65
         assert ac.max_size_usd == 50.0
         assert ac.min_size_usd == 5.0
         assert ac.base_size_usd == 25.0

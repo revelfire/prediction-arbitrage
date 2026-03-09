@@ -74,6 +74,12 @@ class GameManager:
         state = self.get_state(market_id)
         return state is not None and state.active_signal is not None
 
+    def iter_active_signals(self) -> list[tuple[str, GameState]]:
+        """Return (market_id, state) pairs with active entry signals."""
+        return [
+            (mid, state) for mid, state in self._games.items() if state.active_signal is not None
+        ]
+
     def initialize(self, category_markets: list[CategoryMarket]) -> None:
         """Set up game states for discovered category markets."""
         now = datetime.now(tz=UTC)

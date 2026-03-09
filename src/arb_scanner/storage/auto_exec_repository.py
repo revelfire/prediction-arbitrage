@@ -214,6 +214,18 @@ class AutoExecRepository:
             logger.warning("arb_positions_abandoned", count=len(abandoned))
         return abandoned
 
+    async def get_daily_trade_count(self) -> int:
+        """Count today's executed trades.
+
+        Returns:
+            Number of executed trades today (UTC).
+        """
+        row = await self._pool.fetchrow(
+            "SELECT COUNT(*) AS cnt FROM auto_execution_log "
+            "WHERE status = 'executed' AND created_at >= CURRENT_DATE",
+        )
+        return int(row["cnt"]) if row else 0
+
     async def get_daily_stats(self, days: int = 1) -> dict[str, Any]:
         """Get aggregate stats for a time window.
 

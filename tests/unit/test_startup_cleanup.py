@@ -39,7 +39,9 @@ class TestStartupCleanup:
 
     @pytest.mark.asyncio
     async def test_expires_stale_tickets(
-        self, mock_app: MagicMock, mock_config: MagicMock,
+        self,
+        mock_app: MagicMock,
+        mock_config: MagicMock,
     ) -> None:
         """Startup expires pending tickets older than max_pending_hours."""
         from arb_scanner.api.app import _startup_cleanup
@@ -52,29 +54,26 @@ class TestStartupCleanup:
         mock_app.state.db.pool.fetch.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_abandons_expired_flip_positions(
-        self, mock_app: MagicMock, mock_config: MagicMock,
+    async def test_does_not_abandon_flip_positions_at_startup(
+        self,
+        mock_app: MagicMock,
+        mock_config: MagicMock,
     ) -> None:
-        """Startup abandons flip positions past max_hold_minutes."""
+        """Startup must NOT abandon flip positions (periodic sweep handles it)."""
         from arb_scanner.api.app import _startup_cleanup
 
         flip_repo = AsyncMock()
-        flip_repo.abandon_expired.return_value = [
-            {
-                "id": "p1", "arb_id": "a1", "market_id": "m1",
-                "market_title": "BTC > 80k", "max_hold_minutes": 45,
-                "held_minutes": 120.5,
-            },
-        ]
         mock_app.state.flip_position_repo = flip_repo
         mock_app.state.db.pool.fetch = AsyncMock(return_value=[])
 
         await _startup_cleanup(mock_app, mock_config)
-        flip_repo.abandon_expired.assert_awaited_once()
+        flip_repo.abandon_expired.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_abandons_expired_arb_positions(
-        self, mock_app: MagicMock, mock_config: MagicMock,
+        self,
+        mock_app: MagicMock,
+        mock_config: MagicMock,
     ) -> None:
         """Startup abandons arb positions past max_hold_minutes."""
         from arb_scanner.api.app import _startup_cleanup
@@ -82,8 +81,10 @@ class TestStartupCleanup:
         auto_repo = AsyncMock()
         auto_repo.abandon_expired.return_value = [
             {
-                "id": "p2", "arb_id": "a2",
-                "poly_market_id": "pm1", "kalshi_ticker": "KX1",
+                "id": "p2",
+                "arb_id": "a2",
+                "poly_market_id": "pm1",
+                "kalshi_ticker": "KX1",
                 "max_hold_minutes": 60,
             },
         ]
@@ -95,7 +96,8 @@ class TestStartupCleanup:
 
     @pytest.mark.asyncio
     async def test_skips_when_no_pool(
-        self, mock_config: MagicMock,
+        self,
+        mock_config: MagicMock,
     ) -> None:
         """Startup cleanup exits gracefully when DB pool is unavailable."""
         from arb_scanner.api.app import _startup_cleanup
@@ -109,18 +111,20 @@ class TestStartupCleanup:
 
     @pytest.mark.asyncio
     async def test_continues_on_partial_failure(
-        self, mock_app: MagicMock, mock_config: MagicMock,
+        self,
+        mock_app: MagicMock,
+        mock_config: MagicMock,
     ) -> None:
-        """If ticket expiry fails, position cleanup still runs."""
+        """If ticket expiry fails, remaining cleanup still runs."""
         from arb_scanner.api.app import _startup_cleanup
 
-        flip_repo = AsyncMock()
-        flip_repo.abandon_expired.return_value = []
-        mock_app.state.flip_position_repo = flip_repo
+        auto_repo = AsyncMock()
+        auto_repo.abandon_expired.return_value = []
+        mock_app.state.auto_exec_repo = auto_repo
         mock_app.state.db.pool.fetch = AsyncMock(
             side_effect=RuntimeError("db error"),
         )
 
         await _startup_cleanup(mock_app, mock_config)
-        # Flip cleanup still ran despite ticket error
-        flip_repo.abandon_expired.assert_awaited_once()
+        # Arb abandon still ran despite ticket expiry error
+        auto_repo.abandon_expired.assert_awaited_once()

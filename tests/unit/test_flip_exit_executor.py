@@ -224,6 +224,13 @@ class TestBuildSellRequest:
         expected = (Decimal("0.60") * Decimal("0.96")).quantize(Decimal("0.0001"))
         assert req.price == expected
 
+    def test_timeout_uses_minimum_price(self) -> None:
+        """TIMEOUT exit uses $0.01 as market sell to ensure immediate fill."""
+        exit_sig = _make_exit(ExitReason.TIMEOUT)
+        pos = _make_position(side="yes")
+        req = _build_sell_request(pos, exit_sig, Decimal("0.02"))
+        assert req.price == Decimal("0.01")
+
     def test_sell_yes_side(self) -> None:
         """Position with side='yes' produces 'sell_yes' order side."""
         req = _build_sell_request(_make_position(side="yes"), _make_exit(), Decimal("0"))

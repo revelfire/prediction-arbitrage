@@ -226,29 +226,20 @@ async def _startup_cleanup(app: FastAPI, config: Settings) -> None:
         if expired:
             total += len(expired)
             push_activity(
-                "startup_expired", "system", pipeline="system",
-                kind="tickets", count=len(expired),
+                "startup_expired",
+                "system",
+                pipeline="system",
+                kind="tickets",
+                count=len(expired),
             )
             logger.info("startup_expired_tickets", count=len(expired))
     except Exception:
         logger.exception("startup_ticket_expire_failed")
 
-    flip_repo = getattr(app.state, "flip_position_repo", None)
-    if flip_repo is not None:
-        try:
-            abandoned = await flip_repo.abandon_expired()
-            if abandoned:
-                total += len(abandoned)
-                for p in abandoned:
-                    push_activity(
-                        "startup_abandoned", p["arb_id"], pipeline="flip",
-                        market_id=p["market_id"],
-                        title=p.get("market_title", ""),
-                        held_min=round(float(p.get("held_minutes", 0)), 1),
-                    )
-                logger.info("startup_abandoned_flip", count=len(abandoned))
-        except Exception:
-            logger.exception("startup_flip_abandon_failed")
+    # NOTE: flip positions are NOT abandoned at startup.  The periodic
+    # sweep_overtime_db_positions task closes them on Polymarket first,
+    # then updates the DB.  Premature abandon_expired() would orphan
+    # real Polymarket orders.
 
     auto_repo = getattr(app.state, "auto_exec_repo", None)
     if auto_repo is not None:
@@ -258,7 +249,9 @@ async def _startup_cleanup(app: FastAPI, config: Settings) -> None:
                 total += len(abandoned)
                 for p in abandoned:
                     push_activity(
-                        "startup_abandoned", p["arb_id"], pipeline="arb",
+                        "startup_abandoned",
+                        p["arb_id"],
+                        pipeline="arb",
                         poly_market=p.get("poly_market_id", ""),
                         kalshi_ticker=p.get("kalshi_ticker", ""),
                     )
@@ -359,6 +352,7 @@ def create_app(
     from arb_scanner.api.routes_price_stream import router as price_stream_router
     from arb_scanner.api.routes_scan import router as scan_router
     from arb_scanner.api.routes_tickets import router as tickets_router
+    from arb_scanner.api.routes_backtesting import router as backtesting_router
     from arb_scanner.api.routes_ws_telemetry import router as ws_telemetry_router
 
     app.include_router(opportunities_router)
@@ -372,6 +366,7 @@ def create_app(
     app.include_router(ws_telemetry_router)
     app.include_router(execution_router)
     app.include_router(auto_execution_router)
+    app.include_router(backtesting_router)
 
     return app
 

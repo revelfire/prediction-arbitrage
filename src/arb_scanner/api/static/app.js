@@ -1386,6 +1386,7 @@ async function refreshActiveTab() {
         case 'wshealth': await refreshWsHealth(); break;
         case 'autoexec': await refreshAutoExec(); break;
         case 'balances': await refreshBalances(); break;
+        case 'backtesting': await refreshBacktesting(); break;
     }
 }
 
@@ -1575,6 +1576,10 @@ async function refreshAutoExecStatus() {
                     val.title = '';
                 }
             }
+            const resetBtn = card.querySelector('.breaker-reset-btn');
+            if (resetBtn) {
+                resetBtn.style.display = cb.tripped ? '' : 'none';
+            }
         });
     }
     _updateBreakers('arb', data.arb_breakers);
@@ -1748,12 +1753,23 @@ async function refreshAutoExecLog() {
     const tbody = el('autoexec-log-tbody');
     if (!tbody) return;
     if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No auto-trades yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No auto-trades yet</td></tr>';
         return;
     }
     _aeLogCache = {};
     tbody.innerHTML = data.map(e => {
         _aeLogCache[e.id] = e;
+        const snap = typeof e.criteria_snapshot === 'string'
+            ? JSON.parse(e.criteria_snapshot || '{}')
+            : (e.criteria_snapshot || {});
+        const name = snap.title || e.arb_id || '';
+        const shortName = name.length > 30 ? name.substring(0, 30) + '...' : name;
+        const source = e.source || '';
+        const sourceBadge = source === 'flippening'
+            ? '<span class="badge badge-expired">flip</span>'
+            : source === 'arb_watch'
+            ? '<span class="badge badge-approved">arb</span>'
+            : `<span class="badge">${source || '-'}</span>`;
         const cv = e.critic_verdict;
         let criticBadge = '<span class="badge badge-critic-skipped">skipped</span>';
         if (cv && !cv.skipped) {
@@ -1769,7 +1785,8 @@ async function refreshAutoExecLog() {
                            e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
         return `<tr class="clickable" onclick="openAeLogDetail('${e.id}')">
             <td>${shortTime(e.created_at)}</td>
-            <td title="${e.arb_id}">${(e.arb_id || '').substring(0, 10)}...</td>
+            <td title="${name}">${shortName}</td>
+            <td>${sourceBadge}</td>
             <td>${formatPct(e.trigger_spread_pct)}</td>
             <td>${formatUSD(e.size_usd)}</td>
             <td>${criticBadge}</td>
@@ -1932,6 +1949,15 @@ async function killAutoExec() {
     }
 }
 
+async function resetBreaker(breakerType) {
+    if (!confirm(`Reset the ${breakerType} circuit breaker?`)) return;
+    const result = await postJSONBody('/api/auto-execution/circuit-breaker/reset', { breaker_type: breakerType });
+    if (result) {
+        setStatus(`${breakerType} breaker reset`);
+        await refreshAutoExecStatus();
+    }
+}
+
 // --- Balances Tab ---
 async function refreshBalances() {
     let data = null;
@@ -1982,6 +2008,207 @@ async function refreshBalances() {
 }
 
 // --- Init ---
+// --- Backtesting Tab ---
+let btPnlChart = null;
+let btSignalChart = null;
+
+async function refreshBacktesting() {
+    const [portfolio, dailyPnl, categories, trades] = await Promise.all([
+        fetchJSON('/api/backtesting/portfolio'),
+        fetchJSON('/api/backtesting/daily-pnl'),
+        fetchJSON('/api/backtesting/category-performance'),
+        fetchJSON('/api/backtesting/trades?limit=100'),
+    ]);
+    renderBtPortfolio(portfolio);
+    renderBtPnlChart(dailyPnl);
+    renderBtCategories(categories);
+    renderBtTrades(trades);
+    await renderBtSignalChart();
+}
+
+function renderBtPortfolio(p) {
+    if (!p) return;
+    const wins = p.win_count || 0;
+    const losses = p.loss_count || 0;
+    const total = wins + losses;
+    const winRate = total > 0 ? (wins / total * 100).toFixed(1) + '%' : '-';
+    const netPnl = (p.total_realized_pnl || 0) + (p.total_unrealized_pnl || 0) - (p.total_fees || 0);
+    const capital = p.total_capital_deployed || 0;
+    const roi = capital > 0 ? (netPnl / capital * 100).toFixed(2) + '%' : '-';
+    const pnlEl = el('bt-net-pnl');
+    if (pnlEl) {
+        pnlEl.textContent = formatUSD(netPnl);
+        pnlEl.style.color = netPnl >= 0 ? '#66bb6a' : '#e94560';
+    }
+    const wrEl = el('bt-win-rate');
+    if (wrEl) wrEl.textContent = winRate;
+    const roiEl = el('bt-roi');
+    if (roiEl) {
+        roiEl.textContent = roi;
+        roiEl.style.color = netPnl >= 0 ? '#66bb6a' : '#e94560';
+    }
+    const capEl = el('bt-capital');
+    if (capEl) capEl.textContent = formatUSD(capital);
+    const tcEl = el('bt-trade-count');
+    if (tcEl) tcEl.textContent = (p.position_count || 0).toString();
+    const feeEl = el('bt-fees');
+    if (feeEl) feeEl.textContent = formatUSD(p.total_fees || 0);
+}
+
+function renderBtPnlChart(data) {
+    const ctx = el('bt-pnl-chart');
+    if (!ctx) return;
+    if (btPnlChart) btPnlChart.destroy();
+    if (!data || data.length === 0) return;
+
+    const cumulative = [];
+    let running = 0;
+    for (const d of data) {
+        running += d.daily_pnl || 0;
+        cumulative.push(running);
+    }
+
+    btPnlChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.map(d => d.trade_date),
+            datasets: [
+                {
+                    label: 'Daily P&L',
+                    data: data.map(d => d.daily_pnl || 0),
+                    borderColor: '#4fc3f7',
+                    backgroundColor: 'rgba(79, 195, 247, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Cumulative P&L',
+                    data: cumulative,
+                    borderColor: '#66bb6a',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    yAxisID: 'y1',
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0', maxTicksLimit: 12 }, grid: { color: '#2a2a4a' } },
+                y: { position: 'left', ticks: { color: '#a0a0b0', callback: v => '$' + v.toFixed(0) }, grid: { color: '#2a2a4a' } },
+                y1: { position: 'right', ticks: { color: '#66bb6a', callback: v => '$' + v.toFixed(0) }, grid: { drawOnChartArea: false } },
+            },
+        },
+    });
+}
+
+async function renderBtSignalChart() {
+    const ctx = el('bt-signal-chart');
+    if (!ctx) return;
+    if (btSignalChart) btSignalChart.destroy();
+    const data = await fetchJSON('/api/backtesting/signal-comparison');
+    if (!data) return;
+
+    const labels = [];
+    const values = [];
+    const colors = ['#66bb6a', '#e94560', '#a0a0b0'];
+    let i = 0;
+    for (const key of ['aligned', 'contrary', 'no_signal']) {
+        if (data[key]) {
+            labels.push(key.replace('_', ' '));
+            values.push(data[key].count || 0);
+        } else {
+            labels.push(key.replace('_', ' '));
+            values.push(0);
+        }
+        i++;
+    }
+
+    btSignalChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' }, position: 'right' } },
+        },
+    });
+}
+
+function renderBtCategories(data) {
+    const tbody = el('bt-category-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No category data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(c => {
+        const pnlColor = (c.total_pnl || 0) >= 0 ? '#66bb6a' : '#e94560';
+        return `<tr>
+            <td>${c.category || '-'}</td>
+            <td>${c.win_rate != null ? (c.win_rate * 100).toFixed(1) + '%' : '-'}</td>
+            <td style="color: ${pnlColor}">${formatUSD(c.avg_pnl || 0)}</td>
+            <td>${c.trade_count || 0}</td>
+            <td style="color: ${pnlColor}">${formatUSD(c.total_pnl || 0)}</td>
+            <td>${c.profit_factor != null ? c.profit_factor.toFixed(2) : '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderBtTrades(data) {
+    const tbody = el('bt-trades-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No trades imported</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(t => {
+        const actionClass = t.action === 'Buy' ? 'badge-approved' :
+                           t.action === 'Sell' ? 'badge-cancelled' : 'badge-pending';
+        const date = t.timestamp ? new Date(t.timestamp).toLocaleString() : '-';
+        const name = t.market_name || '-';
+        const shortName = name.length > 40 ? name.substring(0, 40) + '...' : name;
+        return `<tr>
+            <td>${date}</td>
+            <td title="${name}">${shortName}</td>
+            <td><span class="badge ${actionClass}">${t.action}</span></td>
+            <td>${formatUSD(t.usdc_amount || 0)}</td>
+            <td>${t.token_amount != null ? parseFloat(t.token_amount).toFixed(2) : '-'}</td>
+            <td>${t.token_name || '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function uploadBtCsv(file) {
+    const statusEl = el('bt-import-status');
+    if (statusEl) statusEl.textContent = 'Uploading...';
+    try {
+        const form = new FormData();
+        form.append('file', file);
+        const resp = await fetch('/api/backtesting/import', {
+            method: 'POST',
+            headers: authHeaders(),
+            body: form,
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            if (statusEl) statusEl.textContent = 'Error: ' + err;
+            return;
+        }
+        const result = await resp.json();
+        if (statusEl) statusEl.textContent = `Imported ${result.inserted} trades (${result.duplicates} duplicates)`;
+        await refreshBacktesting();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = 'Upload failed: ' + err.message;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // Tab click handlers
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2032,6 +2259,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.target === preflightOverlay) closePreflightModal();
         });
     }
+
+    // Backtesting CSV upload
+    const csvInput = el('bt-csv-input');
+    if (csvInput) csvInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) uploadBtCsv(e.target.files[0]);
+    });
 
     // Initial load
     switchTab('opportunities');

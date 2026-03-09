@@ -100,6 +100,8 @@ auto_execution:
     max_risk_flags: 3            # Auto-reject if > 3 mechanical flags
 ```
 
+> **Enforced gates:** `min_liquidity_usd`, `max_daily_trades`, and `allowed_ticket_types` are now enforced at evaluation time. `min_liquidity_usd` applies to arbitrage tickets only (combined Polymarket + Kalshi depth). `max_daily_trades` counts executed trades since midnight UTC.
+
 ### Starting Conservative
 
 Begin with these training-wheels settings:
@@ -125,6 +127,8 @@ uv run arb-scanner flip-watch --auto-execute --categories nba,nfl
 ```
 
 The `--auto-execute` flag sets `mode: "auto"` and `enabled: true` for the session.
+
+> **Note:** `--auto-execute` now initializes the full execution pipeline at startup. This requires `DATABASE_URL` and `POLY_PRIVATE_KEY` environment variables. The command will fail fast with a clear error if either is missing.
 
 ### Via Dashboard
 
@@ -209,15 +213,15 @@ Trips when a spread exceeds `anomaly_spread_pct` (extreme pricing anomaly). **Re
 
 **API:**
 ```bash
-# Reset the anomaly breaker
+# Reset the anomaly breaker (arb pipeline only)
 curl -X POST http://localhost:8000/api/auto-execution/circuit-breaker/reset \
   -H "Content-Type: application/json" \
-  -d '{"breaker_type": "anomaly"}'
+  -d '{"breaker_type": "anomaly", "pipeline": "arb"}'
 
-# Reset all breakers
+# Reset all breakers on all pipelines
 curl -X POST http://localhost:8000/api/auto-execution/circuit-breaker/reset \
   -H "Content-Type: application/json" \
-  -d '{"breaker_type": "all"}'
+  -d '{"breaker_type": "all", "pipeline": "all"}'
 ```
 
 ---
@@ -265,6 +269,8 @@ GameManager detects exit condition
   → Polymarket sell order placed
   → Position marked closed with realized P&L
 ```
+
+> Exit orders that return a failed or rejected status from Polymarket will NOT close the position. Instead, the position is marked `exit_failed` and the operator is notified. Use the **Exit Now** button or manual API call to retry.
 
 ### Exit Reasons
 
@@ -474,6 +480,14 @@ curl -X POST http://localhost:8000/api/auto-execution/circuit-breaker/reset \
 
 Loss and failure breakers auto-reset (midnight UTC and on next success, respectively).
 
+You can target specific pipelines when resetting breakers:
+```bash
+# Reset anomaly breaker on flippening pipeline only
+curl -X POST http://localhost:8000/api/auto-execution/circuit-breaker/reset \
+  -H "Content-Type: application/json" \
+  -d '{"breaker_type": "anomaly", "pipeline": "flip"}'
+```
+
 ### Slippage rejections
 
 If trades are frequently rejected for slippage:
@@ -494,3 +508,7 @@ UPDATE flippening_auto_positions
 SET status = 'abandoned'
 WHERE arb_id = '<your-arb-id>' AND status = 'exit_failed';
 ```
+
+### WebSocket stall detection
+
+The flippening engine monitors WebSocket message flow. If no messages are received for 3 consecutive telemetry intervals (~90s), a forced reconnect is triggered automatically. Forced reconnects have a 60-second cooldown to prevent reconnect storms. Check structured logs for `ws_stall_reconnect` events.

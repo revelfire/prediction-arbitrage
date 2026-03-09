@@ -106,6 +106,15 @@ class FlipExitExecutor:
             logger.error("flip_exit_order_failed", market_id=event.market_id, error=str(exc))
             raise
 
+        if resp.status not in ("filled", "submitted"):
+            await self._position_repo.mark_exit_failed(event.market_id)
+            logger.warning(
+                "flip_exit_response_failed",
+                market_id=event.market_id,
+                status=resp.status,
+            )
+            return None
+
         pnl = _compute_realized_pnl(
             Decimal(str(position["entry_price"])),
             req.price,
@@ -136,9 +145,11 @@ def _build_sell_request(
 ) -> OrderRequest:
     """Construct a sell OrderRequest from an open position and exit signal.
 
-    Applies a price discount so the limit sell hits the bid rather than
-    sitting on the ask.  Stop-loss exits get double aggression for
-    faster fills.
+    Timeout and stop-loss exits use aggressive pricing to ensure
+    immediate fill.  Timeout exits price at $0.01 (acts as market sell
+    on the CLOB — Polymarket gives price improvement at best bid).
+    Stop-loss exits apply 2x aggression discount.  Reversion exits
+    apply the standard discount.
 
     Args:
         position: Open position record from DB.
@@ -148,11 +159,12 @@ def _build_sell_request(
     Returns:
         OrderRequest ready for PolymarketExecutor.place_order().
     """
-    price = Decimal(str(exit_sig.exit_price))
-    discount = aggression
-    if exit_sig.exit_reason == ExitReason.STOP_LOSS:
-        discount = aggression * 2
-    price = (price * (1 - discount)).quantize(Decimal("0.0001"))
+    if exit_sig.exit_reason == ExitReason.TIMEOUT:
+        price = Decimal("0.01")
+    else:
+        price = Decimal(str(exit_sig.exit_price))
+        discount = aggression * 2 if exit_sig.exit_reason == ExitReason.STOP_LOSS else aggression
+        price = (price * (1 - discount)).quantize(Decimal("0.0001"))
 
     side_str = position["side"]
     sell_side: OrderSide = f"sell_{side_str}"  # type: ignore[assignment]

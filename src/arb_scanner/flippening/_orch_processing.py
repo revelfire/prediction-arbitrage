@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +21,7 @@ from arb_scanner.flippening.spike_detector import SpikeDetector
 from arb_scanner.models.config import Settings
 from arb_scanner.models.flippening import (
     EntrySignal,
+    ExitReason,
     ExitSignal,
     FlippeningEvent,
     PriceUpdate,
@@ -234,6 +236,11 @@ async def handle_exit(
     entry: EntrySignal | None = state.active_signal
     game_mgr.clear_active_signal(state.market_id)
 
+    # Recapture baseline at current price to prevent the spike detector
+    # from immediately re-entering on the same price deviation.
+    if state.price_history:
+        game_mgr.capture_baseline(state, state.price_history[-1], late_join=True)
+
     logger.info(
         "flip_exit",
         market_id=state.market_id,
@@ -242,26 +249,41 @@ async def handle_exit(
         hold_min=float(exit_sig.hold_minutes),
     )
 
-    if not dry_run and entry is not None:
+    if dry_run:
+        return
+
+    if entry is None:
+        logger.warning("flip_exit_no_entry", market_id=state.market_id)
+
+    try:
         await persist_exit(repo, exit_sig)
-        event = FlippeningEvent(
-            id=entry.event_id,
-            market_id=state.market_id,
-            token_id=state.token_id,
-            market_title=state.market_title,
-            baseline_yes=state.baseline.yes_price if state.baseline else exit_sig.exit_price,
-            spike_price=entry.entry_price,
-            spike_magnitude_pct=abs(exit_sig.realized_pnl_pct),
-            spike_direction=SpikeDirection.FAVORITE_DROP,
-            confidence=Decimal("0"),
-            sport=state.sport,
-            category=getattr(state, "category", ""),
-            category_type=getattr(state, "category_type", "sport"),
-            detected_at=entry.created_at,
-        )
-        if alert_buffer is not None:
-            alert_buffer.append_exit(event, entry, exit_sig)
+    except Exception:
+        logger.exception("persist_exit_failed_in_handle_exit")
+
+    if entry is None:
+        return
+
+    event = FlippeningEvent(
+        id=entry.event_id,
+        market_id=state.market_id,
+        token_id=state.token_id,
+        market_title=state.market_title,
+        baseline_yes=state.baseline.yes_price if state.baseline else exit_sig.exit_price,
+        spike_price=entry.entry_price,
+        spike_magnitude_pct=abs(exit_sig.realized_pnl_pct),
+        spike_direction=SpikeDirection.FAVORITE_DROP,
+        confidence=Decimal("0"),
+        sport=state.sport,
+        category=getattr(state, "category", ""),
+        category_type=getattr(state, "category_type", "sport"),
+        detected_at=entry.created_at,
+    )
+    if alert_buffer is not None:
+        alert_buffer.append_exit(event, entry, exit_sig)
+    try:
         await _feed_exit_pipeline(event, entry, exit_sig, config)
+    except Exception:
+        logger.exception("feed_exit_pipeline_failed_in_handle_exit")
 
 
 async def _feed_auto_pipeline(
@@ -302,6 +324,176 @@ async def _feed_auto_pipeline(
         await pipeline.process_opportunity(opp, source="flippening")
     except Exception:
         logger.warning("flip_pipeline_feed_failed")
+
+
+async def sweep_overtime_signals(
+    game_mgr: GameManager,
+    config: Settings,
+    repo: Any,
+    http_client: httpx.AsyncClient,
+    dry_run: bool,
+    alert_buffer: AlertBuffer | None = None,
+) -> int:
+    """Force-exit any active signals past their max_hold_minutes.
+
+    Uses wall-clock time to detect overtime positions independently
+    of the WebSocket price stream.  Called periodically from the
+    orchestrator loop so that quiet markets cannot hold positions
+    indefinitely.
+
+    Args:
+        game_mgr: Game lifecycle manager.
+        config: Application settings.
+        repo: FlippeningRepository (None if dry_run).
+        http_client: Shared HTTP client.
+        dry_run: Whether to skip persistence and alerts.
+        alert_buffer: AlertBuffer for batched dispatch.
+
+    Returns:
+        Number of signals force-exited.
+    """
+    now = datetime.now(UTC)
+    count = 0
+    for _market_id, state in game_mgr.iter_active_signals():
+        entry = state.active_signal
+        if entry is None:
+            continue
+        wall_min = (now - entry.created_at).total_seconds() / 60.0
+        if wall_min < entry.max_hold_minutes:
+            continue
+        last_bid = _last_known_bid(state, entry)
+        pnl = last_bid - entry.entry_price
+        pnl_pct = pnl / entry.entry_price if entry.entry_price else Decimal("0")
+        exit_sig = ExitSignal(
+            event_id=entry.event_id,
+            side=entry.side,
+            exit_price=last_bid,
+            exit_reason=ExitReason.TIMEOUT,
+            realized_pnl=pnl,
+            realized_pnl_pct=pnl_pct,
+            hold_minutes=Decimal(str(round(wall_min, 2))),
+            created_at=now,
+        )
+        logger.warning(
+            "overtime_forced_exit",
+            market_id=_market_id,
+            hold_min=round(wall_min, 1),
+            max_hold=entry.max_hold_minutes,
+        )
+        await handle_exit(
+            exit_sig,
+            state,
+            game_mgr,
+            config,
+            repo,
+            http_client,
+            dry_run,
+            alert_buffer=alert_buffer,
+        )
+        count += 1
+    return count
+
+
+def _last_known_bid(state: Any, entry: EntrySignal) -> Decimal:
+    """Get last known bid price from game state's price history."""
+    if state.price_history:
+        last: PriceUpdate = state.price_history[-1]
+        return last.yes_bid if entry.side == "yes" else last.no_bid
+    return entry.entry_price
+
+
+async def sweep_overtime_db_positions(config: Settings) -> int:
+    """Close overtime positions via the exit pipeline (DB-level check).
+
+    Catches positions past max_hold_minutes that have no in-memory
+    signal — e.g. carried over from a prior session.  Attempts a real
+    sell on Polymarket before marking the position closed.
+
+    Args:
+        config: Application settings (pipeline stored on _flip_pipeline).
+
+    Returns:
+        Number of positions for which exit was triggered.
+    """
+    from arb_scanner.flippening._orch_exit import _feed_exit_pipeline
+
+    pipeline = getattr(config, "_flip_pipeline", None)
+    if pipeline is None:
+        return 0
+    pos_repo = getattr(pipeline, "_position_repo", None)
+    if pos_repo is None:
+        return 0
+    now = datetime.now(UTC)
+    try:
+        positions: list[dict[str, Any]] = await pos_repo.get_open_positions()
+    except Exception:
+        logger.warning("db_sweep_query_failed")
+        return 0
+    count = 0
+    for p in positions:
+        max_hold = p.get("max_hold_minutes")
+        if max_hold is None:
+            continue
+        elapsed_min = (now - p["opened_at"]).total_seconds() / 60.0
+        if elapsed_min < max_hold:
+            continue
+        try:
+            entry_sig, exit_sig, event = _build_exit_from_position(p, elapsed_min, now)
+            await _feed_exit_pipeline(event, entry_sig, exit_sig, config)
+            count += 1
+            logger.warning(
+                "db_overtime_exit_triggered",
+                market_id=p["market_id"],
+                held_min=round(elapsed_min, 1),
+                max_hold=max_hold,
+            )
+        except Exception:
+            logger.exception("db_overtime_exit_failed", market_id=p["market_id"])
+    return count
+
+
+def _build_exit_from_position(
+    p: dict[str, Any],
+    elapsed_min: float,
+    now: datetime,
+) -> tuple[EntrySignal, ExitSignal, FlippeningEvent]:
+    """Construct minimal signal objects from a DB position record."""
+    entry_price = Decimal(str(p["entry_price"]))
+    entry_sig = EntrySignal(
+        event_id=p["arb_id"],
+        side=p["side"],
+        entry_price=entry_price,
+        target_exit_price=entry_price,
+        stop_loss_price=Decimal("0"),
+        suggested_size_usd=entry_price * p["size_contracts"],
+        expected_profit_pct=Decimal("0"),
+        max_hold_minutes=p["max_hold_minutes"],
+        created_at=p["opened_at"],
+    )
+    exit_sig = ExitSignal(
+        event_id=p["arb_id"],
+        side=p["side"],
+        exit_price=entry_price,
+        exit_reason=ExitReason.TIMEOUT,
+        realized_pnl=Decimal("0"),
+        realized_pnl_pct=Decimal("0"),
+        hold_minutes=Decimal(str(round(elapsed_min, 2))),
+        created_at=now,
+    )
+    event = FlippeningEvent(
+        id=p["arb_id"],
+        market_id=p["market_id"],
+        token_id=p["token_id"],
+        market_title=p.get("market_title", ""),
+        baseline_yes=entry_price,
+        spike_price=entry_price,
+        spike_magnitude_pct=Decimal("0"),
+        spike_direction=SpikeDirection.FAVORITE_DROP,
+        confidence=Decimal("0"),
+        sport="",
+        detected_at=p["opened_at"],
+    )
+    return entry_sig, exit_sig, event
 
 
 async def _has_open_position(config: Settings, market_id: str) -> bool:

@@ -68,10 +68,30 @@ class WebSocketPriceStream:
         self._telemetry_interval = telemetry_interval_seconds
 
     async def subscribe(self, token_ids: list[str]) -> None:
-        """Connect and subscribe to token price updates."""
-        self._subscribed_tokens = list(token_ids)
+        """Connect and subscribe to token price updates.
+
+        Merges new tokens into the subscription list. Only starts
+        a reader task if one is not already running.
+
+        Args:
+            token_ids: CLOB token identifiers to monitor.
+        """
+        self._subscribed_tokens = list(set(self._subscribed_tokens + token_ids))
+        if self._reader_task is not None and not self._reader_task.done():
+            return
         self._reader_task = asyncio.create_task(self._reader_loop())
-        logger.info("ws_subscribe", token_count=len(token_ids), url=self._ws_url)
+        logger.info("ws_subscribe", token_count=len(self._subscribed_tokens), url=self._ws_url)
+
+    async def reconnect(self) -> None:
+        """Force reconnect by cancelling and restarting the reader task."""
+        if self._reader_task is not None and not self._reader_task.done():
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        logger.info("ws_forced_reconnect")
 
     async def _reader_loop(self) -> None:
         """Background loop: connect, read, reconnect on failure."""
@@ -100,11 +120,11 @@ class WebSocketPriceStream:
                     )
                     try:
                         async for raw_msg in ws:
-                            update = parse_ws_message(
+                            updates = parse_ws_message(
                                 raw_msg,
                                 self._telemetry,
                             )
-                            if update is not None:
+                            for update in updates:
                                 await self._queue.put(update)
                             if self._telemetry:
                                 self._telemetry.should_log(
@@ -180,11 +200,22 @@ class PollingPriceStream:
         self._client: httpx.AsyncClient | None = None
 
     async def subscribe(self, token_ids: list[str]) -> None:
-        """Start polling for the given tokens."""
-        self._subscribed_tokens = list(token_ids)
+        """Start polling for the given tokens.
+
+        Merges new tokens into the subscription list. Only starts
+        a polling task if one is not already running.
+
+        Args:
+            token_ids: CLOB token identifiers to monitor.
+        """
+        self._subscribed_tokens = list(set(self._subscribed_tokens + token_ids))
+        if self._polling_task is not None and not self._polling_task.done():
+            return
         self._client = httpx.AsyncClient(base_url=self._clob_url, timeout=10.0)
         self._polling_task = asyncio.create_task(self._poll_loop())
-        logger.info("polling_subscribe", token_count=len(token_ids), interval=self._interval)
+        logger.info(
+            "polling_subscribe", token_count=len(self._subscribed_tokens), interval=self._interval
+        )
 
     async def _poll_loop(self) -> None:
         """Background loop: poll order books at interval."""

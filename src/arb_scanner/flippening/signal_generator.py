@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -154,6 +155,10 @@ class SignalGenerator:
             return _build_exit(
                 entry, ExitReason.TIMEOUT, current_bid, elapsed_min, update.timestamp
             )
+        # Also check wall-clock time (WS event timestamps lag when markets go quiet)
+        wall_min = (datetime.now(UTC) - entry.created_at).total_seconds() / 60.0
+        if wall_min >= entry.max_hold_minutes:
+            return _build_exit(entry, ExitReason.TIMEOUT, current_bid, wall_min, update.timestamp)
         return None
 
     def create_ticket(self, entry: EntrySignal, event: FlippeningEvent) -> ExecutionTicket | None:

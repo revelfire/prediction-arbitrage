@@ -70,9 +70,13 @@ def build_entry(
     actual_spread: Decimal | None = None,
     slippage: Decimal | None = None,
     criteria_snapshot: dict[str, Any] | None = None,
+    title: str = "",
 ) -> AutoExecLogEntry:
     """Build an AutoExecLogEntry from run context."""
     duration = int(time.time() * 1000) - run.start_ms
+    snap = criteria_snapshot or {}
+    if title:
+        snap["title"] = title
     return AutoExecLogEntry(
         id=run.log_id,
         arb_id=run.arb_id,
@@ -83,7 +87,7 @@ def build_entry(
         execution_result_id=execution_result_id,
         actual_spread=actual_spread,
         slippage=slippage,
-        criteria_snapshot=criteria_snapshot or {},
+        criteria_snapshot=snap,
         duration_ms=duration,
         status=status,
         source=run.source,
@@ -105,12 +109,19 @@ async def record_rejection(
     run: RunCtx,
     reasons: list[str],
     infra: PipelineInfra,
+    *,
+    title: str = "",
 ) -> AutoExecLogEntry:
     """Record a rejected opportunity with logging and notification."""
     infra.rejection_cache[run.arb_id] = time.monotonic()
     has_breaker = any(r.startswith("circuit_breaker_") for r in reasons)
     status = "breaker_blocked" if has_breaker else "rejected"
-    entry = build_entry(run, status, criteria_snapshot={"rejection_reasons": reasons})
+    entry = build_entry(
+        run,
+        status,
+        criteria_snapshot={"rejection_reasons": reasons},
+        title=title,
+    )
     await persist_and_notify(entry, infra)
     if has_breaker:
         await _dispatch_breaker(reasons, infra)
@@ -122,10 +133,18 @@ async def record_critic_rejection(
     size: Decimal,
     verdict: CriticVerdict,
     infra: PipelineInfra,
+    *,
+    title: str = "",
 ) -> AutoExecLogEntry:
     """Record a critic-rejected opportunity with logging and notification."""
     infra.rejection_cache[run.arb_id] = time.monotonic()
-    entry = build_entry(run, "critic_rejected", size_usd=size, verdict=verdict)
+    entry = build_entry(
+        run,
+        "critic_rejected",
+        size_usd=size,
+        verdict=verdict,
+        title=title,
+    )
     await persist_and_notify(entry, infra)
     return entry
 

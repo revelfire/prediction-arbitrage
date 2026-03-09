@@ -154,13 +154,17 @@ class PolymarketExecutor:
             from py_clob_client.clob_types import OrderArgs  # type: ignore[import-untyped,unused-ignore]
 
             side_str = "BUY" if req.side.startswith("buy") else "SELL"
-            resp = client.create_and_post_order(
-                OrderArgs(
-                    token_id=req.token_id,
-                    price=float(req.price),
-                    size=float(req.size_contracts),
-                    side=side_str,
-                )
+            order_args = OrderArgs(
+                token_id=req.token_id,
+                price=float(req.price),
+                size=float(req.size_contracts),
+                side=side_str,
+            )
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(
+                None,
+                client.create_and_post_order,
+                order_args,
             )
             order_id = str(resp.get("orderID", resp.get("id", "")))
             raw_fill = resp.get("averagePrice") or resp.get("price")
@@ -180,10 +184,32 @@ class PolymarketExecutor:
             )
         except Exception as exc:
             error_str = str(exc)
+            cause = str(exc.__cause__) if exc.__cause__ else None
             if _is_geoblock(error_str):
-                logger.error("poly_order_geoblock", error=error_str)
+                logger.error(
+                    "poly_order_geoblock",
+                    error=error_str,
+                    error_type=type(exc).__name__,
+                    cause=cause,
+                    token_id=req.token_id,
+                    side=req.side,
+                    price=str(req.price),
+                    size=req.size_contracts,
+                    exc_info=True,
+                )
                 return OrderResponse(status="failed", error_message=f"GEOBLOCK: {error_str[:490]}")
-            logger.error("poly_order_failed", error=error_str)
+            logger.error(
+                "poly_order_failed",
+                error=error_str,
+                error_type=type(exc).__name__,
+                cause=cause,
+                token_id=req.token_id,
+                side=req.side,
+                price=str(req.price),
+                size=req.size_contracts,
+                clob_url=self._config.clob_api_url,
+                exc_info=True,
+            )
             return OrderResponse(status="failed", error_message=error_str[:500])
 
     async def cancel_order(self, venue_order_id: str) -> bool:
@@ -197,11 +223,19 @@ class PolymarketExecutor:
         """
         try:
             client = await self._ensure_level2_client()
-            client.cancel(venue_order_id)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, client.cancel, venue_order_id)
             logger.info("poly_order_cancelled", order_id=venue_order_id)
             return True
         except Exception as exc:
-            logger.error("poly_cancel_failed", order_id=venue_order_id, error=str(exc))
+            logger.error(
+                "poly_cancel_failed",
+                order_id=venue_order_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                cause=str(exc.__cause__) if exc.__cause__ else None,
+                exc_info=True,
+            )
             return False
 
     async def get_balance(self) -> Decimal:
@@ -247,6 +281,10 @@ class PolymarketExecutor:
                 "poly_balance_failed",
                 error=str(exc),
                 error_type=type(exc).__name__,
+                cause=str(exc.__cause__) if exc.__cause__ else None,
+                has_key=bool(self._private_key),
+                has_api_creds=self._has_api_creds(),
+                exc_info=True,
             )
             return _ZERO
 
@@ -261,10 +299,22 @@ class PolymarketExecutor:
         """
         try:
             client = await self._ensure_level2_client()
-            raw: Any = client.get_order_book(token_or_ticker)
+            loop = asyncio.get_running_loop()
+            raw: Any = await loop.run_in_executor(
+                None,
+                client.get_order_book,
+                token_or_ticker,
+            )
             return _normalize_poly_orderbook(raw)
         except Exception as exc:
-            logger.error("poly_book_failed", token=token_or_ticker, error=str(exc))
+            logger.error(
+                "poly_book_failed",
+                token=token_or_ticker,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                cause=str(exc.__cause__) if exc.__cause__ else None,
+                exc_info=True,
+            )
             return {"bids": [], "asks": []}
 
 

@@ -46,6 +46,20 @@ def _push(event_type: str, arb_id: str, **fields: object) -> None:
         pass
 
 
+def _compute_market_exposure(
+    positions: list[dict[str, Any]],
+    market_id: str,
+) -> Decimal:
+    """Compute current USD exposure for a specific market."""
+    total = Decimal("0")
+    for p in positions:
+        if p.get("market_id") == market_id:
+            ep = Decimal(str(p.get("entry_price", 0)))
+            contracts = int(p.get("size_contracts", 0))
+            total += ep * contracts
+    return total
+
+
 class ArbAutoExecutionPipeline:
     """Orchestrates autonomous arb trade execution via ExecutionOrchestrator."""
 
@@ -131,35 +145,50 @@ class ArbAutoExecutionPipeline:
         _push("considering", run.arb_id, title=title, spread=f"{run.spread:.1%}")
 
         positions = await get_open_positions(self._infra.auto_repo)
+        daily_count = await self._get_daily_trade_count()
         eligible, reasons = evaluate_arb_criteria(
             opp,
             self._ac,
             positions,
             self._infra.capital.daily_pnl,
             self._infra.breakers,
+            daily_trade_count=daily_count,
         )
         if not eligible:
             _push("criteria_failed", run.arb_id, title=title, reasons=reasons)
-            return await record_rejection(run, reasons, self._infra)
+            return await record_rejection(run, reasons, self._infra, title=title)
 
         _push("criteria_passed", run.arb_id, title=title)
         await self._infra.capital.refresh_balances()
+        market_id = str(opp.get("arb_id", ""))
+        market_exposure = _compute_market_exposure(positions, market_id)
         size = compute_auto_size(
             run.spread,
             self._ac.min_spread_pct,
             self._ac,
-            self._infra.capital.current_exposure,
+            market_exposure,
             self._infra.capital.total_balance,
         )
         if size is None:
             _push("size_rejected", run.arb_id, title=title)
-            return await record_rejection(run, ["size_below_minimum"], self._infra)
+            return await record_rejection(
+                run,
+                ["size_below_minimum"],
+                self._infra,
+                title=title,
+            )
 
         ctx = self._build_market_context(opp, run.spread, run.confidence)
         verdict = await self._critic.evaluate({"arb_id": run.arb_id}, ctx)
         if not verdict.approved:
             _push("critic_rejected", run.arb_id, title=title, reasoning=verdict.reasoning)
-            return await record_critic_rejection(run, size, verdict, self._infra)
+            return await record_critic_rejection(
+                run,
+                size,
+                verdict,
+                self._infra,
+                title=title,
+            )
 
         slip_ok, poly_s, kalshi_s = await check_slippage(
             self._poly,
@@ -170,7 +199,7 @@ class ArbAutoExecutionPipeline:
         if not slip_ok:
             _push("slippage_failed", run.arb_id, title=title)
             reason = f"slippage_exceeded: poly={float(poly_s):.4f} kalshi={float(kalshi_s):.4f}"
-            return await record_rejection(run, [reason], self._infra)
+            return await record_rejection(run, [reason], self._infra, title=title)
 
         _push("placing", run.arb_id, title=title, size_usd=float(size))
         return await self._place_order(opp, run, size, verdict)
@@ -183,6 +212,7 @@ class ArbAutoExecutionPipeline:
         verdict: Any,
     ) -> Any:
         """Execute two-leg arb order through the orchestrator."""
+        title = str(opp.get("title", opp.get("market_title", "")))
         try:
             result = await self._orchestrator.execute(run.arb_id, size)
             status_map = {"complete": "executed", "partial": "partial", "failed": "failed"}
@@ -201,17 +231,32 @@ class ArbAutoExecutionPipeline:
                 execution_result_id=result.id,
                 actual_spread=result.actual_spread,
                 slippage=result.slippage_from_ticket,
+                title=title,
             )
         except Exception as exc:
             self._infra.breakers.record_failure()
             logger.error("arb_order_failed", arb_id=run.arb_id, error=str(exc))
             if is_geoblock(str(exc)):
                 await dispatch_geoblock(run.arb_id, self._infra)
-            entry = build_entry(run, "failed", size_usd=size, verdict=verdict)
+            entry = build_entry(
+                run,
+                "failed",
+                size_usd=size,
+                verdict=verdict,
+                title=title,
+            )
 
         _push(f"placed_{entry.status}", run.arb_id, title=opp.get("title", ""))
         await persist_and_notify(entry, self._infra)
         return entry
+
+    async def _get_daily_trade_count(self) -> int:
+        """Query today's executed trade count from audit log."""
+        try:
+            count: int = await self._infra.auto_repo.get_daily_trade_count()
+            return count
+        except Exception:
+            return 0
 
     def _build_market_context(
         self,
