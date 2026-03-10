@@ -200,6 +200,7 @@ class TestWatchLoop:
         with (
             patch("arb_scanner.cli.watch.run_scan", side_effect=mock_scan),
             patch("arb_scanner.cli.watch.dispatch_webhook_batch", webhook_mock),
+            patch("arb_scanner.cli.watch._OPP_BATCH_INTERVAL_S", 0),
         ):
             await run_watch(config, stop_event, dry_run=True)
 
