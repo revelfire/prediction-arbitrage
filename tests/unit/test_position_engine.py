@@ -48,9 +48,7 @@ class TestTradesOnly:
         ]
         result = trades_only(trades)
         assert len(result) == 2
-        assert all(
-            t.action in (TradeAction.Buy, TradeAction.Sell) for t in result
-        )
+        assert all(t.action in (TradeAction.Buy, TradeAction.Sell) for t in result)
 
 
 class TestSimpleBuySell:
@@ -163,9 +161,9 @@ class TestDecimalPrecision:
         assert pos.cost_basis == Decimal("18.438")
         assert pos.tokens_held == Decimal("0")
         # P&L should be 19.5 - 18.438 = 1.062
-        expected_pnl = Decimal("19.5") / Decimal("184.00664") - Decimal(
-            "18.438"
-        ) / Decimal("184.00664")
+        expected_pnl = Decimal("19.5") / Decimal("184.00664") - Decimal("18.438") / Decimal(
+            "184.00664"
+        )
         expected_pnl_total = expected_pnl * Decimal("184.00664")
         assert abs(pos.realized_pnl - expected_pnl_total) < Decimal("0.0001")
 
@@ -176,8 +174,6 @@ class TestEmptyInput:
 
     def test_only_deposits(self) -> None:
         trades = [
-            _trade(
-                TradeAction.Deposit, "1000", "1000", token="USDC"
-            ),
+            _trade(TradeAction.Deposit, "1000", "1000", token="USDC"),
         ]
         assert reconstruct_positions(trades) == []

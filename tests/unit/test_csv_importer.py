@@ -45,9 +45,7 @@ class TestParseValidCSV:
     def test_timestamp_conversion(self) -> None:
         trades = parse_csv_bytes(VALID_CSV.encode())
         assert trades[0].timestamp.tzinfo == UTC
-        assert trades[0].timestamp == datetime.fromtimestamp(
-            1772704987, tz=UTC
-        )
+        assert trades[0].timestamp == datetime.fromtimestamp(1772704987, tz=UTC)
 
     def test_market_name_and_hash(self) -> None:
         trades = parse_csv_bytes(VALID_CSV.encode())
@@ -105,10 +103,7 @@ class TestEmptyFile:
         assert parse_csv_bytes(b"") == []
 
     def test_header_only(self) -> None:
-        header = (
-            '"marketName","action","usdcAmount","tokenAmount",'
-            '"tokenName","timestamp","hash"\n'
-        )
+        header = '"marketName","action","usdcAmount","tokenAmount","tokenName","timestamp","hash"\n'
         assert parse_csv_bytes(header.encode()) == []
 
 
@@ -122,14 +117,10 @@ class TestBOMHandling:
 class TestRealCSV:
     """Parse the real Polymarket export and verify row counts."""
 
-    REAL_CSV = Path(
-        "/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv"
-    )
+    REAL_CSV = Path("/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv")
 
     @pytest.mark.skipif(
-        not Path(
-            "/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv"
-        ).exists(),
+        not Path("/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv").exists(),
         reason="Real CSV not present",
     )
     def test_parse_real_csv(self) -> None:
@@ -142,9 +133,7 @@ class TestRealCSV:
         assert counts[TradeAction.Deposit] == 1
 
     @pytest.mark.skipif(
-        not Path(
-            "/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv"
-        ).exists(),
+        not Path("/Users/cmathias/Downloads/Polymarket-History-2026-03-06.csv").exists(),
         reason="Real CSV not present",
     )
     def test_all_hashes_unique(self) -> None:
