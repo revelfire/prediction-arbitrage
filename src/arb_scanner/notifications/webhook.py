@@ -152,6 +152,86 @@ async def dispatch_webhook(
             await http.aclose()
 
 
+async def dispatch_webhook_batch(
+    opps: list[ArbOpportunity],
+    *,
+    slack_url: str = "",
+    discord_url: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    """Dispatch a single batched webhook for multiple opportunities.
+
+    Combines all opportunities into one Slack/Discord message to avoid
+    rate limiting.
+
+    Args:
+        opps: Arbitrage opportunities to notify about.
+        slack_url: Slack incoming webhook URL (empty to skip).
+        discord_url: Discord incoming webhook URL (empty to skip).
+        client: Optional shared httpx client (created if not provided).
+    """
+    if not opps:
+        return
+    owns_client = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        if slack_url:
+            payload = _build_batch_slack(opps)
+            await _send_safe(slack_url, payload, http, "slack")
+        if discord_url:
+            payload = _build_batch_discord(opps)
+            await _send_safe(discord_url, payload, http, "discord")
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
+def _build_batch_slack(opps: list[ArbOpportunity]) -> dict[str, Any]:
+    """Build a single Slack message combining multiple arb opportunities."""
+    lines: list[str] = [
+        f":mag: Arb Digest ({len(opps)} opportunities)",
+        "───",
+    ]
+    for opp in opps:
+        buy_label, sell_label = _format_leg_labels(opp)
+        spread = f"{float(opp.net_spread_pct):.2%}"
+        ann = f"{float(opp.annualized_return):.0%}" if opp.annualized_return else "N/A"
+        title = opp.poly_market.title
+        lines.append(
+            f"  *{title}*"
+            f"\n    Buy {buy_label} · Sell {sell_label}"
+            f" · Spread {spread} · Ann {ann}"
+            f" · Size ${float(opp.max_size):.0f}",
+        )
+    return {"text": "\n".join(lines)}
+
+
+def _build_batch_discord(opps: list[ArbOpportunity]) -> dict[str, Any]:
+    """Build a single Discord message combining multiple arb opportunities."""
+    embeds: list[dict[str, Any]] = []
+    for opp in opps[:10]:
+        buy_label, sell_label = _format_leg_labels(opp)
+        spread = f"{float(opp.net_spread_pct):.2%}"
+        ann = f"{float(opp.annualized_return):.0%}" if opp.annualized_return else "N/A"
+        embeds.append(
+            {
+                "title": f"Arb: {opp.poly_market.title}",
+                "color": 3066993,
+                "fields": [
+                    {"name": "Buy", "value": buy_label, "inline": True},
+                    {"name": "Sell", "value": sell_label, "inline": True},
+                    {"name": "Spread", "value": spread, "inline": True},
+                    {"name": "Size", "value": f"${float(opp.max_size):.0f}", "inline": True},
+                    {"name": "Annualized", "value": ann, "inline": True},
+                ],
+            }
+        )
+    return {
+        "content": f"Arb Digest ({len(opps)} opportunities)",
+        "embeds": embeds,
+    }
+
+
 async def _send_safe(
     url: str,
     payload: dict[str, Any],

@@ -18,7 +18,13 @@ Polymarket uses an on-chain wallet on **Polygon (chain ID 137)** for trading. Or
 
 ### Create or Export Your Private Key
 
-If you already trade on Polymarket, export the private key from the wallet associated with your account. This is the Polygon wallet that holds your USDC.
+If you already trade on Polymarket, export the signer private key from the wallet associated with your account.
+
+For browser-wallet accounts (MetaMask/Rabby/Coinbase Wallet), Polymarket commonly uses a proxy wallet model:
+- signer wallet private key (your MetaMask account) signs requests
+- funded proxy wallet address holds collateral
+
+In this model, set `signature_type=2` and provide the proxy address as `funder`.
 
 **From MetaMask:**
 1. Open MetaMask, select your Polymarket wallet
@@ -36,6 +42,13 @@ If you already trade on Polymarket, export the private key from the wallet assoc
 ```bash
 # In your .env file or shell environment
 export POLY_PRIVATE_KEY="0xYOUR_POLYGON_PRIVATE_KEY_HERE"
+export POLY_SIGNATURE_TYPE="2"          # for proxy-wallet accounts
+export POLY_FUNDER="0xYOUR_PROXY_ADDR"  # funded proxy wallet address
+
+# Level-2 API creds (required for balance + order endpoints)
+export POLY_API_KEY="..."
+export POLY_API_SECRET="..."
+export POLY_API_PASSPHRASE="..."
 ```
 
 ### Install the SDK
@@ -56,7 +69,7 @@ You can bridge USDC from Ethereum mainnet via the [Polygon Bridge](https://porta
 
 ### Verify Configuration
 
-Once the dashboard is running with execution enabled, the header shows **EXEC READY** (green) if credentials are detected. The preflight check `credentials` will show "Both venues configured" when `POLY_PRIVATE_KEY` is set.
+Once the dashboard is running with execution enabled, the header shows **EXEC READY** (green) if credentials are detected. For method-2 accounts, both `POLY_PRIVATE_KEY` and `POLY_FUNDER` are required.
 
 ---
 
@@ -145,6 +158,11 @@ execution:
     clob_api_url: "https://clob.polymarket.com"
   kalshi:
     api_base_url: "https://trading-api.kalshi.com/trade-api/v2"
+  polymarket:
+    chain_id: 137
+    clob_api_url: "https://clob.polymarket.com"
+    signature_type: 2
+    funder: "0xYOUR_PROXY_ADDR"
 ```
 
 ---
@@ -213,7 +231,7 @@ Before any order is placed, the engine runs 10 preflight checks. All must pass b
 | Check | What It Validates |
 |-------|-------------------|
 | **enabled** | `execution.enabled` is `true` in config |
-| **credentials** | Both `POLY_PRIVATE_KEY` and `KALSHI_API_KEY_ID` + `KALSHI_RSA_PRIVATE_KEY_PATH` are set |
+| **credentials** | `POLY_PRIVATE_KEY` is set (plus `POLY_FUNDER` when `POLY_SIGNATURE_TYPE!=0`) and Kalshi creds are set |
 | **balances** | Both venue balances are positive |
 | **reserve** | Trade won't drop either venue below `min_reserve_usd` |
 | **exposure** | Total open positions + this trade stay under `max_exposure_pct` |
@@ -283,6 +301,11 @@ Add these to your `.env` file alongside the existing variables:
 ```bash
 # Polymarket execution (Polygon wallet)
 POLY_PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+POLY_SIGNATURE_TYPE=2
+POLY_FUNDER=0xYOUR_PROXY_WALLET
+POLY_API_KEY=...
+POLY_API_SECRET=...
+POLY_API_PASSPHRASE=...
 
 # Kalshi execution (RSA-PSS signing)
 KALSHI_API_KEY_ID=your-api-key-id
@@ -292,6 +315,11 @@ KALSHI_RSA_PRIVATE_KEY_PATH=/path/to/kalshi/private_key.pem
 | Variable | Required For | Description |
 |----------|-------------|-------------|
 | `POLY_PRIVATE_KEY` | Polymarket | Polygon wallet private key (hex, with 0x prefix) |
+| `POLY_SIGNATURE_TYPE` | Polymarket | Signature mode (`0` EOA, `2` proxy-wallet/Gnosis-style signing) |
+| `POLY_FUNDER` | Polymarket method-2 | Funded proxy wallet address used as funder |
+| `POLY_API_KEY` | Polymarket | CLOB API key for level-2 authenticated calls |
+| `POLY_API_SECRET` | Polymarket | CLOB API secret |
+| `POLY_API_PASSPHRASE` | Polymarket | CLOB API passphrase |
 | `KALSHI_API_KEY_ID` | Kalshi | API key identifier from Kalshi settings |
 | `KALSHI_RSA_PRIVATE_KEY_PATH` | Kalshi | Absolute path to RSA private key PEM file |
 
@@ -318,6 +346,8 @@ KALSHI_RSA_PRIVATE_KEY_PATH=/path/to/kalshi/private_key.pem
 ### Preflight fails on "credentials"
 
 - Verify env vars are exported: `echo $POLY_PRIVATE_KEY` (should show your key)
+- If using method-2/proxy wallets, verify `echo $POLY_FUNDER`
+- Verify `POLY_SIGNATURE_TYPE` matches your account type
 - For Kalshi, verify the PEM file exists at the configured path
 - Restart the dashboard after setting new env vars
 

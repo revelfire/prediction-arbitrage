@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 from arb_scanner.models.execution import (
+    BalancesResponse,
+    ConstraintStatus,
     ExecutionOrder,
     ExecutionResult,
     LiquidityResult,
@@ -70,6 +72,8 @@ class TestPreflightResult:
         assert r.suggested_size_usd == Decimal("0")
         assert r.max_size_usd == Decimal("0")
         assert r.estimated_slippage_poly is None
+        assert r.poly_depth_contracts is None
+        assert r.kalshi_depth_contracts is None
 
 
 class TestExecutionOrder:
@@ -153,3 +157,60 @@ class TestLiquidityResult:
         )
         assert lr.passed is True
         assert lr.max_absorbable_usd == Decimal("500.00")
+
+
+class TestConstraintStatus:
+    """Tests for ConstraintStatus model."""
+
+    def test_ok_constraint(self) -> None:
+        """An OK constraint has ok=True."""
+        c = ConstraintStatus(name="Exposure Cap", ok=True, detail="Within limits")
+        assert c.ok is True
+        assert c.name == "Exposure Cap"
+
+    def test_blocked_constraint(self) -> None:
+        """A blocked constraint has ok=False."""
+        c = ConstraintStatus(name="Daily P&L Limit", ok=False, detail="Limit hit")
+        assert c.ok is False
+
+
+class TestBalancesResponse:
+    """Tests for BalancesResponse model."""
+
+    def test_serialization(self) -> None:
+        """BalancesResponse serializes to JSON with all fields."""
+        resp = BalancesResponse(
+            poly_balance=Decimal("0"),
+            kalshi_balance=Decimal("150.00"),
+            total_balance=Decimal("150.00"),
+            suggested_size_usd=Decimal("7.50"),
+            current_exposure=Decimal("0"),
+            remaining_capacity=Decimal("75.00"),
+            daily_pnl=Decimal("0"),
+            open_positions=0,
+            constraints=[
+                ConstraintStatus(name="Reserve", ok=True, detail="OK"),
+            ],
+        )
+        data = resp.model_dump(mode="json")
+        assert data["kalshi_balance"] == "150.00"
+        assert data["open_positions"] == 0
+        assert len(data["constraints"]) == 1
+        assert data["constraints"][0]["ok"] is True
+
+    def test_negative_pnl(self) -> None:
+        """BalancesResponse handles negative P&L."""
+        resp = BalancesResponse(
+            poly_balance=Decimal("100"),
+            kalshi_balance=Decimal("100"),
+            total_balance=Decimal("200"),
+            suggested_size_usd=Decimal("10"),
+            current_exposure=Decimal("50"),
+            remaining_capacity=Decimal("50"),
+            daily_pnl=Decimal("-25.50"),
+            open_positions=2,
+            constraints=[],
+        )
+        data = resp.model_dump(mode="json")
+        assert data["daily_pnl"] == "-25.50"
+        assert data["open_positions"] == 2

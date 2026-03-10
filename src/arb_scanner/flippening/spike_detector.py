@@ -75,6 +75,7 @@ class SpikeDetector:
 
         event = FlippeningEvent(
             market_id=update.market_id,
+            token_id=update.token_id,
             market_title="",
             baseline_yes=baseline.yes_price,
             spike_price=yes_mid,

@@ -20,20 +20,20 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 )
 
 
-def _label(event: FlippeningEvent) -> str:
+def label(event: FlippeningEvent) -> str:
     """Return the display label for an event (category or sport)."""
     return (event.category or event.sport).upper()
 
 
-_ENTRY_EMOJI = ":rotating_light:"
-_EXIT_EMOJI_MAP: dict[ExitReason, str] = {
+ENTRY_EMOJI = ":rotating_light:"
+EXIT_EMOJI_MAP: dict[ExitReason, str] = {
     ExitReason.REVERSION: ":moneybag:",
     ExitReason.STOP_LOSS: ":x:",
     ExitReason.TIMEOUT: ":hourglass:",
     ExitReason.RESOLUTION: ":checkered_flag:",
     ExitReason.DISCONNECT: ":electric_plug:",
 }
-_EXIT_COLOR_MAP: dict[ExitReason, int] = {
+EXIT_COLOR_MAP: dict[ExitReason, int] = {
     ExitReason.REVERSION: 3066993,  # green
     ExitReason.STOP_LOSS: 15158332,  # red
     ExitReason.TIMEOUT: 9807270,  # gray
@@ -55,9 +55,9 @@ def build_entry_slack_payload(
     Returns:
         Slack webhook JSON payload.
     """
-    title = f"{_ENTRY_EMOJI} Flippening Detected"
+    title = f"{ENTRY_EMOJI} Flippening Detected"
     return {
-        "text": f"Flippening: {_label(event)} spike on {event.market_id}",
+        "text": f"Flippening: {label(event)} spike on {event.market_id}",
         "blocks": [
             {
                 "type": "header",
@@ -66,7 +66,7 @@ def build_entry_slack_payload(
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Category:* {_label(event)}"},
+                    {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
                     {"type": "mrkdwn", "text": f"*Baseline:* {float(event.baseline_yes):.2f}"},
                     {"type": "mrkdwn", "text": f"*Current:* {float(event.spike_price):.2f}"},
                     {
@@ -100,13 +100,13 @@ def build_entry_discord_payload(
         Discord webhook JSON payload.
     """
     return {
-        "content": f"Flippening: {_label(event)} spike detected",
+        "content": f"Flippening: {label(event)} spike detected",
         "embeds": [
             {
                 "title": "Flippening Detected",
                 "color": 15105570,  # orange
                 "fields": [
-                    {"name": "Category", "value": _label(event), "inline": True},
+                    {"name": "Category", "value": label(event), "inline": True},
                     {
                         "name": "Baseline",
                         "value": f"{float(event.baseline_yes):.2f}",
@@ -159,7 +159,7 @@ def build_exit_slack_payload(
     Returns:
         Slack webhook JSON payload.
     """
-    emoji = _EXIT_EMOJI_MAP.get(exit_sig.exit_reason, ":question:")
+    emoji = EXIT_EMOJI_MAP.get(exit_sig.exit_reason, ":question:")
     reason = exit_sig.exit_reason.value.replace("_", " ").title()
     header = f"{emoji} Flippening Exit — {reason}"
     pnl_str = f"${float(exit_sig.realized_pnl * entry.suggested_size_usd):.2f}"
@@ -173,7 +173,7 @@ def build_exit_slack_payload(
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Category:* {_label(event)}"},
+                    {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
                     {"type": "mrkdwn", "text": f"*Reason:* {reason}"},
                     {"type": "mrkdwn", "text": f"*Entry:* {float(entry.entry_price):.2f}"},
                     {"type": "mrkdwn", "text": f"*Exit:* {float(exit_sig.exit_price):.2f}"},
@@ -204,7 +204,7 @@ def build_exit_discord_payload(
         Discord webhook JSON payload.
     """
     reason = exit_sig.exit_reason.value.replace("_", " ").title()
-    color = _EXIT_COLOR_MAP.get(exit_sig.exit_reason, 9807270)
+    color = EXIT_COLOR_MAP.get(exit_sig.exit_reason, 9807270)
     pnl_str = f"${float(exit_sig.realized_pnl * entry.suggested_size_usd):.2f}"
     return {
         "content": f"Flippening exit: {reason}",
@@ -213,7 +213,7 @@ def build_exit_discord_payload(
                 "title": f"Flippening Exit — {reason}",
                 "color": color,
                 "fields": [
-                    {"name": "Category", "value": _label(event), "inline": True},
+                    {"name": "Category", "value": label(event), "inline": True},
                     {"name": "Entry", "value": f"{float(entry.entry_price):.2f}", "inline": True},
                     {"name": "Exit", "value": f"{float(exit_sig.exit_price):.2f}", "inline": True},
                     {

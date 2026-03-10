@@ -25,13 +25,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 """
 
 GET_ACTIVE_SIGNALS = """
-SELECT
+SELECT DISTINCT ON (e.market_id)
     e.id AS event_id,
     e.market_id,
     e.market_title,
     e.sport,
     e.confidence,
     e.detected_at,
+    e.category,
+    e.category_type,
     s.id AS signal_id,
     s.side,
     s.price AS entry_price,
@@ -44,7 +46,7 @@ JOIN flippening_events e ON s.event_id = e.id
 LEFT JOIN flippening_signals x
     ON x.event_id = s.event_id AND x.signal_type = 'exit'
 WHERE s.signal_type = 'entry' AND x.id IS NULL
-ORDER BY s.created_at DESC
+ORDER BY e.market_id, s.created_at DESC
 LIMIT $1
 """
 
@@ -132,6 +134,14 @@ ORDER BY cycle_timestamp DESC
 LIMIT $1;
 """
 
+HAS_PENDING_FLIP_TICKET = """
+SELECT 1 FROM execution_tickets
+WHERE ticket_type = 'flippening'
+  AND status = 'pending'
+  AND leg_1->>'market_id' = $1
+LIMIT 1;
+"""
+
 INSERT_FLIP_TICKET = """
 INSERT INTO execution_tickets (
     arb_id, leg_1, leg_2, expected_cost, expected_profit, status, ticket_type,
@@ -180,4 +190,35 @@ RESOLVE_DISCOVERY_ALERT = """
 UPDATE flippening_discovery_alerts
 SET resolved = TRUE, resolved_at = $2
 WHERE category = $1 AND resolved = FALSE;
+"""
+
+GET_REFEEDABLE_SIGNALS = """
+SELECT DISTINCT ON (e.market_id)
+    e.id AS event_id,
+    e.market_id,
+    e.market_title,
+    e.spike_magnitude,
+    e.confidence,
+    e.category,
+    e.category_type,
+    s.side,
+    s.price AS entry_price,
+    s.suggested_size,
+    b.token_id
+FROM flippening_signals s
+JOIN flippening_events e ON s.event_id = e.id
+LEFT JOIN LATERAL (
+    SELECT token_id FROM flippening_baselines
+    WHERE market_id = e.market_id
+    ORDER BY captured_at DESC LIMIT 1
+) b ON true
+LEFT JOIN flippening_signals x
+    ON x.event_id = s.event_id AND x.signal_type = 'exit'
+LEFT JOIN flippening_auto_positions p
+    ON p.market_id = e.market_id AND p.status = 'open'
+WHERE s.signal_type = 'entry'
+  AND x.id IS NULL
+  AND p.id IS NULL
+ORDER BY e.market_id, s.created_at DESC
+LIMIT $1
 """

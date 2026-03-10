@@ -1,0 +1,19 @@
+do_token            = "dop_v1_xxxxxxxxxxxx"
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+tailscale_auth_key  = "tskey-auth-xxxxxxxxxxxx"
+ghcr_username       = "revelfire"
+ghcr_token          = "ghp_xxxxxxxxxxxx"
+region              = "nyc1"
+droplet_size        = "s-2vcpu-4gb"
+
+# DigitalOcean Spaces for backups (optional)
+# spaces_access_key = "DO_SPACES_ACCESS_KEY"
+# spaces_secret_key = "DO_SPACES_SECRET_KEY"
+# spaces_region     = "nyc3"
+
+# Restrict SSH to your IP (recommended)
+# allowed_ssh_cidrs = ["203.0.113.1/32"]
+
+# ExpressVPN for geo-routing through Mexico
+expressvpn_activation_code = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+# expressvpn_location      = "Mexico"

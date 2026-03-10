@@ -117,22 +117,21 @@ async def get_auto_exec_repo(request: Request) -> Any:
     return AutoExecRepository(db.pool)
 
 
-async def get_auto_pipeline(request: Request) -> Any:
-    """Provide the AutoExecutionPipeline from app state.
+async def get_backtest_repo(request: Request) -> Any:
+    """Provide a BacktestingRepository from the app's database pool.
 
     Args:
         request: The incoming HTTP request.
 
     Returns:
-        AutoExecutionPipeline instance.
-
-    Raises:
-        HTTPException: 503 when pipeline not initialised.
+        BacktestingRepository backed by the shared connection pool.
     """
-    pipeline = getattr(request.app.state, "auto_pipeline", None)
-    if pipeline is None:
-        raise HTTPException(503, "Auto-execution pipeline not available")
-    return pipeline
+    from arb_scanner.storage.backtesting_repository import (
+        BacktestingRepository,
+    )
+
+    db = _require_db(request)
+    return BacktestingRepository(db.pool)
 
 
 async def get_config(request: Request) -> Settings:

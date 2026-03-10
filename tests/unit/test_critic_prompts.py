@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from arb_scanner.execution._critic_prompts import (
     CRITIC_SYSTEM_PROMPT,
-    build_critic_prompt,
+    FLIPPENING_CRITIC_SYSTEM_PROMPT,
+    build_arb_critic_prompt,
+    build_flip_critic_prompt,
 )
 
 
@@ -20,14 +22,18 @@ class TestCriticSystemPrompt:
         """System prompt instructs Claude to respond with JSON."""
         assert "JSON" in CRITIC_SYSTEM_PROMPT
 
+    def test_flip_prompt_is_non_empty(self) -> None:
+        """Flippening system prompt is a non-empty string."""
+        assert isinstance(FLIPPENING_CRITIC_SYSTEM_PROMPT, str)
+        assert len(FLIPPENING_CRITIC_SYSTEM_PROMPT) > 50
 
-class TestBuildCriticPrompt:
-    """Tests for build_critic_prompt()."""
+
+class TestBuildArbCriticPrompt:
+    """Tests for build_arb_critic_prompt()."""
 
     def test_returns_string_with_market_info(self) -> None:
         """Prompt includes market title, spread, and confidence."""
         ticket = {"arb_id": "t1", "ticket_type": "arbitrage"}
-        preflight = {}
         context = {
             "spread_pct": 0.05,
             "confidence": 0.85,
@@ -39,7 +45,7 @@ class TestBuildCriticPrompt:
             "kalshi_depth": 150,
             "price_age_seconds": 10,
         }
-        prompt = build_critic_prompt(ticket, preflight, context)
+        prompt = build_arb_critic_prompt(ticket, context)
         assert isinstance(prompt, str)
         assert "Lakers vs Celtics" in prompt
         assert "0.05" in prompt
@@ -54,15 +60,33 @@ class TestBuildCriticPrompt:
             "mechanical_flags": ["stale_data: price age 120s", "low_depth_poly: 5"],
             "title": "Test market",
         }
-        prompt = build_critic_prompt(ticket, {}, context)
+        prompt = build_arb_critic_prompt(ticket, context)
         assert "stale_data" in prompt
         assert "low_depth_poly" in prompt
 
     def test_with_empty_context(self) -> None:
         """Prompt handles empty/missing context values gracefully."""
         ticket = {}
-        prompt = build_critic_prompt(ticket, {}, {})
+        prompt = build_arb_critic_prompt(ticket, {})
         assert isinstance(prompt, str)
         assert "N/A" in prompt
-        assert "Unknown market" in prompt
-        assert "None" in prompt
+
+
+class TestBuildFlipCriticPrompt:
+    """Tests for build_flip_critic_prompt()."""
+
+    def test_returns_string_with_flip_info(self) -> None:
+        """Prompt includes entry price, side, and deviation."""
+        ticket = {"arb_id": "f1"}
+        context = {
+            "title": "NBA Game",
+            "entry_price": 0.45,
+            "side": "yes",
+            "baseline_deviation_pct": 0.15,
+            "market_id": "m-1",
+        }
+        prompt = build_flip_critic_prompt(ticket, context)
+        assert isinstance(prompt, str)
+        assert "0.45" in prompt
+        assert "yes" in prompt
+        assert "0.15" in prompt

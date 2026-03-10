@@ -113,6 +113,7 @@ def flip_sweep(
     since: str = typer.Option("", "--since", help="Start time (ISO 8601)."),
     until: str = typer.Option("", "--until", help="End time (ISO 8601)."),
     fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
+    persist: bool = typer.Option(False, "--persist", help="Save best result to DB."),
 ) -> None:
     """Sweep a config parameter and evaluate each value."""
     cat_val = category.strip().lower() or sport.strip().lower()
@@ -146,6 +147,9 @@ def flip_sweep(
     else:
         render_sweep_table(result)
 
+    if persist:
+        _persist_best_param(config, result, cat_val, param.strip())
+
 
 def flip_tick_prune(
     days: int = typer.Option(0, "--days", help="Retention days (0 = use config)."),
@@ -169,6 +173,66 @@ def flip_tick_prune(
         )
     else:
         sys.stdout.write(f"Pruned {result.get('deleted', 0)} ticks.\n")
+
+
+def _persist_best_param(
+    config: Any,
+    sweep_result: dict[str, Any],
+    category: str,
+    param_name: str,
+) -> None:
+    """Save the best sweep result to the database.
+
+    Args:
+        config: Application settings.
+        sweep_result: Sweep result dict with 'results' list.
+        category: Category that was swept.
+        param_name: Parameter that was swept.
+    """
+    from datetime import UTC, datetime
+
+    from arb_scanner.models.backtesting import OptimalParamSnapshot
+
+    results = sweep_result.get("results", [])
+    if not results:
+        sys.stdout.write("No results to persist.\n")
+        return
+
+    best_val, best_eval = max(
+        results,
+        key=lambda r: r[1].get("win_rate", 0) if isinstance(r[1], dict) else r[1].win_rate,
+    )
+    win_rate = best_eval.get("win_rate", 0) if isinstance(best_eval, dict) else best_eval.win_rate
+
+    snapshot = OptimalParamSnapshot(
+        category=category,
+        param_name=param_name,
+        optimal_value=float(best_val),
+        win_rate_at_optimal=float(win_rate),
+        sweep_date=datetime.now(tz=UTC),
+    )
+
+    async def _save() -> None:
+        from arb_scanner.storage.backtesting_repository import BacktestingRepository
+        from arb_scanner.storage.db import Database
+
+        db = Database(config.storage.database_url)
+        await db.connect()
+        try:
+            repo = BacktestingRepository(db.pool)
+            await repo.upsert_optimal_param(snapshot)
+        finally:
+            await db.disconnect()
+
+    try:
+        asyncio.run(_save())
+        sys.stdout.write(
+            f"Persisted optimal {param_name}={best_val:.4f}"
+            f" (win_rate={float(win_rate):.1%}) for {category}\n",
+        )
+    except Exception as exc:
+        logger.error("persist_optimal_param_failed", error=str(exc))
+        sys.stdout.write(f"Failed to persist: {exc}\n")
 
 
 def _load_config_or_exit() -> Any:

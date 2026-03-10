@@ -80,9 +80,18 @@ def flip_watch(
     from arb_scanner.flippening.orchestrator import run_flip_watch
 
     try:
-        asyncio.run(
-            run_flip_watch(config, dry_run=dry_run, category_filter=category_filter),
-        )
+        if auto_execute:
+            asyncio.run(
+                _run_with_pipeline(
+                    config,
+                    dry_run=dry_run,
+                    category_filter=category_filter,
+                ),
+            )
+        else:
+            asyncio.run(
+                run_flip_watch(config, dry_run=dry_run, category_filter=category_filter),
+            )
     except KeyboardInterrupt:
         logger.info("flip_watch_interrupted")
 
@@ -223,6 +232,38 @@ def flip_ws_validate(
         sys.stdout.write(json.dumps(report_out, indent=2, default=str) + "\n")
     else:
         render_ws_validate_table(report_out)
+
+
+async def _run_with_pipeline(
+    config: Any,
+    *,
+    dry_run: bool = False,
+    category_filter: list[str] | None = None,
+) -> None:
+    """Initialize flip pipeline then run flip watch.
+
+    Args:
+        config: Application settings.
+        dry_run: Skip persistence and alerts.
+        category_filter: Optional category filter list.
+    """
+    from arb_scanner.execution._pipeline_init import (
+        init_flip_pipeline_standalone,
+    )
+    from arb_scanner.flippening.orchestrator import run_flip_watch
+
+    try:
+        pipeline = await init_flip_pipeline_standalone(config)
+        config._flip_pipeline = pipeline
+    except RuntimeError as exc:
+        logger.error("pipeline_init_failed", error=str(exc))
+        return
+
+    await run_flip_watch(
+        config,
+        dry_run=dry_run,
+        category_filter=category_filter,
+    )
 
 
 def _build_category_filter(

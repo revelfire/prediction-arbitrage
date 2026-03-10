@@ -55,6 +55,16 @@ WHERE status = 'open'
 ORDER BY opened_at DESC
 """
 
+ABANDON_EXPIRED_POSITIONS = """
+UPDATE auto_execution_positions
+SET status = 'abandoned',
+    closed_at = NOW()
+WHERE status = 'open'
+  AND max_hold_minutes IS NOT NULL
+  AND opened_at + (max_hold_minutes || ' minutes')::INTERVAL < NOW()
+RETURNING id, arb_id, poly_market_id, kalshi_ticker, max_hold_minutes
+"""
+
 GET_DAILY_STATS = """
 SELECT
     COUNT(*) AS total_trades,

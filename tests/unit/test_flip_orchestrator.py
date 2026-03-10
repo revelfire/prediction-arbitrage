@@ -108,6 +108,7 @@ class TestRunFlipWatch:
             mock_ps.subscribe = AsyncMock()
             mock_ps.close = AsyncMock()
             mock_ps.__aiter__ = MagicMock(return_value=_async_iter([]))
+            mock_ps.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
             mock_stream.return_value = mock_ps
             await run_flip_watch(config, dry_run=True)
 

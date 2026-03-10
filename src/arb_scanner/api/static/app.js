@@ -3,7 +3,7 @@
 // ============================================================
 
 // --- State ---
-let activeTab = 'opportunities';
+let activeTab = 'tickets';
 let refreshTimer = null;
 let spreadChart = null;
 let healthChart = null;
@@ -14,6 +14,14 @@ let tickerSource = null;
 let tickerSparklines = {};
 let wsThroughputChart = null;
 let wsSchemaTrendChart = null;
+
+// --- Auth ---
+const _apiToken = document.querySelector('meta[name="api-token"]')?.content || '';
+function authHeaders(extra = {}) {
+    const h = { ...extra };
+    if (_apiToken) h['Authorization'] = `Bearer ${_apiToken}`;
+    return h;
+}
 
 // --- Helpers ---
 function formatPct(val) {
@@ -32,6 +40,11 @@ function formatTime(iso) {
     return d.toLocaleString();
 }
 
+function formatDepthContracts(val) {
+    if (val == null) return 'N/A';
+    return `${val} contracts`;
+}
+
 function shortTime(iso) {
     if (!iso) return '';
     const d = new Date(iso);
@@ -40,7 +53,7 @@ function shortTime(iso) {
 
 async function fetchJSON(url) {
     try {
-        const resp = await fetch(url);
+        const resp = await fetch(url, { headers: authHeaders() });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
             const detail = body ? `: ${body.substring(0, 120)}` : '';
@@ -58,7 +71,7 @@ async function fetchJSON(url) {
 
 async function postJSON(url) {
     try {
-        const resp = await fetch(url, { method: 'POST' });
+        const resp = await fetch(url, { method: 'POST', headers: authHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return await resp.json();
     } catch (err) {
@@ -71,7 +84,7 @@ async function patchJSON(url, body) {
     try {
         const resp = await fetch(url, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body),
         });
         if (!resp.ok) {
@@ -100,6 +113,7 @@ function updateRefreshTime() {
 
 // --- Tab Switching ---
 function switchTab(tabName) {
+    if (activeTab === 'autoexec' && tabName !== 'autoexec') closeAeSSE();
     activeTab = tabName;
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tabName);
@@ -380,7 +394,7 @@ async function refreshTickets() {
 
     tbody.innerHTML = data.map(t => {
         const leg1 = typeof t.leg_1 === 'string' ? JSON.parse(t.leg_1) : (t.leg_1 || {});
-        const title = leg1.market_title || (t.arb_id || '').substring(0, 16);
+        const title = leg1.market_title || leg1.title || (t.arb_id || '').substring(0, 16);
         const actions = ticketActionButtons(t);
         return `
             <tr class="clickable" onclick="openTicketDetail('${t.arb_id}')">
@@ -399,9 +413,14 @@ async function refreshTickets() {
 
 function renderLegEntries(leg) {
     const hide = new Set(['market_url', 'title']);
+    const truncate = new Set(['token_id', 'arb_id', 'event_id']);
     return Object.entries(leg).filter(([k]) => !hide.has(k)).map(([k, v]) => {
         const label = k.replace(/_/g, ' ');
-        return `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${v}</span></div>`;
+        let display = (v === null || v === undefined || v === '') ? 'N/A' : v;
+        if (truncate.has(k) && typeof display === 'string' && display.length > 16) {
+            display = `<span title="${display}">${display.substring(0, 8)}…${display.substring(display.length - 8)}</span>`;
+        }
+        return `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value">${display}</span></div>`;
     }).join('') + (leg.market_url
         ? `<div class="detail-row"><span class="detail-label">market</span><span class="detail-value"><a href="${leg.market_url}" target="_blank" rel="noopener" class="market-link">Open on ${leg.venue || 'venue'}</a></span></div>`
         : '');
@@ -416,8 +435,10 @@ function ticketActionButtons(t) {
         btns.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); expireTicket('${id}')">Expire</button>`);
     }
     if (t.status === 'approved') {
-        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
-        btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
+        if (_execReady) {
+            btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); oneClickExecute('${id}')" title="Run preflight then execute">1-Click</button>`);
+            btns.push(`<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); openExecuteModal('${id}')">Manual</button>`);
+        }
         btns.push(`<button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); cancelTicket('${id}')">Cancel</button>`);
     }
     return btns.join(' ');
@@ -439,8 +460,19 @@ async function openTicketDetail(arbId) {
     const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
     const leg2 = typeof d.leg_2 === 'string' ? JSON.parse(d.leg_2) : (d.leg_2 || {});
     const isFlip = d.ticket_type === 'flippening';
-    const actionBtns = buildDetailActions(d);
     const actionsLog = renderActionLog(d.actions || []);
+    let execOrdersHtml = '';
+    let flipPositionHtml = '';
+    let flipPosition = null;
+    if (d.status === 'executed') {
+        const orders = await fetchJSON(`/api/execution/orders/${encodeURIComponent(d.arb_id)}`);
+        execOrdersHtml = renderExecOrders(orders || []);
+        if (isFlip) {
+            flipPosition = await fetchJSON(`/api/execution/flip-position/${encodeURIComponent(d.arb_id)}`);
+            if (flipPosition) flipPositionHtml = renderFlipPosition(flipPosition);
+        }
+    }
+    const actionBtns = buildDetailActions(d, flipPosition);
 
     if (isFlip) {
         const flipTitle = leg1.market_title || d.market_title || 'N/A';
@@ -479,6 +511,8 @@ async function openTicketDetail(arbId) {
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
                 </div>
             </div>
+            ${flipPositionHtml}
+            ${execOrdersHtml}
             ${actionsLog}
             ${actionBtns}
         `;
@@ -525,22 +559,87 @@ async function openTicketDetail(arbId) {
                     <div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">${formatTime(d.created_at)}</span></div>
                 </div>
             </div>
+            ${execOrdersHtml}
             ${actionsLog}
             ${actionBtns}
         `;
     }
 }
 
-function buildDetailActions(d) {
+function renderExecOrders(orders) {
+    if (!orders || orders.length === 0) return '';
+    const rows = orders.map(o => {
+        const venue = o.venue || '';
+        const vid = o.venue_order_id || '';
+        const status = o.status || '';
+        const side = (o.side || '').replace('_', ' ');
+        const reqPrice = o.requested_price ? formatUSD(o.requested_price) : 'N/A';
+        const fillPrice = o.fill_price ? formatUSD(o.fill_price) : '-';
+        const contracts = o.size_contracts != null ? o.size_contracts : '-';
+        const vidDisplay = vid
+            ? `<span class="detail-value mono" title="${vid}">${vid.slice(0, 12)}...</span>`
+            : '<span class="detail-value">N/A</span>';
+        return `
+            <div class="leg-card">
+                <div class="leg-title">${venue} - ${side}</div>
+                <div class="detail-row"><span class="detail-label">Status</span><span class="detail-value badge badge-${status === 'filled' ? 'approved' : status === 'submitted' ? 'pending' : 'cancelled'}">${status}</span></div>
+                <div class="detail-row"><span class="detail-label">Requested</span><span class="detail-value">${reqPrice}</span></div>
+                <div class="detail-row"><span class="detail-label">Filled at</span><span class="detail-value">${fillPrice}</span></div>
+                <div class="detail-row"><span class="detail-label">Contracts</span><span class="detail-value">${contracts}</span></div>
+                <div class="detail-row"><span class="detail-label">Order ID</span>${vidDisplay}</div>
+                ${o.error_message ? `<div class="detail-row"><span class="detail-label">Error</span><span class="detail-value exec-status-failed">${o.error_message}</span></div>` : ''}
+            </div>`;
+    }).join('');
+    return `<div class="detail-section"><h4>Execution Orders</h4><div class="detail-grid">${rows}</div></div>`;
+}
+
+function renderFlipPosition(pos) {
+    const status = pos.status || 'unknown';
+    const statusClass = status === 'open' ? 'approved' : status === 'closed' ? 'executed' : 'cancelled';
+    const pnl = pos.realized_pnl ? formatUSD(pos.realized_pnl) : '-';
+    const exitPrice = pos.exit_price ? formatUSD(pos.exit_price) : '-';
+    return `
+        <div class="detail-section">
+            <h4>Open Position</h4>
+            <div class="detail-grid">
+                <div class="leg-card">
+                    <div class="leg-title">Polymarket Position</div>
+                    <div class="detail-row"><span class="detail-label">Status</span><span class="detail-value badge badge-${statusClass}">${status}</span></div>
+                    <div class="detail-row"><span class="detail-label">Side</span><span class="detail-value">${(pos.side || '').toUpperCase()}</span></div>
+                    <div class="detail-row"><span class="detail-label">Contracts</span><span class="detail-value">${pos.size_contracts || '-'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Entry price</span><span class="detail-value">${pos.entry_price ? formatUSD(pos.entry_price) : 'N/A'}</span></div>
+                    <div class="detail-row"><span class="detail-label">Exit price</span><span class="detail-value">${exitPrice}</span></div>
+                    <div class="detail-row"><span class="detail-label">Realized P&amp;L</span><span class="detail-value">${pnl}</span></div>
+                    <div class="detail-row"><span class="detail-label">Opened</span><span class="detail-value">${formatTime(pos.opened_at)}</span></div>
+                </div>
+            </div>
+        </div>`;
+}
+
+async function flipExit(arbId) {
+    if (!confirm('Place a sell order for this position now?')) return;
+    const result = await postJSON(`/api/execution/flip-exit/${encodeURIComponent(arbId)}`);
+    if (result) {
+        setStatus(`Exit order submitted: ${result.order_id}`);
+        openTicketDetail(arbId);
+    }
+}
+
+function buildDetailActions(d, position = null) {
     const id = d.arb_id;
     const btns = [];
     if (d.status === 'pending') {
         btns.push(`<button class="btn btn-success" onclick="approveTicket('${id}'); closeTicketModal();">Approve</button>`);
         btns.push(`<button class="btn btn-danger" onclick="expireTicket('${id}'); closeTicketModal();">Expire</button>`);
     } else if (d.status === 'approved') {
-        btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
-        btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
+        if (_execReady) {
+            btns.push(`<button class="btn btn-success" onclick="closeTicketModal(); oneClickExecute('${id}');">1-Click Execute</button>`);
+            btns.push(`<button class="btn btn-success" onclick="openExecuteModal('${id}'); closeTicketModal();">Manual</button>`);
+        }
         btns.push(`<button class="btn btn-warning" onclick="cancelTicket('${id}'); closeTicketModal();">Cancel</button>`);
+    }
+    if (d.ticket_type === 'flippening' && position && position.status === 'open') {
+        btns.push(`<button class="btn btn-danger" onclick="flipExit('${id}')">Exit Now</button>`);
     }
     btns.push(`<button class="btn btn-primary" onclick="addAnnotation('${id}')">Add Note</button>`);
     if (btns.length === 0) return `<div class="modal-actions"><span class="badge badge-${d.status}">${d.status}</span></div>`;
@@ -576,12 +675,19 @@ async function expireTicket(arbId) {
     if (result) refreshTickets();
 }
 
-function openExecuteModal(arbId) {
+async function openExecuteModal(arbId) {
     el('exec-arb-id').value = arbId;
     el('exec-entry-price').value = '';
     el('exec-size-usd').value = '';
     el('exec-notes').value = '';
     el('execute-modal').style.display = 'flex';
+    const d = await fetchJSON(`/api/tickets/${encodeURIComponent(arbId)}`);
+    if (!d) return;
+    const leg1 = typeof d.leg_1 === 'string' ? JSON.parse(d.leg_1) : (d.leg_1 || {});
+    const price = leg1.price || '';
+    const size = leg1.size_usd || leg1.size || '';
+    if (price) el('exec-entry-price').value = parseFloat(price).toFixed(4);
+    if (size) el('exec-size-usd').value = parseFloat(size).toFixed(2);
 }
 
 function closeExecuteModal() {
@@ -618,16 +724,14 @@ async function addAnnotation(arbId) {
 }
 
 // --- Execution Engine ---
+let _execReady = false;
+
 async function refreshExecStatus() {
     const data = await fetchJSON('/api/execution/status');
     const ind = el('exec-status-indicator');
+    _execReady = !!(data && data.enabled && data.initialised);
     if (!ind) return;
-    if (!data) {
-        ind.textContent = 'EXEC OFF';
-        ind.className = 'exec-indicator exec-disabled';
-        return;
-    }
-    if (data.enabled && data.initialised) {
+    if (_execReady) {
         ind.textContent = 'EXEC READY';
         ind.className = 'exec-indicator exec-ready';
     } else {
@@ -667,8 +771,8 @@ async function oneClickExecute(arbId) {
             <div class="detail-row"><span class="detail-label">Kalshi balance</span><span class="detail-value">${formatUSD(result.kalshi_balance)}</span></div>
             <div class="detail-row"><span class="detail-label">Poly slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_poly)}</span></div>
             <div class="detail-row"><span class="detail-label">Kalshi slippage</span><span class="detail-value">${formatPct(result.estimated_slippage_kalshi)}</span></div>
-            <div class="detail-row"><span class="detail-label">Poly depth</span><span class="detail-value">${result.poly_depth_contracts} contracts</span></div>
-            <div class="detail-row"><span class="detail-label">Kalshi depth</span><span class="detail-value">${result.kalshi_depth_contracts} contracts</span></div>
+            <div class="detail-row"><span class="detail-label">Poly depth</span><span class="detail-value">${formatDepthContracts(result.poly_depth_contracts)}</span></div>
+            <div class="detail-row"><span class="detail-label">Kalshi depth</span><span class="detail-value">${formatDepthContracts(result.kalshi_depth_contracts)}</span></div>
         </div>
     `;
 
@@ -699,7 +803,7 @@ async function confirmExecution() {
     const body = el('preflight-body');
     const actions = el('preflight-actions');
     if (actions) actions.style.display = 'none';
-    if (body) body.innerHTML += '<div class="exec-progress">Placing orders on both venues...</div>';
+    if (body) body.innerHTML += '<div class="exec-progress">Placing order...</div>';
 
     try {
         const resp = await fetch(`/api/execution/execute/${encodeURIComponent(arbId)}`, {
@@ -714,7 +818,8 @@ async function confirmExecution() {
         }
 
         const statusClass = result.status === 'complete' ? 'exec-status-complete' : result.status === 'partial' ? 'exec-status-partial' : 'exec-status-failed';
-        const statusLabel = result.status === 'complete' ? 'Both legs filled' : result.status === 'partial' ? 'Partial execution - check orders' : 'Execution failed';
+        const isTwoLeg = result.poly_order_id && result.kalshi_order_id;
+        const statusLabel = result.status === 'complete' ? (isTwoLeg ? 'Both legs filled' : 'Order filled') : result.status === 'partial' ? 'Partial execution - check orders' : 'Execution failed';
         if (body) body.innerHTML += `
             <div class="exec-progress">
                 <span class="${statusClass}">${statusLabel}</span><br>
@@ -763,17 +868,21 @@ async function refreshFlippenings() {
         if (active.length === 0) {
             activeTbody.innerHTML = '<tr><td colspan="7" class="empty-state">No active flippenings</td></tr>';
         } else {
-            activeTbody.innerHTML = active.map(a => `
-                <tr>
-                    <td>${a.category || a.sport || ''}</td>
+            activeTbody.innerHTML = active.map(a => {
+                const cat = a.category || a.sport || '';
+                const title = a.market_title || '';
+                const label = title ? (title.length > 30 ? title.substring(0, 30) + '...' : title) : cat;
+                const catBadge = cat ? `<span style="color:var(--text-secondary);font-size:10px">${cat}</span> ` : '';
+                return `<tr>
+                    <td title="${title}">${catBadge}${label}</td>
                     <td>${a.side || ''}</td>
-                    <td>${formatUSD(a.price)}</td>
+                    <td>${a.entry_price ? formatUSD(a.entry_price) : (a.price ? formatUSD(a.price) : '-')}</td>
                     <td>${a.target_exit ? formatUSD(a.target_exit) : '-'}</td>
                     <td>${a.stop_loss ? formatUSD(a.stop_loss) : '-'}</td>
                     <td>${a.suggested_size ? formatUSD(a.suggested_size) : '-'}</td>
                     <td>${a.confidence ? formatPct(a.confidence) : '-'}</td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         }
     }
 
@@ -807,7 +916,8 @@ const TICKER_MAX_RECONNECT_DELAY = 30000;
 
 function initTickerSSE() {
     if (tickerSource) { tickerSource.close(); tickerSource = null; }
-    tickerSource = new EventSource('/api/flippenings/price-stream');
+    const sseUrl = _apiToken ? `/api/flippenings/price-stream?token=${_apiToken}` : '/api/flippenings/price-stream';
+    tickerSource = new EventSource(sseUrl);
     tickerSource.addEventListener('status', function(e) {
         tickerReconnectDelay = 1000;
         const data = JSON.parse(e.data);
@@ -1275,6 +1385,8 @@ async function refreshActiveTab() {
         case 'discovery': await refreshDiscovery(); break;
         case 'wshealth': await refreshWsHealth(); break;
         case 'autoexec': await refreshAutoExec(); break;
+        case 'balances': await refreshBalances(); break;
+        case 'backtesting': await refreshBacktesting(); break;
     }
 }
 
@@ -1283,19 +1395,174 @@ function startAutoRefresh() {
     refreshTimer = setInterval(refreshActiveTab, 30000);
 }
 
+// --- Auto-Exec Activity Feed ---
+let _aeSSE = null;
+
+const _AE_EVENT_META = {
+    startup_expired: { icon: '🧹', label: 'Expired',         cls: 'ae-warn' },
+    startup_abandoned:{ icon: '⏰', label: 'Hold Exceeded',   cls: 'ae-bad' },
+    mode_changed:    { icon: '⚙',  label: 'Mode Changed',    cls: 'ae-info' },
+    refeed_start:    { icon: '🔄', label: 'Re-feeding',      cls: 'ae-active' },
+    refeed_done:     { icon: '✓',  label: 'Re-feed Done',    cls: 'ae-ok' },
+    refeed_empty:    { icon: '·',  label: 'No Missed Signals',cls: 'ae-info' },
+    considering:     { icon: '🔍', label: 'Considering',     cls: 'ae-info' },
+    criteria_passed: { icon: '✓',  label: 'Criteria OK',     cls: 'ae-ok' },
+    criteria_failed: { icon: '✗',  label: 'Criteria Fail',   cls: 'ae-bad' },
+    size_computed:   { icon: '📏', label: 'Size',            cls: 'ae-info' },
+    size_rejected:   { icon: '✗',  label: 'Size Fail',       cls: 'ae-bad' },
+    critic_checking: { icon: '🤖', label: 'Critic...',       cls: 'ae-active' },
+    critic_approved: { icon: '✓',  label: 'Critic OK',       cls: 'ae-ok' },
+    critic_rejected: { icon: '✗',  label: 'Critic Blocked',  cls: 'ae-bad' },
+    slippage_check:  { icon: '📊', label: 'Slippage...',     cls: 'ae-active' },
+    slippage_ok:     { icon: '✓',  label: 'Slippage OK',     cls: 'ae-ok' },
+    slippage_failed: { icon: '✗',  label: 'Slippage Fail',   cls: 'ae-bad' },
+    placing:         { icon: '⏳', label: 'Placing Order',   cls: 'ae-active' },
+    placed_complete: { icon: '💰', label: 'Filled',          cls: 'ae-ok' },
+    placed_partial:  { icon: '⚠️', label: 'Partial Fill',    cls: 'ae-warn' },
+    placed_failed:   { icon: '✗',  label: 'Order Failed',    cls: 'ae-bad' },
+    placed_executed: { icon: '💰', label: 'Executed',        cls: 'ae-ok' },
+};
+
+function _aeDetail(ev) {
+    const t = ev.type;
+    if (t === 'startup_expired')  return `${ev.count || 0} stale ${ev.kind || 'items'} cancelled`;
+    if (t === 'startup_abandoned') return ev.title ? `${ev.title.substring(0, 35)} — held ${ev.held_min || '?'}m` : `held past limit`;
+    if (t === 'mode_changed')    return `→ ${ev.mode || ''}`;
+    if (t === 'refeed_start')    return `${ev.count || 0} missed signal(s)`;
+    if (t === 'refeed_done')     return `${ev.fed || 0} fed to pipeline`;
+    if (t === 'considering') return `${ev.spread || ''} conf ${ev.confidence || ''}`;
+    if (t === 'criteria_failed') return (ev.reasons || []).slice(0, 2).join('; ');
+    if (t === 'size_computed')   return ev.size_usd != null ? `$${parseFloat(ev.size_usd).toFixed(2)}` : '';
+    if (t === 'critic_approved') return ev.skipped ? 'no flags' : `${(ev.flags || []).length} flag(s)`;
+    if (t === 'critic_rejected') return (ev.reasoning || '').substring(0, 60);
+    if (t === 'slippage_ok')    return `poly ${ev.poly_slip ?? ''} / kalshi ${ev.kalshi_slip ?? ''}`;
+    if (t === 'slippage_failed') return `poly ${ev.poly_slip ?? ''} / kalshi ${ev.kalshi_slip ?? ''}`;
+    if (t === 'placing')        return ev.size_usd != null ? `$${parseFloat(ev.size_usd).toFixed(2)}` : '';
+    if (t.startsWith('placed_')) return ev.cost_usd != null ? `cost $${parseFloat(ev.cost_usd).toFixed(2)}` : '';
+    return '';
+}
+
+function renderAeEvent(ev) {
+    const meta = _AE_EVENT_META[ev.type] || { icon: '·', label: ev.type, cls: 'ae-info' };
+    const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString() : '';
+    const title = (ev.title || ev.arb_id || '').substring(0, 40);
+    const detail = _aeDetail(ev);
+    const shortId = (ev.arb_id || '').substring(0, 8);
+    const pipe = ev.pipeline && ev.pipeline !== 'unknown' ? `<span class="ae-pipeline ae-pipe-${ev.pipeline}">${ev.pipeline}</span>` : '';
+    return `<div class="ae-event ${meta.cls}">
+        <span class="ae-icon">${meta.icon}</span>
+        <span class="ae-time">${ts}</span>
+        ${pipe}
+        <span class="ae-stage">${meta.label}</span>
+        <span class="ae-title" title="${ev.title || ''}">${title || shortId}</span>
+        ${detail ? `<span class="ae-detail">${detail}</span>` : ''}
+    </div>`;
+}
+
+function prependAeEvent(ev) {
+    const feed = el('ae-activity-feed');
+    if (!feed) return;
+    const empty = feed.querySelector('.empty-state');
+    if (empty) empty.remove();
+    feed.insertAdjacentHTML('afterbegin', renderAeEvent(ev));
+    // trim to 80 items
+    while (feed.children.length > 80) feed.removeChild(feed.lastChild);
+}
+
+function setAeBannerConnected(state, extra) {
+    const banner = el('ae-activity-banner');
+    const label = el('ae-activity-label');
+    if (!banner || !label) return;
+    banner.className = 'ws-status-banner';
+    if (state === 'connecting') {
+        banner.classList.add('ws-idle');
+        label.textContent = 'Connecting to pipeline feed…';
+    } else if (state === 'connected') {
+        banner.classList.add('ws-connected');
+        label.textContent = 'Live — pipeline feed connected';
+    } else if (state === 'heartbeat') {
+        banner.classList.add('ws-connected');
+        label.textContent = `Live · ♥ ${extra || new Date().toLocaleTimeString()}`;
+    } else {
+        banner.classList.add('ws-disconnected');
+        label.textContent = 'Disconnected — reconnecting…';
+    }
+}
+
+function _aeConnectedNotice() {
+    const feed = el('ae-activity-feed');
+    if (!feed) return;
+    const empty = feed.querySelector('.empty-state');
+    if (empty) empty.remove();
+    if (!feed.querySelector('.ae-notice')) {
+        feed.insertAdjacentHTML('afterbegin',
+            `<div class="ae-notice">Feed live — no pipeline events yet. ` +
+            `Set mode to <strong>Auto</strong> and ensure the scanner is running.</div>`);
+    }
+}
+
+function initAeSSE() {
+    if (_aeSSE) { _aeSSE.close(); _aeSSE = null; }
+    const url = _apiToken
+        ? `/api/auto-execution/activity-stream?token=${_apiToken}`
+        : '/api/auto-execution/activity-stream';
+    setAeBannerConnected('connecting');
+    _aeSSE = new EventSource(url);
+    _aeSSE.onopen = function() {
+        setAeBannerConnected('connected');
+    };
+    _aeSSE.addEventListener('history', function(e) {
+        setAeBannerConnected('connected');
+        const feed = el('ae-activity-feed');
+        if (!feed) return;
+        const events = JSON.parse(e.data);
+        if (events.length === 0) {
+            _aeConnectedNotice();
+            return;
+        }
+        feed.innerHTML = events.slice().reverse().map(renderAeEvent).join('');
+    });
+    _aeSSE.addEventListener('activity', function(e) {
+        setAeBannerConnected('connected');
+        const notice = el('ae-activity-feed')?.querySelector('.ae-notice');
+        if (notice) notice.remove();
+        prependAeEvent(JSON.parse(e.data));
+    });
+    _aeSSE.addEventListener('heartbeat', function() {
+        setAeBannerConnected('heartbeat', new Date().toLocaleTimeString());
+    });
+    _aeSSE.onerror = function() {
+        setAeBannerConnected('disconnected');
+        _aeSSE.close(); _aeSSE = null;
+        setTimeout(initAeSSE, 5000);
+    };
+}
+
+function closeAeSSE() {
+    if (_aeSSE) { _aeSSE.close(); _aeSSE = null; }
+}
+
 // --- Auto-Exec Tab ---
 async function refreshAutoExec() {
-    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshAutoExecLog()]);
+    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshAutoExecLog(), refreshOpenPositions()]);
+    if (!_aeSSE) initAeSSE();
 }
 
 async function refreshAutoExecStatus() {
     const data = await fetchJSON('/api/auto-execution/status');
     if (!data) return;
     const modeSelect = el('autoexec-mode-select');
-    if (modeSelect) modeSelect.value = data.mode || 'off';
-    if (data.circuit_breakers) {
-        data.circuit_breakers.forEach(cb => {
-            const card = el('breaker-' + cb.breaker_type);
+    const mode = data.mode || 'off';
+    if (modeSelect) modeSelect.value = mode;
+    const badge = el('ae-mode-badge');
+    if (badge) {
+        badge.textContent = mode.toUpperCase();
+        badge.className = `ae-mode-badge ae-mode-${mode}`;
+    }
+    function _updateBreakers(prefix, breakers) {
+        if (!breakers) return;
+        breakers.forEach(cb => {
+            const card = el(prefix + '-breaker-' + cb.breaker_type);
             if (!card) return;
             const val = card.querySelector('.value');
             if (val) {
@@ -1309,8 +1576,14 @@ async function refreshAutoExecStatus() {
                     val.title = '';
                 }
             }
+            const resetBtn = card.querySelector('.breaker-reset-btn');
+            if (resetBtn) {
+                resetBtn.style.display = cb.tripped ? '' : 'none';
+            }
         });
     }
+    _updateBreakers('arb', data.arb_breakers);
+    _updateBreakers('flip', data.flip_breakers);
 }
 
 async function refreshAutoExecStats() {
@@ -1328,15 +1601,175 @@ async function refreshAutoExecStats() {
     setText('ae-slippage', (slip * 100).toFixed(3) + '%');
 }
 
+function formatHoldTime(openedAt) {
+    if (!openedAt) return '-';
+    const ms = Date.now() - new Date(openedAt).getTime();
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ${sec % 60}s`;
+    const hrs = Math.floor(min / 60);
+    return `${hrs}h ${min % 60}m`;
+}
+
+function holdTimeClass(openedAt, maxHoldMin) {
+    if (!openedAt || !maxHoldMin) return '';
+    const elapsed = (Date.now() - new Date(openedAt).getTime()) / 60000;
+    if (elapsed >= maxHoldMin) return 'hold-expired';
+    if (elapsed >= maxHoldMin * 0.75) return 'hold-warning';
+    return '';
+}
+
+async function refreshOpenPositions() {
+    const data = await fetchJSON('/api/auto-execution/positions');
+    const tbody = el('open-positions-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No open positions</td></tr>';
+        setText('ae-open-count', '0');
+        setText('ae-open-exposure', '$0.00');
+        return;
+    }
+    setText('ae-open-count', String(data.length));
+    const exposure = data.reduce((sum, p) => sum + parseFloat(p.entry_cost_usd || p.entry_price || 0), 0);
+    setText('ae-open-exposure', formatUSD(exposure));
+    _positionCache = {};
+    tbody.innerHTML = data.map(p => {
+        const arbId = p.arb_id || '';
+        _positionCache[arbId] = p;
+        const posType = p.pipeline_type || (p.market_id ? 'flip' : 'arb');
+        const venue = posType === 'flip' ? 'Polymarket' : (p.kalshi_ticker ? 'Kalshi' : 'Polymarket');
+        const title = p.market_title || '';
+        const rawId = p.market_id || p.poly_market_id || p.kalshi_ticker || arbId || '';
+        const shortId = rawId.length > 12 ? rawId.substring(0, 6) + '...' + rawId.slice(-4) : rawId;
+        const displayName = title
+            ? (title.length > 28 ? title.substring(0, 28) + '...' : title)
+            : shortId;
+        const cellText = `<span style="color:var(--text-secondary);font-size:10px">${venue}</span> ${displayName}`;
+        const side = p.side || '-';
+        const size = p.size_contracts ? `${p.size_contracts} ct` : (p.entry_cost_usd ? formatUSD(p.entry_cost_usd) : '-');
+        const entry = p.entry_price ? formatUSD(p.entry_price) : (p.entry_spread ? formatPct(p.entry_spread) : '-');
+        const maxHold = p.max_hold_minutes ? parseInt(p.max_hold_minutes) : null;
+        const target = maxHold ? `${maxHold}m` : '-';
+        const holdClass = holdTimeClass(p.opened_at, maxHold);
+        const typeBadge = posType === 'flip'
+            ? '<span class="badge badge-approved">Flip</span>'
+            : '<span class="badge badge-pending">Arb</span>';
+        const closeBtn = posType === 'flip'
+            ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closePosition('${arbId}')">Close</button>`
+            : '<span style="color:var(--text-secondary);font-size:11px">atomic</span>';
+        return `<tr style="cursor:pointer" onclick="openPositionDetail('${arbId}')">
+            <td title="${title || rawId}">${cellText}</td>
+            <td>${typeBadge}</td>
+            <td>${side}</td>
+            <td>${size}</td>
+            <td>${entry}</td>
+            <td class="${holdClass}">${formatHoldTime(p.opened_at)}</td>
+            <td>${target}</td>
+            <td>${closeBtn}</td>
+        </tr>`;
+    }).join('');
+}
+
+let _positionCache = {};
+
+function openPositionDetail(arbId) {
+    const p = _positionCache[arbId];
+    if (!p) return;
+    const modal = el('position-modal');
+    const body = el('position-modal-body');
+    const titleEl = el('position-modal-title');
+    if (!modal || !body) return;
+
+    const posType = p.pipeline_type || 'flip';
+    const venue = posType === 'flip' ? 'Polymarket' : (p.kalshi_ticker ? 'Kalshi' : 'Polymarket');
+    const title = p.market_title || '';
+    const marketId = p.market_id || p.poly_market_id || p.kalshi_ticker || arbId;
+    const headerText = title || marketId;
+    if (titleEl) titleEl.textContent = headerText.length > 50 ? headerText.substring(0, 50) + '...' : headerText;
+
+    const slug = p.market_slug || '';
+    const marketUrl = slug ? `https://polymarket.com/event/${slug}` : '';
+    const titleDisplay = title || marketId;
+    const marketLink = marketUrl
+        ? `<a href="${marketUrl}" target="_blank" rel="noopener" class="market-link">${titleDisplay}</a>`
+        : titleDisplay;
+
+    const side = p.side || '-';
+    const size = p.size_contracts ? `${p.size_contracts} contracts` : '-';
+    const entry = p.entry_price ? formatUSD(p.entry_price) : '-';
+    const maxHold = p.max_hold_minutes ? `${parseInt(p.max_hold_minutes)}m` : '-';
+    const holdTime = formatHoldTime(p.opened_at);
+    const opened = p.opened_at ? new Date(p.opened_at).toLocaleString() : '-';
+    const tokenId = p.token_id || '-';
+    const shortToken = tokenId.length > 16 ? tokenId.substring(0, 8) + '...' + tokenId.slice(-6) : tokenId;
+
+    const closeBtnHtml = posType === 'flip'
+        ? `<button class="btn btn-danger btn-sm" onclick="closePosition('${arbId}'); closePositionModal();">Close Position</button>`
+        : '';
+
+    body.innerHTML = `
+        <div class="detail-section">
+            <div style="margin-bottom:12px;font-size:11px;color:var(--text-secondary)">${venue} · ${posType.toUpperCase()}</div>
+            <div style="margin-bottom:16px;font-size:15px;line-height:1.4;word-break:break-word">${marketLink}</div>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Side</span><span class="detail-value">${side.toUpperCase()}</span></div>
+                <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${size}</span></div>
+                <div class="detail-row"><span class="detail-label">Entry Price</span><span class="detail-value">${entry}</span></div>
+                <div class="detail-row"><span class="detail-label">Hold Time</span><span class="detail-value">${holdTime}</span></div>
+                <div class="detail-row"><span class="detail-label">Max Hold</span><span class="detail-value">${maxHold}</span></div>
+                <div class="detail-row"><span class="detail-label">Opened</span><span class="detail-value">${opened}</span></div>
+                <div class="detail-row"><span class="detail-label">Market ID</span><span class="detail-value" style="font-size:11px;word-break:break-all">${marketId}</span></div>
+                <div class="detail-row"><span class="detail-label">Token ID</span><span class="detail-value" style="font-size:11px" title="${tokenId}">${shortToken}</span></div>
+            </div>
+        </div>
+        ${closeBtnHtml ? `<div class="modal-actions" style="margin-top:12px">${closeBtnHtml}</div>` : ''}
+    `;
+    modal.style.display = 'flex';
+}
+
+function closePositionModal(event) {
+    if (event && event.target !== event.currentTarget) return;
+    const modal = el('position-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function closePosition(arbId) {
+    if (!arbId) return;
+    if (!confirm('Close this position? This will place a market exit order.')) return;
+    const result = await postJSON(`/api/execution/flip-exit/${arbId}`);
+    if (result) {
+        setStatus(`Position close submitted for ${arbId.substring(0, 10)}...`);
+        await refreshOpenPositions();
+    } else {
+        setStatus(`Failed to close position ${arbId.substring(0, 10)}...`);
+    }
+}
+
+let _aeLogCache = {};
+
 async function refreshAutoExecLog() {
     const data = await fetchJSON('/api/auto-execution/log?limit=20');
     const tbody = el('autoexec-log-tbody');
     if (!tbody) return;
     if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No auto-trades yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No auto-trades yet</td></tr>';
         return;
     }
+    _aeLogCache = {};
     tbody.innerHTML = data.map(e => {
+        _aeLogCache[e.id] = e;
+        const snap = typeof e.criteria_snapshot === 'string'
+            ? JSON.parse(e.criteria_snapshot || '{}')
+            : (e.criteria_snapshot || {});
+        const name = snap.title || e.arb_id || '';
+        const shortName = name.length > 30 ? name.substring(0, 30) + '...' : name;
+        const source = e.source || '';
+        const sourceBadge = source === 'flippening'
+            ? '<span class="badge badge-expired">flip</span>'
+            : source === 'arb_watch'
+            ? '<span class="badge badge-approved">arb</span>'
+            : `<span class="badge">${source || '-'}</span>`;
         const cv = e.critic_verdict;
         let criticBadge = '<span class="badge badge-critic-skipped">skipped</span>';
         if (cv && !cv.skipped) {
@@ -1348,10 +1781,12 @@ async function refreshAutoExecLog() {
         }
         const statusClass = e.status === 'executed' ? 'badge-approved' :
                            e.status === 'failed' ? 'badge-cancelled' :
+                           e.status === 'partial' ? 'badge-expired' :
                            e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
-        return `<tr>
+        return `<tr class="clickable" onclick="openAeLogDetail('${e.id}')">
             <td>${shortTime(e.created_at)}</td>
-            <td title="${e.arb_id}">${(e.arb_id || '').substring(0, 10)}...</td>
+            <td title="${name}">${shortName}</td>
+            <td>${sourceBadge}</td>
             <td>${formatPct(e.trigger_spread_pct)}</td>
             <td>${formatUSD(e.size_usd)}</td>
             <td>${criticBadge}</td>
@@ -1359,6 +1794,110 @@ async function refreshAutoExecLog() {
             <td>${e.duration_ms != null ? e.duration_ms + 'ms' : '-'}</td>
         </tr>`;
     }).join('');
+}
+
+function openAeLogDetail(logId) {
+    const e = _aeLogCache[logId];
+    if (!e) return;
+    const modal = el('ae-log-modal');
+    const body = el('ae-log-modal-body');
+    const title = el('ae-log-modal-title');
+    if (!modal || !body) return;
+
+    const statusClass = e.status === 'executed' ? 'badge-approved' :
+                       e.status === 'failed' ? 'badge-cancelled' :
+                       e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
+
+    // Rejection reasons — JSONB may arrive as string or object depending on asyncpg codec
+    const snap = typeof e.criteria_snapshot === 'string'
+        ? JSON.parse(e.criteria_snapshot)
+        : (e.criteria_snapshot || {});
+    const reasons = snap.rejection_reasons || [];
+    let reasonsHtml = '';
+    if (reasons.length > 0) {
+        reasonsHtml = `
+        <div class="detail-section">
+            <h4>Rejection Reasons</h4>
+            <ul class="ae-reasons-list">
+                ${reasons.map(r => `<li>${r}</li>`).join('')}
+            </ul>
+        </div>`;
+    }
+
+    // Critic verdict — JSONB may arrive as string or object
+    const cv = typeof e.critic_verdict === 'string'
+        ? JSON.parse(e.critic_verdict)
+        : (e.critic_verdict || null);
+    let criticHtml = '';
+    if (cv) {
+        const cvStatus = cv.skipped ? 'Skipped (mechanical check)' :
+                        cv.approved ? '✓ Approved' : '✗ Rejected';
+        const cvColor = cv.skipped ? 'var(--text-secondary)' :
+                       cv.approved ? 'var(--success)' : 'var(--danger)';
+        const flags = (cv.risk_flags || []);
+        criticHtml = `
+        <div class="detail-section">
+            <h4>AI Critic</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Decision</span>
+                    <span class="detail-value" style="color:${cvColor}">${cvStatus}</span></div>
+                ${cv.confidence != null ? `<div class="detail-row"><span class="detail-label">Confidence</span>
+                    <span class="detail-value">${(cv.confidence * 100).toFixed(0)}%</span></div>` : ''}
+                ${cv.reasoning ? `<div class="detail-row"><span class="detail-label">Reasoning</span>
+                    <span class="detail-value ae-reasoning">${cv.reasoning}</span></div>` : ''}
+                ${flags.length > 0 ? `<div class="detail-row"><span class="detail-label">Risk Flags</span>
+                    <span class="detail-value">${flags.map(f => `<span class="ae-flag">${f}</span>`).join(' ')}</span></div>` : ''}
+            </div>
+        </div>`;
+    }
+
+    // Balances — JSONB may arrive as string or object
+    const bals = typeof e.pre_exec_balances === 'string'
+        ? JSON.parse(e.pre_exec_balances)
+        : (e.pre_exec_balances || {});
+    const balsHtml = (bals.poly != null || bals.kalshi != null) ? `
+        <div class="detail-section">
+            <h4>Balances at Trigger</h4>
+            <div class="detail-grid">
+                ${bals.poly != null ? `<div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${formatUSD(bals.poly)}</span></div>` : ''}
+                ${bals.kalshi != null ? `<div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${formatUSD(bals.kalshi)}</span></div>` : ''}
+            </div>
+        </div>` : '';
+
+    if (title) title.textContent = `Auto-Exec — ${e.status.toUpperCase()}`;
+    body.innerHTML = `
+        <div class="detail-section">
+            <h4>Summary</h4>
+            <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Status</span>
+                    <span class="detail-value"><span class="badge ${statusClass}">${e.status}</span></span></div>
+                <div class="detail-row"><span class="detail-label">Arb ID</span>
+                    <span class="detail-value" style="font-size:11px;word-break:break-all">${e.arb_id || '-'}</span></div>
+                <div class="detail-row"><span class="detail-label">Spread</span>
+                    <span class="detail-value">${formatPct(e.trigger_spread_pct)}</span></div>
+                <div class="detail-row"><span class="detail-label">Confidence</span>
+                    <span class="detail-value">${e.trigger_confidence != null ? formatPct(e.trigger_confidence) : '-'}</span></div>
+                <div class="detail-row"><span class="detail-label">Size</span>
+                    <span class="detail-value">${formatUSD(e.size_usd)}</span></div>
+                <div class="detail-row"><span class="detail-label">Source</span>
+                    <span class="detail-value">${e.source || '-'}</span></div>
+                <div class="detail-row"><span class="detail-label">Duration</span>
+                    <span class="detail-value">${e.duration_ms != null ? e.duration_ms + 'ms' : '-'}</span></div>
+                <div class="detail-row"><span class="detail-label">Time</span>
+                    <span class="detail-value">${formatTime(e.created_at)}</span></div>
+            </div>
+        </div>
+        ${reasonsHtml}
+        ${criticHtml}
+        ${balsHtml}
+    `;
+    modal.style.display = 'flex';
+}
+
+function closeAeLogModal(evt) {
+    if (evt && evt.target !== el('ae-log-modal')) return;
+    const modal = el('ae-log-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 function setText(id, text) {
@@ -1387,18 +1926,289 @@ async function postJSONBody(url, body) {
 
 async function setAutoExecMode() {
     const modeSelect = el('autoexec-mode-select');
+    const applyBtn = el('autoexec-apply-btn');
     if (!modeSelect) return;
     const mode = modeSelect.value;
-    await postJSONBody('/api/auto-execution/enable', { mode });
-    await refreshAutoExecStatus();
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying...'; }
+    const result = await postJSONBody('/api/auto-execution/enable', { mode });
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply'; }
+    if (result) {
+        setStatus(`Auto-exec mode set to "${result.mode}"`);
+        await refreshAutoExecStatus();
+    }
 }
 
 async function killAutoExec() {
-    await postJSON('/api/auto-execution/disable');
-    await refreshAutoExecStatus();
+    const btn = el('autoexec-kill-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Killing...'; }
+    const result = await postJSON('/api/auto-execution/disable');
+    if (btn) { btn.disabled = false; btn.textContent = 'KILL SWITCH'; }
+    if (result) {
+        setStatus('Auto-exec killed — mode set to OFF');
+        await refreshAutoExecStatus();
+    }
+}
+
+async function resetBreaker(breakerType) {
+    if (!confirm(`Reset the ${breakerType} circuit breaker?`)) return;
+    const result = await postJSONBody('/api/auto-execution/circuit-breaker/reset', { breaker_type: breakerType });
+    if (result) {
+        setStatus(`${breakerType} breaker reset`);
+        await refreshAutoExecStatus();
+    }
+}
+
+// --- Balances Tab ---
+async function refreshBalances() {
+    let data = null;
+    try {
+        data = await fetchJSON('/api/execution/balances');
+    } catch (err) {
+        console.error('refreshBalances fetch error', err);
+    }
+    if (!data) {
+        setText('bal-poly', 'N/A');
+        setText('bal-kalshi', 'N/A');
+        setText('bal-total', 'N/A');
+        setText('bal-suggested', 'N/A');
+        setText('bal-exposure', 'N/A');
+        setText('bal-remaining', 'N/A');
+        setText('bal-pnl', 'N/A');
+        setText('bal-positions', 'N/A');
+        const tbody = el('bal-constraints-tbody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="empty-state">Capital manager not available</td></tr>';
+        return;
+    }
+    setText('bal-poly', formatUSD(data.poly_balance));
+    setText('bal-kalshi', formatUSD(data.kalshi_balance));
+    setText('bal-total', formatUSD(data.total_balance));
+    setText('bal-suggested', formatUSD(data.suggested_size_usd));
+    setText('bal-exposure', formatUSD(data.current_exposure));
+    setText('bal-remaining', formatUSD(data.remaining_capacity));
+    const pnl = parseFloat(data.daily_pnl || '0');
+    const pnlEl = el('bal-pnl');
+    if (pnlEl) {
+        pnlEl.textContent = formatUSD(pnl);
+        pnlEl.style.color = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+    setText('bal-positions', data.open_positions);
+    const tbody = el('bal-constraints-tbody');
+    if (!tbody) return;
+    const rows = (data.constraints || []);
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No constraints</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(c => {
+        const badge = c.ok
+            ? '<span class="badge badge-approved">OK</span>'
+            : '<span class="badge badge-cancelled">BLOCKED</span>';
+        return `<tr><td>${c.name}</td><td>${badge}</td><td>${c.detail}</td></tr>`;
+    }).join('');
 }
 
 // --- Init ---
+// --- Backtesting Tab ---
+let btPnlChart = null;
+let btSignalChart = null;
+
+async function refreshBacktesting() {
+    const [portfolio, dailyPnl, categories, trades] = await Promise.all([
+        fetchJSON('/api/backtesting/portfolio'),
+        fetchJSON('/api/backtesting/daily-pnl'),
+        fetchJSON('/api/backtesting/category-performance'),
+        fetchJSON('/api/backtesting/trades?limit=100'),
+    ]);
+    renderBtPortfolio(portfolio);
+    renderBtPnlChart(dailyPnl);
+    renderBtCategories(categories);
+    renderBtTrades(trades);
+    await renderBtSignalChart();
+}
+
+function renderBtPortfolio(p) {
+    if (!p) return;
+    const wins = p.win_count || 0;
+    const losses = p.loss_count || 0;
+    const total = wins + losses;
+    const winRate = total > 0 ? (wins / total * 100).toFixed(1) + '%' : '-';
+    const netPnl = (p.total_realized_pnl || 0) + (p.total_unrealized_pnl || 0) - (p.total_fees || 0);
+    const capital = p.total_capital_deployed || 0;
+    const roi = capital > 0 ? (netPnl / capital * 100).toFixed(2) + '%' : '-';
+    const pnlEl = el('bt-net-pnl');
+    if (pnlEl) {
+        pnlEl.textContent = formatUSD(netPnl);
+        pnlEl.style.color = netPnl >= 0 ? '#66bb6a' : '#e94560';
+    }
+    const wrEl = el('bt-win-rate');
+    if (wrEl) wrEl.textContent = winRate;
+    const roiEl = el('bt-roi');
+    if (roiEl) {
+        roiEl.textContent = roi;
+        roiEl.style.color = netPnl >= 0 ? '#66bb6a' : '#e94560';
+    }
+    const capEl = el('bt-capital');
+    if (capEl) capEl.textContent = formatUSD(capital);
+    const tcEl = el('bt-trade-count');
+    if (tcEl) tcEl.textContent = (p.position_count || 0).toString();
+    const feeEl = el('bt-fees');
+    if (feeEl) feeEl.textContent = formatUSD(p.total_fees || 0);
+}
+
+function renderBtPnlChart(data) {
+    const ctx = el('bt-pnl-chart');
+    if (!ctx) return;
+    if (btPnlChart) btPnlChart.destroy();
+    if (!data || data.length === 0) return;
+
+    const cumulative = [];
+    let running = 0;
+    for (const d of data) {
+        running += d.daily_pnl || 0;
+        cumulative.push(running);
+    }
+
+    btPnlChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.map(d => d.trade_date),
+            datasets: [
+                {
+                    label: 'Daily P&L',
+                    data: data.map(d => d.daily_pnl || 0),
+                    borderColor: '#4fc3f7',
+                    backgroundColor: 'rgba(79, 195, 247, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Cumulative P&L',
+                    data: cumulative,
+                    borderColor: '#66bb6a',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    yAxisID: 'y1',
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' } } },
+            scales: {
+                x: { ticks: { color: '#a0a0b0', maxTicksLimit: 12 }, grid: { color: '#2a2a4a' } },
+                y: { position: 'left', ticks: { color: '#a0a0b0', callback: v => '$' + v.toFixed(0) }, grid: { color: '#2a2a4a' } },
+                y1: { position: 'right', ticks: { color: '#66bb6a', callback: v => '$' + v.toFixed(0) }, grid: { drawOnChartArea: false } },
+            },
+        },
+    });
+}
+
+async function renderBtSignalChart() {
+    const ctx = el('bt-signal-chart');
+    if (!ctx) return;
+    if (btSignalChart) btSignalChart.destroy();
+    const data = await fetchJSON('/api/backtesting/signal-comparison');
+    if (!data) return;
+
+    const labels = [];
+    const values = [];
+    const colors = ['#66bb6a', '#e94560', '#a0a0b0'];
+    let i = 0;
+    for (const key of ['aligned', 'contrary', 'no_signal']) {
+        if (data[key]) {
+            labels.push(key.replace('_', ' '));
+            values.push(data[key].count || 0);
+        } else {
+            labels.push(key.replace('_', ' '));
+            values.push(0);
+        }
+        i++;
+    }
+
+    btSignalChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#e0e0e0' }, position: 'right' } },
+        },
+    });
+}
+
+function renderBtCategories(data) {
+    const tbody = el('bt-category-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No category data</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(c => {
+        const pnlColor = (c.total_pnl || 0) >= 0 ? '#66bb6a' : '#e94560';
+        return `<tr>
+            <td>${c.category || '-'}</td>
+            <td>${c.win_rate != null ? (c.win_rate * 100).toFixed(1) + '%' : '-'}</td>
+            <td style="color: ${pnlColor}">${formatUSD(c.avg_pnl || 0)}</td>
+            <td>${c.trade_count || 0}</td>
+            <td style="color: ${pnlColor}">${formatUSD(c.total_pnl || 0)}</td>
+            <td>${c.profit_factor != null ? c.profit_factor.toFixed(2) : '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderBtTrades(data) {
+    const tbody = el('bt-trades-tbody');
+    if (!tbody) return;
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No trades imported</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(t => {
+        const actionClass = t.action === 'Buy' ? 'badge-approved' :
+                           t.action === 'Sell' ? 'badge-cancelled' : 'badge-pending';
+        const date = t.timestamp ? new Date(t.timestamp).toLocaleString() : '-';
+        const name = t.market_name || '-';
+        const shortName = name.length > 40 ? name.substring(0, 40) + '...' : name;
+        return `<tr>
+            <td>${date}</td>
+            <td title="${name}">${shortName}</td>
+            <td><span class="badge ${actionClass}">${t.action}</span></td>
+            <td>${formatUSD(t.usdc_amount || 0)}</td>
+            <td>${t.token_amount != null ? parseFloat(t.token_amount).toFixed(2) : '-'}</td>
+            <td>${t.token_name || '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function uploadBtCsv(file) {
+    const statusEl = el('bt-import-status');
+    if (statusEl) statusEl.textContent = 'Uploading...';
+    try {
+        const form = new FormData();
+        form.append('file', file);
+        const resp = await fetch('/api/backtesting/import', {
+            method: 'POST',
+            headers: authHeaders(),
+            body: form,
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            if (statusEl) statusEl.textContent = 'Error: ' + err;
+            return;
+        }
+        const result = await resp.json();
+        if (statusEl) statusEl.textContent = `Imported ${result.inserted} trades (${result.duplicates} duplicates)`;
+        await refreshBacktesting();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = 'Upload failed: ' + err.message;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // Tab click handlers
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1449,6 +2259,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.target === preflightOverlay) closePreflightModal();
         });
     }
+
+    // Backtesting CSV upload
+    const csvInput = el('bt-csv-input');
+    if (csvInput) csvInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) uploadBtCsv(e.target.files[0]);
+    });
 
     // Initial load
     switchTab('opportunities');

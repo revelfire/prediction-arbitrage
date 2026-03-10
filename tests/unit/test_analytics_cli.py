@@ -12,6 +12,13 @@ from arb_scanner.cli.app import app
 runner = CliRunner()
 
 
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 # ---------------------------------------------------------------------------
 # history command
 # ---------------------------------------------------------------------------
@@ -28,17 +35,17 @@ class TestHistoryHelp:
     def test_help_shows_pair_option(self) -> None:
         """history --help mentions the --pair option."""
         result = runner.invoke(app, ["history", "--help"])
-        assert "--pair" in result.output
+        assert "--pair" in _strip_ansi(result.output)
 
     def test_help_shows_hours_option(self) -> None:
         """history --help mentions the --hours option."""
         result = runner.invoke(app, ["history", "--help"])
-        assert "--hours" in result.output
+        assert "--hours" in _strip_ansi(result.output)
 
     def test_help_shows_format_option(self) -> None:
         """history --help mentions the --format option."""
         result = runner.invoke(app, ["history", "--help"])
-        assert "--format" in result.output
+        assert "--format" in _strip_ansi(result.output)
 
 
 class TestHistoryValidation:
@@ -104,12 +111,12 @@ class TestStatsHelp:
     def test_help_shows_hours_option(self) -> None:
         """stats --help mentions the --hours option."""
         result = runner.invoke(app, ["stats", "--help"])
-        assert "--hours" in result.output
+        assert "--hours" in _strip_ansi(result.output)
 
     def test_help_shows_top_option(self) -> None:
         """stats --help mentions the --top option."""
         result = runner.invoke(app, ["stats", "--help"])
-        assert "--top" in result.output
+        assert "--top" in _strip_ansi(result.output)
 
 
 class TestStatsWithMockedDB:
@@ -139,12 +146,12 @@ class TestReportDateOptions:
     def test_help_shows_since(self) -> None:
         """report --help includes the --since option."""
         result = runner.invoke(app, ["report", "--help"])
-        assert "--since" in result.output
+        assert "--since" in _strip_ansi(result.output)
 
     def test_help_shows_until(self) -> None:
         """report --help includes the --until option."""
         result = runner.invoke(app, ["report", "--help"])
-        assert "--until" in result.output
+        assert "--until" in _strip_ansi(result.output)
 
 
 # ---------------------------------------------------------------------------
@@ -158,4 +165,4 @@ class TestMatchAuditDateOptions:
     def test_help_shows_since(self) -> None:
         """match-audit --help includes the --since option."""
         result = runner.invoke(app, ["match-audit", "--help"])
-        assert "--since" in result.output
+        assert "--since" in _strip_ansi(result.output)

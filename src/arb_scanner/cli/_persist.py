@@ -91,14 +91,28 @@ async def persist_opportunities(
     if not opps:
         return
 
+    # Build mapping from arb_id to market pair for dedup lookup
+    pair_by_arb_id = {
+        opp.id: (opp.poly_market.event_id, opp.kalshi_market.event_id) for opp in opps
+    }
+
     try:
         async with Database(config.storage.database_url) as db:
             repo = Repository(db.pool)
+            pending_pairs = await repo.get_pending_arb_pair_ids()
             for opp in opps:
                 await repo.insert_opportunity(opp)
+            skipped = 0
             for ticket in tickets:
+                pair = pair_by_arb_id.get(ticket.arb_id)
+                if pair and pair in pending_pairs:
+                    logger.debug("ticket_dedup_skip", arb_id=ticket.arb_id)
+                    skipped += 1
+                    continue
                 await repo.insert_ticket(ticket)
-        logger.info("opportunities_persisted", count=len(opps))
+                if pair:
+                    pending_pairs.add(pair)
+        logger.info("opportunities_persisted", count=len(opps), tickets_skipped=skipped)
     except Exception:
         logger.exception("persist_opportunities_failed")
 

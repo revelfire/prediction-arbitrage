@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +12,13 @@ from typer.testing import CliRunner
 from arb_scanner.cli.app import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(result: Any) -> str:
+    """Strip ANSI escape codes from CLI runner output."""
+    return _ANSI_RE.sub("", result.output)
 
 
 class TestScanCommand:
@@ -85,55 +93,61 @@ class TestHelpText:
         """Top-level --help shows all commands."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "scan" in result.output
-        assert "watch" in result.output
-        assert "report" in result.output
-        assert "match-audit" in result.output
-        assert "migrate" in result.output
-        assert "serve" in result.output
+        out = _plain(result)
+        assert "scan" in out
+        assert "watch" in out
+        assert "report" in out
+        assert "match-audit" in out
+        assert "migrate" in out
+        assert "serve" in out
 
     def test_scan_help(self) -> None:
         """Scan --help shows options."""
         result = runner.invoke(app, ["scan", "--help"])
         assert result.exit_code == 0
-        assert "--dry-run" in result.output
-        assert "--min-spread" in result.output
-        assert "--output" in result.output
+        out = _plain(result)
+        assert "--dry-run" in out
+        assert "--min-spread" in out
+        assert "--output" in out
 
     def test_watch_help(self) -> None:
         """Watch --help shows options."""
         result = runner.invoke(app, ["watch", "--help"])
         assert result.exit_code == 0
-        assert "--interval" in result.output
-        assert "--min-spread" in result.output
+        out = _plain(result)
+        assert "--interval" in out
+        assert "--min-spread" in out
 
     def test_report_help(self) -> None:
         """Report --help shows options."""
         result = runner.invoke(app, ["report", "--help"])
         assert result.exit_code == 0
-        assert "--last" in result.output
-        assert "--format" in result.output
+        out = _plain(result)
+        assert "--last" in out
+        assert "--format" in out
 
     def test_match_audit_help(self) -> None:
         """Match-audit --help shows options."""
         result = runner.invoke(app, ["match-audit", "--help"])
         assert result.exit_code == 0
-        assert "--include-expired" in result.output
-        assert "--min-confidence" in result.output
+        out = _plain(result)
+        assert "--include-expired" in out
+        assert "--min-confidence" in out
 
     def test_migrate_help(self) -> None:
         """Migrate --help shows description."""
         result = runner.invoke(app, ["migrate", "--help"])
         assert result.exit_code == 0
-        assert "migration" in result.output.lower()
+        assert "migration" in _plain(result).lower()
 
     def test_serve_help(self) -> None:
         """Serve --help shows options."""
         result = runner.invoke(app, ["serve", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.output
-        assert "--port" in result.output
-        assert "--no-db" in result.output
+        out = _plain(result)
+        assert "--host" in out
+        assert "--port" in out
+        assert "--no-db" in out
 
 
 class TestMigrateCommand:
@@ -169,7 +183,7 @@ class TestServeCommand:
         mock_create_app.assert_called_once_with(
             mock_config.return_value, no_db=False, flip_watch=False
         )
-        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8060)
 
     @patch("uvicorn.run")
     @patch("arb_scanner.api.app.create_app")
@@ -198,4 +212,4 @@ class TestServeCommand:
         mock_create_app.assert_called_once_with(
             mock_config.return_value, no_db=True, flip_watch=False
         )
-        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8000)
+        mock_uvicorn.assert_called_once_with(fake_app, host="0.0.0.0", port=8060)

@@ -46,8 +46,9 @@ class TestParseWsMessage:
                 ],
             }
         )
-        update = parse_ws_message(msg)
-        assert update is not None
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        update = updates[0]
         assert update.market_id == "mkt-1"
         assert update.token_id == "tok-1"
         assert update.yes_bid == Decimal("0.64")
@@ -65,8 +66,9 @@ class TestParseWsMessage:
                 ],
             }
         )
-        update = parse_ws_message(msg)
-        assert update is not None
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        update = updates[0]
         assert update.yes_bid == Decimal("0.64")
         assert update.yes_ask == Decimal("0.66")
         assert update.synthetic_spread is True
@@ -80,7 +82,7 @@ class TestParseWsMessage:
                 "price_changes": [],
             }
         )
-        assert parse_ws_message(msg) is None
+        assert parse_ws_message(msg) == []
 
     def test_price_change_no_price_changes_key(self) -> None:
         """price_change without price_changes key fails."""
@@ -93,7 +95,7 @@ class TestParseWsMessage:
                 "market": "mkt-1",
             }
         )
-        assert parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) == []
         assert t._failure_reasons.get("empty_price_changes") == 1
 
     def test_valid_book_event(self) -> None:
@@ -107,14 +109,15 @@ class TestParseWsMessage:
                 "asks": [{"price": "0.65", "size": "80"}],
             }
         )
-        update = parse_ws_message(msg)
-        assert update is not None
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        update = updates[0]
         assert update.yes_bid == Decimal("0.60")
         assert update.yes_ask == Decimal("0.65")
         assert update.synthetic_spread is False
 
     def test_book_missing_asset_id(self) -> None:
-        """Book without asset_id returns None."""
+        """Book without asset_id returns empty list."""
         msg = json.dumps(
             {
                 "event_type": "book",
@@ -123,7 +126,7 @@ class TestParseWsMessage:
                 "asks": [],
             }
         )
-        assert parse_ws_message(msg) is None
+        assert parse_ws_message(msg) == []
 
     def test_last_trade_price(self) -> None:
         """Parses last_trade_price into synthetic spread."""
@@ -137,8 +140,9 @@ class TestParseWsMessage:
                 "size": "50",
             }
         )
-        update = parse_ws_message(msg)
-        assert update is not None
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        update = updates[0]
         assert update.yes_bid == Decimal("0.69")
         assert update.yes_ask == Decimal("0.71")
         assert update.synthetic_spread is True
@@ -155,14 +159,15 @@ class TestParseWsMessage:
                 "spread": "0.04",
             }
         )
-        update = parse_ws_message(msg)
-        assert update is not None
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        update = updates[0]
         assert update.yes_bid == Decimal("0.73")
         assert update.yes_ask == Decimal("0.77")
         assert update.synthetic_spread is False
 
     def test_best_bid_ask_missing_asset_id(self) -> None:
-        """best_bid_ask without asset_id fails."""
+        """best_bid_ask without asset_id returns empty list."""
         msg = json.dumps(
             {
                 "event_type": "best_bid_ask",
@@ -171,16 +176,16 @@ class TestParseWsMessage:
                 "best_ask": "0.77",
             }
         )
-        assert parse_ws_message(msg) is None
+        assert parse_ws_message(msg) == []
 
-    def test_invalid_json_returns_none(self) -> None:
-        """Non-JSON message returns None."""
-        assert parse_ws_message("not json") is None
+    def test_invalid_json_returns_empty(self) -> None:
+        """Non-JSON message returns empty list."""
+        assert parse_ws_message("not json") == []
 
     def test_pong_ignored(self) -> None:
         """PONG plaintext responses are ignored."""
-        assert parse_ws_message("PONG") is None
-        assert parse_ws_message(b"PONG") is None
+        assert parse_ws_message("PONG") == []
+        assert parse_ws_message(b"PONG") == []
 
     def test_heartbeat_ignored_with_telemetry(self) -> None:
         """Heartbeat messages are classified as ignored."""
@@ -188,7 +193,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "heartbeat"})
-        assert parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) == []
         assert t.ignored == 1
 
     def test_subscription_ack_ignored(self) -> None:
@@ -197,7 +202,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "subscribed"})
-        assert parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) == []
         assert t.ignored == 1
 
     def test_error_msg_ignored(self) -> None:
@@ -206,7 +211,7 @@ class TestParseWsMessage:
 
         t = WsTelemetry()
         msg = json.dumps({"type": "error", "message": "bad"})
-        assert parse_ws_message(msg, telemetry=t) is None
+        assert parse_ws_message(msg, telemetry=t) == []
         assert t.ignored == 1
 
     def test_telemetry_tracks_parsed(self) -> None:
@@ -266,9 +271,9 @@ class TestParseWsMessage:
                 "price": "0.5",
             }
         ).encode()
-        update = parse_ws_message(msg)
-        assert update is not None
-        assert update.market_id == "m"
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        assert updates[0].market_id == "m"
 
     def test_non_json_bytes_ignored(self) -> None:
         """Non-JSON bytes messages are ignored, not failed."""
@@ -296,7 +301,7 @@ class TestParseWsMessage:
         assert len(t.known_schemas) == 1
 
     def test_json_array_parsed(self) -> None:
-        """JSON arrays with event dicts are parsed (first valid event)."""
+        """JSON arrays with event dicts are parsed (all valid events)."""
         msg = json.dumps(
             [
                 {
@@ -307,9 +312,9 @@ class TestParseWsMessage:
                 }
             ]
         )
-        update = parse_ws_message(msg)
-        assert update is not None
-        assert update.token_id == "t"
+        updates = parse_ws_message(msg)
+        assert len(updates) == 1
+        assert updates[0].token_id == "t"
 
 
 class TestParseOrderbook:
@@ -376,7 +381,7 @@ class TestWebSocketPriceStream:
         ):
             await stream.subscribe(["tok-1", "tok-2"])
             assert stream._reader_task is not None
-            assert stream._subscribed_tokens == ["tok-1", "tok-2"]
+            assert set(stream._subscribed_tokens) == {"tok-1", "tok-2"}
             await stream.close()
 
     @pytest.mark.asyncio

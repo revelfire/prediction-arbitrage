@@ -55,8 +55,10 @@ def _make_client(
 
     app.state.config = config
     if pipeline is not None:
-        app.state.auto_pipeline = pipeline
+        app.state.arb_pipeline = pipeline
     if breakers is not None:
+        app.state.arb_breakers = breakers
+        app.state.flip_breakers = breakers
         app.state.circuit_breakers = breakers
     if auto_repo is not None:
         app.state.auto_exec_repo = auto_repo
@@ -94,7 +96,7 @@ class TestGetStatus:
         data = resp.json()
         assert data["initialised"] is True
         assert data["mode"] == "auto"
-        assert len(data["circuit_breakers"]) == 3
+        assert len(data["arb_breakers"]) == 3
 
 
 class TestEnableAutoExec:

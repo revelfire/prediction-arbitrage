@@ -45,6 +45,7 @@ class ExecutionResult(BaseModel):
     kalshi_order_id: str | None = None
     status: ResultStatus = "pending"
     created_at: datetime | None = None
+    error_message: str | None = None
 
 
 class PreflightCheck(BaseModel):
@@ -66,8 +67,8 @@ class PreflightResult(BaseModel):
     estimated_slippage_kalshi: Decimal | None = None
     poly_balance: Decimal | None = None
     kalshi_balance: Decimal | None = None
-    poly_depth_contracts: int = 0
-    kalshi_depth_contracts: int = 0
+    poly_depth_contracts: int | None = None
+    kalshi_depth_contracts: int | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -109,3 +110,25 @@ class LiquidityResult(BaseModel):
     max_absorbable_usd: Decimal = Decimal("0")
     passed: bool = False
     warnings: list[str] = []
+
+
+class ConstraintStatus(BaseModel):
+    """Status of a single capital constraint check."""
+
+    name: str
+    ok: bool
+    detail: str
+
+
+class BalancesResponse(BaseModel):
+    """Venue balances, exposure, P&L, and capital constraint status."""
+
+    poly_balance: Decimal
+    kalshi_balance: Decimal
+    total_balance: Decimal
+    suggested_size_usd: Decimal
+    current_exposure: Decimal
+    remaining_capacity: Decimal
+    daily_pnl: Decimal
+    open_positions: int
+    constraints: list[ConstraintStatus]

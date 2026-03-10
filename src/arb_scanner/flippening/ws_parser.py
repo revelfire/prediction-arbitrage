@@ -24,15 +24,15 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 def parse_ws_message(
     raw: str | bytes,
     telemetry: WsTelemetry | None = None,
-) -> PriceUpdate | None:
-    """Parse a WebSocket message into a PriceUpdate.
+) -> list[PriceUpdate]:
+    """Parse a WebSocket message into PriceUpdate(s).
 
     Args:
         raw: Raw WebSocket message data.
         telemetry: Optional telemetry tracker.
 
     Returns:
-        PriceUpdate or None if unparseable.
+        List of PriceUpdate objects (empty if unparseable).
     """
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
@@ -40,37 +40,39 @@ def parse_ws_message(
     if text.upper() in ("PONG", "PING", ""):
         if telemetry:
             telemetry.record_ignored()
-        return None
+        return []
 
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError):
         if telemetry:
             telemetry.record_ignored()
-        return None
+        return []
 
     if isinstance(data, list):
-        return _parse_first_event(data, telemetry)
+        return _parse_all_events(data, telemetry)
     if not isinstance(data, dict):
         if telemetry:
             telemetry.record_ignored()
-        return None
-    return _parse_event_dict(data, telemetry)
+        return []
+    result = _parse_event_dict(data, telemetry)
+    return [result] if result is not None else []
 
 
-def _parse_first_event(
+def _parse_all_events(
     events: list[object],
     telemetry: WsTelemetry | None,
-) -> PriceUpdate | None:
-    """Parse the first usable event from a JSON array."""
+) -> list[PriceUpdate]:
+    """Parse all usable events from a JSON array."""
+    results: list[PriceUpdate] = []
     for item in events:
         if isinstance(item, dict):
             result = _parse_event_dict(item, telemetry)
             if result is not None:
-                return result
-    if telemetry:
+                results.append(result)
+    if not results and telemetry:
         telemetry.record_ignored()
-    return None
+    return results
 
 
 def _parse_event_dict(
@@ -168,20 +170,24 @@ def _parse_price_change(
             telemetry.record_failed("empty_price_changes")
         return None
 
-    first = changes[0]
-    if not isinstance(first, dict):
+    # Use last entry as the most recent state
+    last: dict[str, object] | None = None
+    for entry in changes:
+        if isinstance(entry, dict):
+            last = entry
+    if last is None:
         if telemetry:
             telemetry.record_failed("invalid_price_change_entry")
         return None
 
-    token_id = str(first.get("asset_id", ""))
+    token_id = str(last.get("asset_id", ""))
     if not token_id:
         if telemetry:
             telemetry.record_failed("missing_asset_id")
         return None
 
-    best_bid = _safe_dec(first.get("best_bid"))
-    best_ask = _safe_dec(first.get("best_ask"))
+    best_bid = _safe_dec(last.get("best_bid"))
+    best_ask = _safe_dec(last.get("best_ask"))
 
     if best_bid is not None and best_ask is not None:
         result = PriceUpdate(
@@ -197,7 +203,7 @@ def _parse_price_change(
             telemetry.record_parsed()
         return result
 
-    price = _safe_dec(first.get("price"))
+    price = _safe_dec(last.get("price"))
     if price is None or price < Decimal("0") or price > Decimal("1"):
         if telemetry:
             telemetry.record_failed("invalid_price")
@@ -295,8 +301,18 @@ def _parse_last_trade(
 def parse_orderbook(
     token_id: str,
     data: dict[str, object],
+    market_id: str = "",
 ) -> PriceUpdate | None:
-    """Parse a CLOB REST order book response into a PriceUpdate."""
+    """Parse a CLOB REST order book response into a PriceUpdate.
+
+    Args:
+        token_id: CLOB token identifier.
+        data: Raw order book JSON response.
+        market_id: Optional market identifier.
+
+    Returns:
+        PriceUpdate or None on parse failure.
+    """
     try:
         bids = data.get("bids", [])
         asks = data.get("asks", [])
@@ -315,7 +331,7 @@ def parse_orderbook(
                 yes_ask = _safe_dec(top_ask.get("price")) or Decimal("1")
 
         return PriceUpdate(
-            market_id="",
+            market_id=market_id,
             token_id=token_id,
             yes_bid=yes_bid,
             yes_ask=yes_ask,

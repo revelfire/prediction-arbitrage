@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from arb_scanner.models.config import Settings
@@ -43,6 +43,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if not no_db and config.auto_execution.enabled and app.state.db is not None:
         _init_auto_execution(app, config)
+
+    if not no_db and app.state.db is not None:
+        await _startup_cleanup(app, config)
 
     flip_task: asyncio.Task[None] | None = None
     if flip_watch and not no_db:
@@ -113,42 +116,151 @@ def _init_execution(app: FastAPI, config: Settings) -> None:
 
 
 def _init_auto_execution(app: FastAPI, config: Settings) -> None:
-    """Wire up auto-execution pipeline components on app state.
+    """Wire up split auto-execution pipelines on app state.
+
+    Creates independent arb and flip pipelines with separate breakers
+    but a shared capital manager.
 
     Args:
         app: FastAPI application.
         config: Application settings.
     """
-    from arb_scanner.execution.auto_pipeline import AutoExecutionPipeline
+    from arb_scanner.execution.arb_critic import ArbTradeCritic
+    from arb_scanner.execution.arb_pipeline import ArbAutoExecutionPipeline
     from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
-    from arb_scanner.execution.trade_critic import TradeCritic
+    from arb_scanner.execution.flip_critic import FlipTradeCritic
+    from arb_scanner.execution.flip_exit_executor import FlipExitExecutor
+    from arb_scanner.execution.flip_pipeline import FlipAutoExecutionPipeline
+    from arb_scanner.execution.flip_position_repo import FlipPositionRepo
     from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+    from arb_scanner.storage.execution_repository import ExecutionRepository
 
     ac = config.auto_execution
-    critic = TradeCritic(ac.critic, config.claude)
-    breakers = CircuitBreakerManager(ac)
     auto_repo = AutoExecRepository(app.state.db.pool)
+    position_repo = FlipPositionRepo(app.state.db.pool)
+    exec_repo = ExecutionRepository(app.state.db.pool)
 
     orch = getattr(app.state, "execution_orchestrator", None)
     capital = getattr(app.state, "capital_manager", None)
     poly = getattr(app.state, "poly_executor", None)
     kalshi = getattr(app.state, "kalshi_executor", None)
 
-    pipeline = AutoExecutionPipeline(
+    # Independent circuit breakers per pipeline
+    arb_breakers = CircuitBreakerManager(ac)
+    flip_breakers = CircuitBreakerManager(ac)
+
+    # Arb pipeline: two-leg execution via orchestrator
+    arb_critic = ArbTradeCritic(ac.critic, config.claude)
+    arb_pipeline = ArbAutoExecutionPipeline(
         config=config,
         auto_config=ac,
         orchestrator=orch,
-        critic=critic,
-        breakers=breakers,
-        auto_repo=auto_repo,
+        critic=arb_critic,
+        breakers=arb_breakers,
         capital=capital,
         poly=poly,
         kalshi=kalshi,
+        auto_repo=auto_repo,
     )
-    app.state.auto_pipeline = pipeline
-    app.state.circuit_breakers = breakers
+
+    # Flip pipeline: single-leg execution via PolymarketExecutor
+    flip_critic = FlipTradeCritic(ac.critic, config.claude)
+    exit_executor = FlipExitExecutor(
+        poly=poly,
+        exec_repo=exec_repo,
+        position_repo=position_repo,
+        stop_loss_aggression_pct=ac.stop_loss_aggression_pct,
+    )
+    flip_pipeline = FlipAutoExecutionPipeline(
+        config=config,
+        auto_config=ac,
+        critic=flip_critic,
+        breakers=flip_breakers,
+        capital=capital,
+        poly=poly,
+        position_repo=position_repo,
+        auto_repo=auto_repo,
+        exec_repo=exec_repo,
+        exit_executor=exit_executor,
+    )
+
+    # Store on app.state for routes
+    app.state.arb_pipeline = arb_pipeline
+    app.state.flip_pipeline = flip_pipeline
+    app.state.arb_breakers = arb_breakers
+    app.state.flip_breakers = flip_breakers
     app.state.auto_exec_repo = auto_repo
-    logger.info("auto_execution_pipeline_initialised")
+    app.state.flip_position_repo = position_repo
+    app.state.flip_exit_executor = exit_executor
+
+    # Sidecar refs for CLI and flippening orchestrator access
+    object.__setattr__(config, "_arb_pipeline", arb_pipeline)
+    object.__setattr__(config, "_flip_pipeline", flip_pipeline)
+    logger.info("split_pipelines_initialised", arb="ready", flip="ready")
+
+
+async def _startup_cleanup(app: FastAPI, config: Settings) -> None:
+    """Expire stale tickets and abandon positions past hold time.
+
+    Runs once at startup so that stale state from a prior session is
+    cleaned up immediately instead of waiting for the periodic timer.
+
+    Args:
+        app: FastAPI application with db and repos on state.
+        config: Application settings.
+    """
+    from arb_scanner.execution.activity_feed import push_activity
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    total = 0
+
+    try:
+        pool = app.state.db.pool
+    except (RuntimeError, AttributeError):
+        logger.info("startup_cleanup_skipped", reason="no_pool")
+        return
+
+    try:
+        ticket_repo = TicketRepository(pool)
+        expired = await ticket_repo.auto_expire(config.ticket_lifecycle.max_pending_hours)
+        if expired:
+            total += len(expired)
+            push_activity(
+                "startup_expired",
+                "system",
+                pipeline="system",
+                kind="tickets",
+                count=len(expired),
+            )
+            logger.info("startup_expired_tickets", count=len(expired))
+    except Exception:
+        logger.exception("startup_ticket_expire_failed")
+
+    # NOTE: flip positions are NOT abandoned at startup.  The periodic
+    # sweep_overtime_db_positions task closes them on Polymarket first,
+    # then updates the DB.  Premature abandon_expired() would orphan
+    # real Polymarket orders.
+
+    auto_repo = getattr(app.state, "auto_exec_repo", None)
+    if auto_repo is not None:
+        try:
+            abandoned = await auto_repo.abandon_expired()
+            if abandoned:
+                total += len(abandoned)
+                for p in abandoned:
+                    push_activity(
+                        "startup_abandoned",
+                        p["arb_id"],
+                        pipeline="arb",
+                        poly_market=p.get("poly_market_id", ""),
+                        kalshi_ticker=p.get("kalshi_ticker", ""),
+                    )
+                logger.info("startup_abandoned_arb", count=len(abandoned))
+        except Exception:
+            logger.exception("startup_arb_abandon_failed")
+
+    if total:
+        logger.info("startup_cleanup_complete", total_cleaned=total)
 
 
 async def _run_ticket_expiry(app: FastAPI) -> None:
@@ -195,6 +307,13 @@ def create_app(
     Returns:
         Configured FastAPI instance.
     """
+    from arb_scanner.utils.logging import setup_logging
+
+    setup_logging(
+        level=config.logging.level,
+        json_format=config.logging.format == "json",
+    )
+
     app = FastAPI(
         title="Arb Scanner Dashboard",
         version="0.1.0",
@@ -204,13 +323,23 @@ def create_app(
     app.state.no_db = no_db
     app.state.flip_watch = flip_watch
 
+    # Bearer token auth (must be added before static files mount)
+    from arb_scanner.api.auth import BearerTokenMiddleware
+
+    app.add_middleware(BearerTokenMiddleware, token=config.dashboard.auth_token)
+
     # Static files
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     @app.get("/")
-    async def root() -> FileResponse:
-        """Serve the dashboard HTML."""
-        return FileResponse(str(_STATIC_DIR / "index.html"))
+    async def root() -> HTMLResponse:
+        """Serve the dashboard HTML with optional auth token meta tag."""
+        html = (_STATIC_DIR / "index.html").read_text()
+        token = config.dashboard.auth_token
+        if token:
+            meta_tag = f'<meta name="api-token" content="{token}">'
+            html = html.replace("</head>", f"    {meta_tag}\n</head>", 1)
+        return HTMLResponse(html)
 
     # API route modules
     from arb_scanner.api.routes_alerts import router as alerts_router
@@ -223,6 +352,7 @@ def create_app(
     from arb_scanner.api.routes_price_stream import router as price_stream_router
     from arb_scanner.api.routes_scan import router as scan_router
     from arb_scanner.api.routes_tickets import router as tickets_router
+    from arb_scanner.api.routes_backtesting import router as backtesting_router
     from arb_scanner.api.routes_ws_telemetry import router as ws_telemetry_router
 
     app.include_router(opportunities_router)
@@ -236,6 +366,7 @@ def create_app(
     app.include_router(ws_telemetry_router)
     app.include_router(execution_router)
     app.include_router(auto_execution_router)
+    app.include_router(backtesting_router)
 
     return app
 

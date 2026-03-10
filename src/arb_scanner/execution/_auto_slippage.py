@@ -37,42 +37,44 @@ async def check_slippage(
     kalshi_slip = _ZERO
 
     try:
-        leg1 = ticket.get("leg_1", {})
-        leg2 = ticket.get("leg_2", {})
-        if isinstance(leg1, str):
-            import json
+        import json
 
-            leg1 = json.loads(leg1)
-        if isinstance(leg2, str):
-            import json
+        legs: list[dict[str, Any]] = []
+        for key in ("leg_1", "leg_2"):
+            raw = ticket.get(key, {})
+            leg = json.loads(raw) if isinstance(raw, str) else raw
+            if leg and leg.get("action", "").lower().startswith("buy"):
+                legs.append(leg)
 
-            leg2 = json.loads(leg2)
+        for leg in legs:
+            venue = str(leg.get("venue", "")).lower()
+            expected = Decimal(str(leg.get("price", 0)))
+            if expected <= 0:
+                continue
 
-        poly_leg = leg1 if leg1.get("venue") == "polymarket" else leg2
-        kalshi_leg = leg1 if leg1.get("venue") == "kalshi" else leg2
+            if venue == "polymarket" and poly_executor.is_configured():
+                token_id = str(leg.get("token_id", "")).strip()
+                if token_id:
+                    book = await poly_executor.get_book_depth(token_id)
+                    if book:
+                        best_ask = _best_price(book.get("asks", []))
+                        if best_ask > 0:
+                            poly_slip = max(poly_slip, abs(best_ask - expected) / expected)
 
-        token_id = poly_leg.get("token_id", "")
-        ticker = kalshi_leg.get("ticker", "")
-
-        if token_id and poly_executor.is_configured():
-            book = await poly_executor.get_book_depth(token_id)
-            if book:
-                best_ask = _best_price(book.get("asks", []))
-                expected = Decimal(str(poly_leg.get("price", 0)))
-                if expected > 0 and best_ask > 0:
-                    poly_slip = abs(best_ask - expected) / expected
-
-        if ticker and kalshi_executor.is_configured():
-            book = await kalshi_executor.get_book_depth(ticker)
-            if book:
-                best_ask = _best_price(book.get("asks", []))
-                expected = Decimal(str(kalshi_leg.get("price", 0)))
-                if expected > 0 and best_ask > 0:
-                    kalshi_slip = abs(best_ask - expected) / expected
+            elif venue == "kalshi" and kalshi_executor.is_configured():
+                ticker = str(leg.get("ticker", "")).strip()
+                if ticker:
+                    book = await kalshi_executor.get_book_depth(ticker)
+                    if book:
+                        side = _resolve_side(leg)
+                        asks_key = "asks_yes" if side == "yes" else "asks_no"
+                        best_ask = _best_price(book.get(asks_key, book.get("asks", [])))
+                        if best_ask > 0:
+                            kalshi_slip = max(kalshi_slip, abs(best_ask - expected) / expected)
 
     except Exception as exc:
-        logger.warning("slippage_check_error", error=str(exc))
-        return True, _ZERO, _ZERO
+        logger.warning("slippage_check_error_fail_closed", error=str(exc))
+        return False, _ZERO, _ZERO
 
     passed = poly_slip <= max_slip and kalshi_slip <= max_slip
     if not passed:
@@ -101,3 +103,14 @@ def _best_price(levels: list[dict[str, Any]]) -> Decimal:
         return min(p for p in prices if p > 0) if prices else _ZERO
     except (ValueError, TypeError):
         return _ZERO
+
+
+def _resolve_side(leg: dict[str, Any]) -> str:
+    """Resolve YES/NO side from a ticket leg."""
+    side = str(leg.get("side", "")).lower().strip()
+    if side in ("yes", "no"):
+        return side
+    action = str(leg.get("action", "")).lower()
+    if " no" in action or action.endswith("no"):
+        return "no"
+    return "yes"

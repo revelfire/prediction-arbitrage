@@ -19,14 +19,14 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 )
 
 
-async def create_repo(config: Settings) -> Any:
+async def create_repo(config: Settings) -> tuple[Any, Any]:
     """Create FlippeningRepository from config.
 
     Args:
         config: Application settings with storage config.
 
     Returns:
-        FlippeningRepository instance or None.
+        Tuple of (FlippeningRepository, Database) or (None, None).
     """
     try:
         from arb_scanner.storage.db import Database
@@ -34,20 +34,20 @@ async def create_repo(config: Settings) -> Any:
 
         db = Database(config.storage.database_url)
         await db.connect()
-        return FlippeningRepository(db.pool)
+        return FlippeningRepository(db.pool), db
     except Exception:
         logger.exception("repo_creation_failed")
-        return None
+        return None, None
 
 
-async def create_tick_repo(config: Settings) -> Any:
+async def create_tick_repo(config: Settings) -> tuple[Any, Any]:
     """Create TickRepository from config.
 
     Args:
         config: Application settings with storage config.
 
     Returns:
-        TickRepository instance or None.
+        Tuple of (TickRepository, Database) or (None, None).
     """
     try:
         from arb_scanner.storage.db import Database
@@ -55,10 +55,10 @@ async def create_tick_repo(config: Settings) -> Any:
 
         db = Database(config.storage.database_url)
         await db.connect()
-        return TickRepository(db.pool)
+        return TickRepository(db.pool), db
     except Exception:
         logger.exception("tick_repo_creation_failed")
-        return None
+        return None, None
 
 
 async def persist_entry(

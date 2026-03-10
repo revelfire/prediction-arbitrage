@@ -52,6 +52,10 @@ def load_config(path: str | None = None) -> Settings:
 
     logger.info("loading_config", path=str(resolved))
 
+    if not resolved.exists() and path is None and "ARB_SCANNER_CONFIG" not in os.environ:
+        logger.info("config_file_missing_using_env_defaults", path=str(resolved))
+        return _settings_from_env()
+
     raw_text = resolved.read_text(encoding="utf-8")
     raw_data: Any = yaml.safe_load(raw_text)
 
@@ -63,3 +67,26 @@ def load_config(path: str | None = None) -> Settings:
     settings = Settings.model_validate(interpolated)
     logger.info("config_loaded", path=str(resolved))
     return settings
+
+
+def _settings_from_env() -> Settings:
+    """Build Settings from environment variables when no config file exists.
+
+    Uses DATABASE_URL from the environment and default fee schedules.
+    Useful for CI and minimal deployments.
+    """
+    from decimal import Decimal
+
+    from arb_scanner.models.config import FeeSchedule, FeesConfig, StorageConfig
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        raise ValueError("No config.yaml found and DATABASE_URL not set")
+
+    return Settings(
+        storage=StorageConfig(database_url=db_url),
+        fees=FeesConfig(
+            polymarket=FeeSchedule(taker_fee_pct=Decimal("0.02"), fee_model="percent_winnings"),
+            kalshi=FeeSchedule(taker_fee_pct=Decimal("0.07"), fee_model="per_contract"),
+        ),
+    )

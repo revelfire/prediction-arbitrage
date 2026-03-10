@@ -33,6 +33,18 @@ _STATUS_COLOR: dict[str, int] = {
 }
 
 
+def _pipeline_label(entry: AutoExecLogEntry) -> str:
+    """Derive pipeline label from log entry source.
+
+    Args:
+        entry: Auto-execution log entry.
+
+    Returns:
+        'Flip' for flippening source, 'Arb' otherwise.
+    """
+    return "Flip" if entry.source and "flippening" in entry.source.lower() else "Arb"
+
+
 def build_auto_exec_slack_payload(entry: AutoExecLogEntry) -> dict[str, Any]:
     """Build Slack Block Kit payload for an auto-execution event.
 
@@ -43,7 +55,8 @@ def build_auto_exec_slack_payload(entry: AutoExecLogEntry) -> dict[str, Any]:
         Slack webhook payload dict.
     """
     emoji = _STATUS_EMOJI.get(entry.status, ":robot_face:")
-    header = f"Auto-Exec: {entry.status.replace('_', ' ').title()}"
+    label = _pipeline_label(entry)
+    header = f"[{label}] Auto-Exec: {entry.status.replace('_', ' ').title()}"
     size_str = f"${float(entry.size_usd):.2f}" if entry.size_usd else "N/A"
     spread_str = f"{float(entry.trigger_spread_pct):.4%}" if entry.trigger_spread_pct else "N/A"
 
@@ -92,7 +105,8 @@ def build_auto_exec_discord_payload(entry: AutoExecLogEntry) -> dict[str, Any]:
         Discord webhook payload dict.
     """
     emoji = _STATUS_EMOJI.get(entry.status, ":robot_face:")
-    header = f"Auto-Exec: {entry.status.replace('_', ' ').title()}"
+    label = _pipeline_label(entry)
+    header = f"[{label}] Auto-Exec: {entry.status.replace('_', ' ').title()}"
     color = _STATUS_COLOR.get(entry.status, 9807270)
     size_str = f"${float(entry.size_usd):.2f}" if entry.size_usd else "N/A"
     spread_str = f"{float(entry.trigger_spread_pct):.4%}" if entry.trigger_spread_pct else "N/A"
@@ -234,6 +248,94 @@ async def dispatch_breaker_alert(
         if discord_url:
             payload = build_breaker_discord_payload(breaker_type, reason)
             await _safe_send(discord_url, payload, http, "discord")
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
+def build_geoblock_slack_payload(arb_id: str) -> dict[str, Any]:
+    """Build Slack payload for a geographic restriction error.
+
+    Args:
+        arb_id: Arbitrage or position ID that triggered the block.
+
+    Returns:
+        Slack webhook payload dict.
+    """
+    return {
+        "text": ":no_entry: Polymarket order blocked: geographic restriction",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": ":no_entry: Polymarket Geo-Block",
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Arb ID:* `{arb_id[:12]}...`"},
+                    {
+                        "type": "mrkdwn",
+                        "text": "*Action required:* Connect via ExpressVPN or another supported region before the next trade.",
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def build_geoblock_discord_payload(arb_id: str) -> dict[str, Any]:
+    """Build Discord payload for a geographic restriction error.
+
+    Args:
+        arb_id: Arbitrage or position ID that triggered the block.
+
+    Returns:
+        Discord webhook payload dict.
+    """
+    return {
+        "content": ":no_entry: Polymarket order blocked: geographic restriction",
+        "embeds": [
+            {
+                "title": "Polymarket Geo-Block",
+                "color": 15158332,
+                "fields": [
+                    {"name": "Arb ID", "value": f"`{arb_id[:12]}...`", "inline": True},
+                    {
+                        "name": "Action Required",
+                        "value": "Connect via ExpressVPN or another supported region.",
+                        "inline": False,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+async def dispatch_geoblock_alert(
+    arb_id: str,
+    *,
+    slack_url: str = "",
+    discord_url: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    """Dispatch webhook notification for a geographic restriction error.
+
+    Args:
+        arb_id: Arbitrage or position ID that triggered the block.
+        slack_url: Slack webhook URL.
+        discord_url: Discord webhook URL.
+        client: Optional shared HTTP client.
+    """
+    owns_client = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        if slack_url:
+            await _safe_send(slack_url, build_geoblock_slack_payload(arb_id), http, "slack")
+        if discord_url:
+            await _safe_send(discord_url, build_geoblock_discord_payload(arb_id), http, "discord")
     finally:
         if owns_client:
             await http.aclose()

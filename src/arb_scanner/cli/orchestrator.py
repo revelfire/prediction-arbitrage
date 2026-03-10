@@ -193,7 +193,7 @@ async def _fetch_live_markets(
             # Phase 2: Demand-rank events by Poly relevance
             # Cap events (not markets) to limit API calls; each event
             # yields ~3-10 markets, so 100 events ≈ 500 markets.
-            max_events = min(config.venues.kalshi.max_markets or 200, 100)
+            max_events = min(config.venues.kalshi.max_markets or 200, 200)
             top_tickers = await rank_events(poly, events, max_events)
 
             # Phase 3: Fetch markets for top events
@@ -441,10 +441,17 @@ def _calculate_and_ticket(
 ) -> tuple[list[ArbOpportunity], list[ExecutionTicket]]:
     """Run arb calculation and ticket generation."""
     opps = calculate_arbs(candidates, config.fees, config.arb_thresholds)
-    min_profit = config.arb_thresholds.min_expected_profit_usd
+    thresholds = config.arb_thresholds
     tickets = [
         t
         for opp in opps
-        if (t := generate_ticket(opp, min_expected_profit_usd=min_profit)) is not None
+        if (
+            t := generate_ticket(
+                opp,
+                min_expected_profit_usd=thresholds.min_expected_profit_usd,
+                max_ticket_size_usd=thresholds.max_ticket_size_usd,
+            )
+        )
+        is not None
     ]
     return opps, tickets

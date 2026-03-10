@@ -194,7 +194,10 @@ class FlippeningRepository:
         min_expected_profit_usd: Decimal = Decimal("1.00"),
         market_slug: str = "",
     ) -> None:
-        """Persist a flippening execution ticket (skips if below threshold).
+        """Persist a flippening execution ticket (skips duplicates).
+
+        Skips if expected profit is below threshold or if a pending
+        flippening ticket already exists for the same market_id.
 
         Args:
             event: Flippening event.
@@ -206,10 +209,22 @@ class FlippeningRepository:
         if expected_profit < min_expected_profit_usd:
             logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
             return
+        existing = await self._pool.fetchrow(Q.HAS_PENDING_FLIP_TICKET, event.market_id)
+        if existing is not None:
+            logger.debug(
+                "flip_ticket_skipped_duplicate",
+                market_id=event.market_id,
+                event_id=event.id,
+            )
+            return
         market_url = f"https://polymarket.com/event/{market_slug}" if market_slug else ""
+        side_token = event.token_for_side(entry.side)
         leg_1 = json.dumps(
             {
-                "action": f"BUY {entry.side.upper()}",
+                "venue": "polymarket",
+                "action": "buy",
+                "side": entry.side,
+                "token_id": side_token,
                 "market_id": event.market_id,
                 "market_title": event.market_title,
                 "market_url": market_url,
@@ -219,7 +234,10 @@ class FlippeningRepository:
         )
         leg_2 = json.dumps(
             {
-                "action": f"SELL {entry.side.upper()} at target",
+                "venue": "polymarket",
+                "action": "sell",
+                "side": entry.side,
+                "token_id": side_token,
                 "target_price": str(entry.target_exit_price),
                 "stop_loss": str(entry.stop_loss_price),
                 "max_hold_minutes": entry.max_hold_minutes,

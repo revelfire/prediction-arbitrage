@@ -38,6 +38,7 @@ class GameState:
     token_id: str
     sport: str
     phase: GamePhase
+    no_token_id: str = ""
     category: str = ""
     category_type: str = "sport"
     baseline_strategy: str = "first_price"
@@ -73,6 +74,12 @@ class GameManager:
         state = self.get_state(market_id)
         return state is not None and state.active_signal is not None
 
+    def iter_active_signals(self) -> list[tuple[str, GameState]]:
+        """Return (market_id, state) pairs with active entry signals."""
+        return [
+            (mid, state) for mid, state in self._games.items() if state.active_signal is not None
+        ]
+
     def initialize(self, category_markets: list[CategoryMarket]) -> None:
         """Set up game states for discovered category markets."""
         now = datetime.now(tz=UTC)
@@ -100,6 +107,7 @@ class GameManager:
                 market_id=mid,
                 market_title=sm.market.title,
                 token_id=sm.token_id,
+                no_token_id=sm.no_token_id,
                 sport=sm.sport,
                 phase=phase,
                 category=sm.category,

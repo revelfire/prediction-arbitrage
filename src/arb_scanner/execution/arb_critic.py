@@ -1,4 +1,4 @@
-"""AI trade critic -- pre-execution risk gate using Claude."""
+"""Arbitrage-specific AI trade critic -- pre-execution risk gate."""
 
 from __future__ import annotations
 
@@ -10,22 +10,23 @@ import structlog
 
 from arb_scanner.execution._critic_prompts import (
     CRITIC_SYSTEM_PROMPT,
-    build_critic_prompt,
+    build_arb_critic_prompt,
 )
 from arb_scanner.models._auto_exec_config import CriticConfig
 from arb_scanner.models.auto_execution import CriticVerdict
 from arb_scanner.models.config import ClaudeConfig
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
-    module="execution.trade_critic",
+    module="execution.arb_critic",
+    pipeline="arb",
 )
 
 
-class TradeCritic:
-    """AI-powered trade critic that evaluates risk before execution.
+class ArbTradeCritic:
+    """AI risk gate for arbitrage trades (two-leg cross-venue).
 
-    Runs mechanical checks first; only calls Claude when red flags
-    are detected. Fails open on API errors.
+    Runs mechanical checks first; only calls Claude when flags are detected.
+    Fails open on API errors. Checks both venue depths.
 
     Args:
         critic_config: Critic-specific configuration.
@@ -37,7 +38,7 @@ class TradeCritic:
         critic_config: CriticConfig,
         claude_config: ClaudeConfig,
     ) -> None:
-        """Initialize the trade critic.
+        """Initialize the arbitrage trade critic.
 
         Args:
             critic_config: Critic-specific configuration.
@@ -45,19 +46,18 @@ class TradeCritic:
         """
         self._config = critic_config
         self._api_key = critic_config.api_key or claude_config.api_key
+        self._consecutive_timeouts: int = 0
 
     async def evaluate(
         self,
         ticket: dict[str, Any],
-        preflight: dict[str, Any],
         market_context: dict[str, Any],
     ) -> CriticVerdict:
-        """Evaluate a trade for risk signals.
+        """Evaluate an arbitrage trade for risk signals.
 
         Args:
-            ticket: Execution ticket data.
-            preflight: Preflight check results.
-            market_context: Market context including prices and depth.
+            ticket: Execution ticket data (arb_id, etc.).
+            market_context: Market context with prices, depth, spread.
 
         Returns:
             CriticVerdict with approval decision.
@@ -65,12 +65,15 @@ class TradeCritic:
         if not self._config.enabled:
             return CriticVerdict(approved=True, skipped=True)
 
-        flags = self._check_mechanical_flags(ticket, preflight, market_context)
+        arb_id = ticket.get("arb_id", "?")
+        flags = self._check_mechanical_flags(market_context)
         market_context["mechanical_flags"] = flags
 
         if not flags:
-            logger.debug("critic_skipped", reason="no_mechanical_flags")
+            logger.info("arb_critic_clean", arb_id=arb_id)
             return CriticVerdict(approved=True, skipped=True)
+
+        logger.info("arb_critic_flags", arb_id=arb_id, count=len(flags), flags=flags)
 
         if len(flags) > self._config.max_risk_flags:
             return CriticVerdict(
@@ -80,20 +83,18 @@ class TradeCritic:
                 confidence=0.9,
             )
 
-        return await self._call_critic(ticket, preflight, market_context)
+        return await self._call_claude(ticket, market_context)
 
     def _check_mechanical_flags(
         self,
-        ticket: dict[str, Any],
-        preflight: dict[str, Any],
         context: dict[str, Any],
     ) -> list[str]:
-        """Run mechanical risk checks before calling Claude.
+        """Run mechanical risk checks for arbitrage trades.
+
+        Includes both poly and kalshi depth checks.
 
         Args:
-            ticket: Execution ticket data.
-            preflight: Preflight check results.
-            context: Market context.
+            context: Market context dict.
 
         Returns:
             List of risk flag strings.
@@ -108,10 +109,10 @@ class TradeCritic:
         if isinstance(spread, (int, float)) and spread > self._config.anomaly_spread_pct:
             flags.append(f"anomalous_spread: {spread:.2%}")
 
-        for venue in ("poly_depth", "kalshi_depth"):
-            depth = context.get(venue, 0)
+        for venue_key in ("poly_depth", "kalshi_depth"):
+            depth = context.get(venue_key, 0)
             if isinstance(depth, (int, float)) and depth < self._config.min_book_depth_contracts:
-                flags.append(f"low_depth_{venue}: {depth}")
+                flags.append(f"low_depth_{venue_key}: {depth}")
 
         poly_yes = context.get("poly_yes_price", 0)
         kalshi_yes = context.get("kalshi_yes_price", 0)
@@ -132,17 +133,15 @@ class TradeCritic:
 
         return flags
 
-    async def _call_critic(
+    async def _call_claude(
         self,
         ticket: dict[str, Any],
-        preflight: dict[str, Any],
         market_context: dict[str, Any],
     ) -> CriticVerdict:
-        """Call Claude for risk evaluation.
+        """Call Claude for arbitrage risk evaluation.
 
         Args:
             ticket: Execution ticket data.
-            preflight: Preflight check results.
             market_context: Market context.
 
         Returns:
@@ -152,7 +151,7 @@ class TradeCritic:
             from anthropic import AsyncAnthropic
 
             client = AsyncAnthropic(api_key=self._api_key)
-            prompt = build_critic_prompt(ticket, preflight, market_context)
+            prompt = build_arb_critic_prompt(ticket, market_context)
 
             async with asyncio.timeout(self._config.timeout_seconds):
                 response = await client.messages.create(
@@ -164,49 +163,64 @@ class TradeCritic:
 
             block = response.content[0]
             raw = block.text if hasattr(block, "text") else str(block)
-            return self._parse_verdict(raw, market_context.get("mechanical_flags", []))
+            verdict = _parse_verdict(raw, market_context.get("mechanical_flags", []))
+            self._consecutive_timeouts = 0
+            logger.info(
+                "arb_critic_verdict",
+                approved=verdict.approved,
+                confidence=verdict.confidence,
+            )
+            return verdict
 
         except TimeoutError:
-            logger.warning("critic_timeout")
+            self._consecutive_timeouts += 1
+            max_t = self._config.max_consecutive_timeouts
+            if self._consecutive_timeouts >= max_t:
+                return CriticVerdict(
+                    approved=False,
+                    error=f"timeout_breaker: {self._consecutive_timeouts} consecutive",
+                    risk_flags=market_context.get("mechanical_flags", []),
+                    reasoning=f"Claude timed out {self._consecutive_timeouts} times",
+                )
             return CriticVerdict(
                 approved=True,
                 error="timeout",
                 risk_flags=market_context.get("mechanical_flags", []),
             )
         except Exception as exc:
-            logger.warning("critic_error", error=str(exc))
+            logger.warning("arb_critic_error", error=str(exc))
             return CriticVerdict(approved=True, error=str(exc))
 
-    def _parse_verdict(self, raw: str, mechanical_flags: list[str]) -> CriticVerdict:
-        """Parse Claude's JSON response into a CriticVerdict.
 
-        Args:
-            raw: Raw text response from Claude.
-            mechanical_flags: Flags from mechanical checks.
+def _parse_verdict(raw: str, mechanical_flags: list[str]) -> CriticVerdict:
+    """Parse Claude's JSON response into a CriticVerdict.
 
-        Returns:
-            Parsed CriticVerdict.
-        """
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            if text.endswith("```"):
-                text = text[: -len("```")]
-            text = text.strip()
+    Args:
+        raw: Raw text response from Claude.
+        mechanical_flags: Flags from mechanical checks.
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("critic_parse_failed", raw=raw[:200])
-            return CriticVerdict(
-                approved=True,
-                error="parse_failed",
-                risk_flags=mechanical_flags,
-            )
+    Returns:
+        Parsed CriticVerdict.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text[: -len("```")]
+        text = text.strip()
 
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return CriticVerdict(
-            approved=data.get("approved", True),
-            risk_flags=data.get("risk_flags", mechanical_flags),
-            reasoning=data.get("reasoning", ""),
-            confidence=data.get("confidence", 0.5),
+            approved=True,
+            error="parse_failed",
+            risk_flags=mechanical_flags,
         )
+
+    return CriticVerdict(
+        approved=data.get("approved", True),
+        risk_flags=data.get("risk_flags", mechanical_flags),
+        reasoning=data.get("reasoning", ""),
+        confidence=data.get("confidence", 0.5),
+    )

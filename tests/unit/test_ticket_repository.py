@@ -137,6 +137,29 @@ class TestGetSummary:
         mock_pool.fetch.assert_awaited_once_with(TQ.GET_TICKET_SUMMARY, "30")
 
 
+class TestGetFlipTokenForMarket:
+    """Tests for get_flip_token_for_market()."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_token_when_found(
+        self, repo: TicketRepository, mock_pool: AsyncMock
+    ) -> None:
+        """Returns token_id from latest baseline row."""
+        mock_pool.fetchrow.return_value = {"token_id": "tok-123"}
+        token = await repo.get_flip_token_for_market("m1")
+        assert token == "tok-123"
+        mock_pool.fetchrow.assert_awaited_once_with(TQ.GET_FLIP_TOKEN_BY_MARKET_ID, "m1")
+
+    @pytest.mark.asyncio()
+    async def test_returns_empty_when_missing(
+        self, repo: TicketRepository, mock_pool: AsyncMock
+    ) -> None:
+        """Returns empty string when no baseline row exists."""
+        mock_pool.fetchrow.return_value = None
+        token = await repo.get_flip_token_for_market("m1")
+        assert token == ""
+
+
 class TestPruneTickets:
     """Tests for prune_tickets()."""
 

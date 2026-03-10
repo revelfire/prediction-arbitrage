@@ -98,7 +98,21 @@ class CategoryMarket(BaseModel):
     category_type: str = "sport"
     game_start_time: datetime | None = None
     token_id: str
+    no_token_id: str = ""
     classification_method: str = "primary"
+
+    def token_for_side(self, side: str) -> str:
+        """Return the correct CLOB token ID for a given side.
+
+        Args:
+            side: "yes" or "no".
+
+        Returns:
+            Token ID for the requested side.
+        """
+        if side == "no" and self.no_token_id:
+            return self.no_token_id
+        return self.token_id
 
 
 # Backward-compat alias
@@ -110,6 +124,8 @@ class FlippeningEvent(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     market_id: str
+    token_id: str = ""
+    no_token_id: str = ""
     market_title: str
     baseline_yes: Decimal
     spike_price: Decimal
@@ -120,6 +136,19 @@ class FlippeningEvent(BaseModel):
     category: str = ""
     category_type: str = "sport"
     detected_at: datetime
+
+    def token_for_side(self, side: str) -> str:
+        """Return the correct CLOB token ID for a given side.
+
+        Args:
+            side: "yes" or "no".
+
+        Returns:
+            Token ID for the requested side.
+        """
+        if side == "no" and self.no_token_id:
+            return self.no_token_id
+        return self.token_id
 
     @field_validator("confidence")
     @classmethod
