@@ -73,6 +73,22 @@ class TestPeriodicTaskExecution:
                 "arb_scanner.flippening.orchestrator.reconcile_pending_db_positions",
                 new_callable=AsyncMock,
             ) as mock_reconcile,
+            patch(
+                "arb_scanner.flippening.orchestrator.sweep_overtime_signals",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.sweep_overtime_db_positions",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.reconcile_open_positions_with_exchange",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.retry_active_signals",
+                new_callable=AsyncMock,
+            ),
         ):
             await _run_periodic_tasks(
                 timers,
