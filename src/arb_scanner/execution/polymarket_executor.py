@@ -10,7 +10,7 @@ from typing import Any
 import structlog
 
 from arb_scanner.models.config import PolyExecConfig
-from arb_scanner.models.execution import OrderRequest, OrderResponse
+from arb_scanner.models.execution import OrderRequest, OrderResponse, OrderStatus
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="execution.polymarket",
@@ -457,7 +457,7 @@ def _normalize_poly_levels(levels: Any) -> list[dict[str, str]]:
     return out
 
 
-def _map_poly_order_status(raw_status: object) -> str:
+def _map_poly_order_status(raw_status: object) -> OrderStatus:
     """Map Polymarket order status text to internal OrderStatus."""
     s = str(raw_status or "").strip().lower()
     if s in {"filled", "matched", "executed", "complete", "completed", "done"}:

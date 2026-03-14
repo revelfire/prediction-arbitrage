@@ -1008,7 +1008,8 @@ async def _resolve_pending_order_status(order: dict[str, Any], poly: Any) -> Ord
 
     if not local_venue_order_id:
         return None
-    return await poly.get_order_status(local_venue_order_id)
+    result: OrderResponse | None = await poly.get_order_status(local_venue_order_id)
+    return result
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -1024,8 +1025,16 @@ def _to_decimal(value: object) -> Decimal | None:
 def _normalize_order_status(value: object) -> OrderStatus:
     """Normalize status text into OrderStatus-compatible values."""
     status = str(value or "").strip().lower()
-    if status in {"submitting", "submitted", "filled", "partially_filled", "failed", "cancelled"}:
-        return status
+    valid: set[str] = {
+        "submitting",
+        "submitted",
+        "filled",
+        "partially_filled",
+        "failed",
+        "cancelled",
+    }
+    if status in valid:
+        return status  # type: ignore[return-value]
     if status in {"canceled", "expired"}:
         return "cancelled"
     if status in {"partial", "partiallyfilled", "partially-filled"}:
@@ -1038,7 +1047,7 @@ def _to_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)
+        return int(str(value))
     except (ValueError, TypeError):
         return None
 
