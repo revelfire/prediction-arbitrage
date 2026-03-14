@@ -36,7 +36,9 @@ async def test_sweep_retries_exit_failed_positions() -> None:
     config = MagicMock()
     config._flip_pipeline = pipeline
 
-    with patch("arb_scanner.flippening._orch_exit._feed_exit_pipeline", new_callable=AsyncMock) as fed:
+    with patch(
+        "arb_scanner.flippening._orch_exit._feed_exit_pipeline", new_callable=AsyncMock
+    ) as fed:
         count = await sweep_overtime_db_positions(config)
 
     assert count == 1
@@ -53,7 +55,9 @@ async def test_sweep_skips_exit_pending_positions() -> None:
     config = MagicMock()
     config._flip_pipeline = pipeline
 
-    with patch("arb_scanner.flippening._orch_exit._feed_exit_pipeline", new_callable=AsyncMock) as fed:
+    with patch(
+        "arb_scanner.flippening._orch_exit._feed_exit_pipeline", new_callable=AsyncMock
+    ) as fed:
         count = await sweep_overtime_db_positions(config)
 
     assert count == 0

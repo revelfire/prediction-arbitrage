@@ -245,9 +245,7 @@ class CircuitBreakerManager:
         successes = self._failure_probe_successes
         success_rate = float(successes / attempts) if attempts > 0 else 0.0
         next_probe_after = (
-            self._failure_probe_after.isoformat()
-            if self._failure_probe_after is not None
-            else None
+            self._failure_probe_after.isoformat() if self._failure_probe_after is not None else None
         )
         return {
             "cooldown_seconds": self._failure_probe_cooldown_seconds,
