@@ -12,6 +12,9 @@ import structlog
 from arb_scanner.flippening._orch_alerts import handle_discovery_health
 from arb_scanner.flippening._orch_processing import (
     process_update,
+    reconcile_open_positions_with_exchange,
+    reconcile_pending_db_positions,
+    retry_active_signals,
     sweep_overtime_db_positions,
     sweep_overtime_signals,
 )
@@ -45,6 +48,9 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 
 _DISCOVERY_INTERVAL_SECONDS = 300  # 5 minutes
 _POSITION_SWEEP_INTERVAL_S = 60  # 1 minute
+_PENDING_EXIT_RECONCILE_INTERVAL_S = 10  # 10 seconds
+_EXCHANGE_RECONCILE_INTERVAL_S = 300  # 5 minutes
+_SIGNAL_RETRY_INTERVAL_S = 60  # 1 minute
 
 
 async def run_flip_watch(
@@ -268,6 +274,18 @@ async def _run_periodic_tasks(
         )
         await sweep_overtime_db_positions(config)
         timers.last_position_sweep = now
+    if (
+        not dry_run
+        and now - timers.last_pending_exit_reconcile > _PENDING_EXIT_RECONCILE_INTERVAL_S
+    ):
+        await reconcile_pending_db_positions(config)
+        timers.last_pending_exit_reconcile = now
+    if not dry_run and now - timers.last_exchange_reconcile > _EXCHANGE_RECONCILE_INTERVAL_S:
+        await reconcile_open_positions_with_exchange(config)
+        timers.last_exchange_reconcile = now
+    if not dry_run and now - timers.last_signal_retry > _SIGNAL_RETRY_INTERVAL_S:
+        await retry_active_signals(game_mgr, config)
+        timers.last_signal_retry = now
     if now - timers.last_discovery > _DISCOVERY_INTERVAL_SECONDS:
         prev_health = await _periodic_discovery(
             config,
@@ -320,6 +338,9 @@ class _LoopTimers:
         self.last_drift_alert: float = 0.0
         self.last_reconnect: float = 0.0
         self.last_position_sweep: float = _now
+        self.last_pending_exit_reconcile: float = 0.0
+        self.last_exchange_reconcile: float = _now
+        self.last_signal_retry: float = _now
 
 
 async def _periodic_discovery(
@@ -375,14 +396,23 @@ async def _periodic_discovery(
 
 
 async def _check_orphaned_positions(config: Settings) -> None:
-    """Alert on open positions from prior sessions at startup.
+    """Reconcile and alert on open positions from prior sessions at startup.
 
-    Does NOT mark positions as abandoned — the periodic sweep will
-    attempt to close them on Polymarket first, then update the DB.
+    First reconciles DB positions against actual Polymarket token
+    balances — any position whose tokens are no longer held is closed.
+    Then alerts on remaining orphaned positions.
 
     Args:
         config: Application settings with DB URL and notification webhooks.
     """
+    try:
+        # Reconcile stale positions against exchange balances first
+        closed = await reconcile_open_positions_with_exchange(config)
+        if closed:
+            logger.info("startup_reconcile_closed", closed=closed)
+    except Exception:
+        logger.exception("startup_reconcile_failed")
+
     try:
         from arb_scanner.execution.flip_position_repo import FlipPositionRepo
         from arb_scanner.flippening.alert_formatter import dispatch_flip_alert
@@ -400,18 +430,20 @@ async def _check_orphaned_positions(config: Settings) -> None:
             return
 
         lines: list[str] = []
-        if orphans:
-            lines.append(f":warning: *{len(orphans)} open position(s) from prior session:*")
-            for p in orphans:
-                max_hold = p.get("max_hold_minutes")
-                hold_tag = f" | max {max_hold}m" if max_hold else ""
-                lines.append(
-                    f"  • `{p['market_id']}` | {p['side'].upper()}"
-                    f" | {p['size_contracts']} contracts"
-                    f" @ ${float(p['entry_price']):.3f}{hold_tag}"
-                    f" | arb_id: `{p['arb_id'][:12]}...`"
-                )
-            lines.append("_Overtime positions will be auto-closed by the periodic sweep._")
+        reconcile_note = f" ({closed} auto-closed)" if closed else ""
+        lines.append(
+            f":warning: *{len(orphans)} open position(s) from prior session{reconcile_note}:*"
+        )
+        for p in orphans:
+            max_hold = p.get("max_hold_minutes")
+            hold_tag = f" | max {max_hold}m" if max_hold else ""
+            lines.append(
+                f"  • `{p['market_id']}` | {p['side'].upper()}"
+                f" | {p['size_contracts']} contracts"
+                f" @ ${float(p['entry_price']):.3f}{hold_tag}"
+                f" | arb_id: `{p['arb_id'][:12]}...`"
+            )
+        lines.append("_Overtime positions will be auto-closed by the periodic sweep._")
         msg = "\n".join(lines)
 
         notif = config.notifications

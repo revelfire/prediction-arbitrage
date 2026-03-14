@@ -36,6 +36,12 @@ class BreakerResetBody(BaseModel):
     pipeline: str = "all"
 
 
+class AutoExecConfigBody(BaseModel):
+    """Request body for live auto-exec config updates."""
+
+    min_confidence: float | None = None
+
+
 @router.get("/status")
 async def auto_exec_status(
     request: Request,
@@ -52,6 +58,7 @@ async def auto_exec_status(
     """
     ac = config.auto_execution
     arb_pipeline = getattr(request.app.state, "arb_pipeline", None)
+    flip_pipeline = getattr(request.app.state, "flip_pipeline", None)
     mode = arb_pipeline.mode if arb_pipeline else "off"
 
     result: dict[str, Any] = {
@@ -67,6 +74,14 @@ async def auto_exec_status(
             "daily_loss_limit_usd": ac.daily_loss_limit_usd,
             "max_daily_trades": ac.max_daily_trades,
             "max_slippage_pct": ac.max_slippage_pct,
+            "failure_probe_cooldown_min_seconds": ac.failure_probe_cooldown_min_seconds,
+            "failure_probe_cooldown_max_seconds": ac.failure_probe_cooldown_max_seconds,
+            "failure_probe_backoff_multiplier": ac.failure_probe_backoff_multiplier,
+            "failure_probe_recovery_multiplier": ac.failure_probe_recovery_multiplier,
+            "exit_pending_stale_seconds": ac.exit_pending_stale_seconds,
+            "exit_retry_max_attempts": ac.exit_retry_max_attempts,
+            "exit_retry_reprice_pct": ac.exit_retry_reprice_pct,
+            "exit_retry_min_price": ac.exit_retry_min_price,
         },
         "critic": {
             "enabled": ac.critic.enabled,
@@ -74,6 +89,9 @@ async def auto_exec_status(
         },
         "arb_breakers": [],
         "flip_breakers": [],
+        "flip_watchdog": {},
+        "flip_failure_probe": {},
+        "flip_runtime": {},
     }
 
     # Per-pipeline breaker state
@@ -83,6 +101,16 @@ async def auto_exec_status(
         result["arb_breakers"] = [s.model_dump(mode="json") for s in arb_breakers.get_state()]
     if flip_breakers:
         result["flip_breakers"] = [s.model_dump(mode="json") for s in flip_breakers.get_state()]
+        get_probe_metrics = getattr(flip_breakers, "get_failure_probe_metrics", None)
+        if callable(get_probe_metrics):
+            result["flip_failure_probe"] = get_probe_metrics()
+    if flip_pipeline is not None:
+        get_metrics = getattr(flip_pipeline, "get_exit_watchdog_metrics", None)
+        if callable(get_metrics):
+            result["flip_watchdog"] = get_metrics()
+        get_runtime = getattr(flip_pipeline, "get_runtime_confidence_state", None)
+        if callable(get_runtime):
+            result["flip_runtime"] = get_runtime()
 
     return result
 
@@ -134,6 +162,39 @@ async def disable_auto_exec(
         flip.kill()
     logger.warning("auto_exec_killed")
     return {"mode": "off", "status": "killed"}
+
+
+@router.post("/config")
+async def update_auto_exec_config(
+    body: AutoExecConfigBody,
+    request: Request,
+    config: Settings = Depends(get_config),
+) -> dict[str, Any]:
+    """Update selected auto-exec config values at runtime (no restart)."""
+    if body.min_confidence is None:
+        raise HTTPException(400, "No config fields provided")
+    min_conf = max(0.0, min(float(body.min_confidence), 1.0))
+    config.auto_execution.min_confidence = min_conf
+
+    arb_pipeline = getattr(request.app.state, "arb_pipeline", None)
+    if arb_pipeline is not None:
+        setter = getattr(arb_pipeline, "set_min_confidence", None)
+        if callable(setter):
+            setter(min_conf)
+    flip_pipeline = getattr(request.app.state, "flip_pipeline", None)
+    if flip_pipeline is not None:
+        setter = getattr(flip_pipeline, "set_min_confidence", None)
+        if callable(setter):
+            setter(min_conf)
+
+    push_activity(
+        "config_updated",
+        "system",
+        pipeline="system",
+        min_confidence=min_conf,
+    )
+    logger.info("auto_exec_config_updated", min_confidence=min_conf)
+    return {"status": "ok", "min_confidence": min_conf}
 
 
 @router.get("/log")
@@ -239,6 +300,41 @@ async def reset_circuit_breaker(
         _reset_breaker(breakers, bt)
     logger.info("circuit_breaker_manual_reset", breaker_type=bt, pipeline=body.pipeline)
     return _breaker_reset_response(bt, body.pipeline, targets)
+
+
+@router.post("/retry/{log_id}")
+async def retry_failed_trade(
+    log_id: str,
+    request: Request,
+    repo: Any = Depends(get_auto_exec_repo),
+) -> dict[str, Any]:
+    """Retry a failed auto-execution trade.
+
+    Args:
+        log_id: ID of the failed log entry.
+        request: The incoming HTTP request.
+        repo: Auto-execution repository.
+
+    Returns:
+        Status dict with retry result.
+    """
+    log_entry = await repo.get_log(log_id)
+    if log_entry is None:
+        raise HTTPException(404, "Log entry not found")
+    if log_entry.get("status") != "failed":
+        raise HTTPException(400, "Only failed trades can be retried")
+
+    source = log_entry.get("source", "")
+    arb_id = log_entry.get("arb_id", "")
+    if not arb_id:
+        raise HTTPException(400, "Log entry missing arb_id")
+
+    if source in ("flippening", "refeed", "retry"):
+        result = await _retry_flip_trade(arb_id, request)
+    else:
+        result = await _retry_arb_trade(arb_id, log_entry, request)
+
+    return result
 
 
 @router.get("/activity")
@@ -365,6 +461,92 @@ def _breaker_reset_response(
     for name, breakers in targets:
         result[f"{name}_breakers"] = [s.model_dump(mode="json") for s in breakers.get_state()]
     return result
+
+
+async def _retry_flip_trade(
+    arb_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """Retry a failed flippening trade by looking up event data.
+
+    Args:
+        arb_id: The event_id / arb_id from the failed log entry.
+        request: HTTP request with app state.
+
+    Returns:
+        Status dict.
+    """
+    flip = getattr(request.app.state, "flip_pipeline", None)
+    if flip is None:
+        raise HTTPException(503, "Flip pipeline not available")
+
+    db = getattr(request.app.state, "db", None)
+    if db is None or db.pool is None:
+        raise HTTPException(503, "Database not available")
+
+    from arb_scanner.storage._flippening_queries import GET_RETRY_OPPORTUNITY
+
+    row = await db.pool.fetchrow(GET_RETRY_OPPORTUNITY, arb_id)
+    if row is None:
+        raise HTTPException(404, "No flippening event found for this trade")
+
+    token_id = row["token_id"] or ""
+    if not token_id:
+        raise HTTPException(400, "No token_id available for retry")
+
+    opp: dict[str, object] = {
+        "arb_id": str(row["event_id"]),
+        "spread_pct": float(row["spike_magnitude"]),
+        "confidence": float(row["confidence"]),
+        "category": row["category"] or "",
+        "title": row["market_title"] or "",
+        "ticket_type": "flippening",
+        "market_id": row["market_id"],
+        "token_id": token_id,
+        "side": row["side"],
+        "entry_price": float(row["entry_price"]),
+        "market_slug": "",
+    }
+    push_activity("retry_start", arb_id, pipeline="flip", source="user")
+    result = await flip.process_opportunity(opp, source="retry")
+    status = "submitted" if result is not None else "rejected"
+    push_activity("retry_done", arb_id, pipeline="flip", source="user", result=status)
+    return {"status": "ok", "retry_result": status, "arb_id": arb_id}
+
+
+async def _retry_arb_trade(
+    arb_id: str,
+    log_entry: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    """Retry a failed arb trade using stored log data.
+
+    Args:
+        arb_id: The arb ticket ID.
+        log_entry: The original log entry dict.
+        request: HTTP request with app state.
+
+    Returns:
+        Status dict.
+    """
+    pipeline = getattr(request.app.state, "arb_pipeline", None)
+    if pipeline is None:
+        raise HTTPException(503, "Arb pipeline not available")
+
+    snap = log_entry.get("criteria_snapshot") or {}
+    if isinstance(snap, str):
+        snap = json.loads(snap)
+    opp: dict[str, object] = {
+        "arb_id": arb_id,
+        "spread_pct": float(log_entry.get("trigger_spread_pct", 0)),
+        "confidence": float(log_entry.get("trigger_confidence", 0)),
+        "title": snap.get("title", ""),
+    }
+    push_activity("retry_start", arb_id, pipeline="arb", source="user")
+    result = await pipeline.process_opportunity(opp, source="retry")
+    status = "submitted" if result is not None else "rejected"
+    push_activity("retry_done", arb_id, pipeline="arb", source="user", result=status)
+    return {"status": "ok", "retry_result": status, "arb_id": arb_id}
 
 
 async def _refeed_active_signals(flip: Any, pool: Any) -> None:

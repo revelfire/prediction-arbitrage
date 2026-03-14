@@ -29,7 +29,19 @@ SELECT * FROM auto_execution_log WHERE id = $1
 """
 
 LIST_LOG = """
-SELECT * FROM auto_execution_log
+SELECT DISTINCT ON (arb_id) *
+FROM auto_execution_log
+WHERE status != 'pending'
+ORDER BY arb_id, created_at DESC
+"""
+
+LIST_LOG_DEDUPED = """
+SELECT * FROM (
+    SELECT DISTINCT ON (arb_id) *
+    FROM auto_execution_log
+    WHERE status != 'pending'
+    ORDER BY arb_id, created_at DESC
+) sub
 ORDER BY created_at DESC
 LIMIT $1
 """
@@ -67,12 +79,18 @@ RETURNING id, arb_id, poly_market_id, kalshi_ticker, max_hold_minutes
 
 GET_DAILY_STATS = """
 SELECT
-    COUNT(*) AS total_trades,
+    COUNT(*) FILTER (
+        WHERE status IN ('executed', 'failed', 'partial')
+    ) AS total_trades,
     COUNT(*) FILTER (WHERE actual_pnl > 0) AS wins,
-    COUNT(*) FILTER (WHERE actual_pnl <= 0) AS losses,
+    COUNT(*) FILTER (WHERE actual_pnl <= 0 AND status IN ('executed', 'partial')) AS losses,
     COALESCE(SUM(actual_pnl), 0) AS total_pnl,
-    COALESCE(AVG(trigger_spread_pct), 0) AS avg_spread,
-    COALESCE(AVG(slippage), 0) AS avg_slippage,
+    COALESCE(AVG(trigger_spread_pct) FILTER (
+        WHERE status IN ('executed', 'failed', 'partial')
+    ), 0) AS avg_spread,
+    COALESCE(AVG(slippage) FILTER (
+        WHERE status IN ('executed', 'partial')
+    ), 0) AS avg_slippage,
     COUNT(*) FILTER (
         WHERE critic_verdict->>'approved' = 'false'
     ) AS critic_rejections,

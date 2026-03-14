@@ -144,7 +144,7 @@ class AutoExecRepository:
         Returns:
             List of log entry dicts.
         """
-        rows = await self._pool.fetch(AQ.LIST_LOG, limit)
+        rows = await self._pool.fetch(AQ.LIST_LOG_DEDUPED, limit)
         return [dict(r) for r in rows]
 
     async def insert_position(

@@ -45,13 +45,14 @@ def _event(
     confidence: str = "0.80",
     baseline_yes: str = "0.65",
     spike_price: str = "0.50",
+    spike_magnitude_pct: str = "0.23",
 ) -> FlippeningEvent:
     return FlippeningEvent(
         market_id="m1",
         market_title="Lakers vs Celtics",
         baseline_yes=Decimal(baseline_yes),
         spike_price=Decimal(spike_price),
-        spike_magnitude_pct=Decimal("0.23"),
+        spike_magnitude_pct=Decimal(spike_magnitude_pct),
         spike_direction=direction,
         confidence=Decimal(confidence),
         sport="nba",
@@ -128,6 +129,20 @@ class TestCreateEntry:
         assert signal is not None
         expected_target = Decimal("0.50") + (Decimal("0.65") - Decimal("0.50")) * Decimal("0.70")
         assert signal.target_exit_price == expected_target
+
+    def test_low_confidence_tightens_exit_profile(self) -> None:
+        """Lower-confidence, weaker spikes tighten target/stop and shorten hold."""
+        gen = SignalGenerator(_CONFIG)
+        bl = _baseline(yes="0.65")
+        ev = _event(confidence="0.55", spike_magnitude_pct="0.10")
+        signal = gen.create_entry(ev, Decimal("0.50"), bl)
+        assert signal is not None
+
+        base_target = Decimal("0.50") + (Decimal("0.65") - Decimal("0.50")) * Decimal("0.70")
+        base_stop = Decimal("0.50") * Decimal("0.85")
+        assert signal.target_exit_price < base_target
+        assert signal.stop_loss_price > base_stop
+        assert signal.max_hold_minutes < 45
 
     def test_stop_loss_calculation(self) -> None:
         """Stop loss = entry * (1 - stop_loss_pct)."""

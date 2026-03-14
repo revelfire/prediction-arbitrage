@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Arb Scanner Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
     <!-- Header -->
@@ -530,6 +530,26 @@
                     <button id="autoexec-apply-btn" class="btn btn-primary btn-sm" onclick="setAutoExecMode()">Apply</button>
                     <span id="ae-mode-badge" class="ae-mode-badge ae-mode-off">OFF</span>
                 </div>
+                <div class="autoexec-threshold">
+                    <label for="autoexec-min-confidence">Min Confidence:</label>
+                    <input
+                        id="autoexec-min-confidence"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value="0.65"
+                    >
+                    <button
+                        id="autoexec-confidence-apply-btn"
+                        class="btn btn-primary btn-sm"
+                        onclick="setAutoExecMinConfidence()"
+                    >
+                        Set
+                    </button>
+                    <span id="autoexec-confidence-runtime" class="ae-subtle-text">runtime --</span>
+                    <span id="autoexec-guardrail-state" class="ae-subtle-text">guardrail --</span>
+                </div>
                 <button id="autoexec-kill-btn" class="btn btn-danger" onclick="killAutoExec()">KILL SWITCH</button>
             </div>
 
@@ -575,6 +595,58 @@
                     <div class="label">Anomaly</div>
                     <div class="value breaker-ok">OK</div>
                     <button class="btn btn-sm btn-danger breaker-reset-btn" style="display:none;margin-top:6px" onclick="resetBreaker('anomaly')">Reset</button>
+                </div>
+            </div>
+
+            <div class="section-title">Flip Failure Probe</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Attempts</div>
+                    <div class="value" id="ae-probe-attempts">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Successes</div>
+                    <div class="value" id="ae-probe-successes">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Failures</div>
+                    <div class="value" id="ae-probe-failures">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Success Rate</div>
+                    <div class="value" id="ae-probe-rate">0%</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Next Window</div>
+                    <div class="value" id="ae-probe-next">-</div>
+                </div>
+            </div>
+
+            <div class="section-title">Flip Exit Watchdog</div>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="label">Stale Detected</div>
+                    <div class="value" id="ae-wd-stale">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Retries Placed</div>
+                    <div class="value" id="ae-wd-retries">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Retry Closed</div>
+                    <div class="value" id="ae-wd-closed">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Cancel Failed</div>
+                    <div class="value" id="ae-wd-cancel-failed">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Retry Failed</div>
+                    <div class="value" id="ae-wd-retry-failed">0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="label">Retry Exhausted</div>
+                    <div class="value" id="ae-wd-exhausted">0</div>
                 </div>
             </div>
 
@@ -631,6 +703,7 @@
 
             <!-- Recent Auto-Trades -->
             <div class="section-title">Recent Auto-Trades</div>
+            <div id="ae-reason-breakdown" class="ae-notice">No rejection/failure reasons yet</div>
             <table>
                 <thead>
                     <tr>
@@ -807,6 +880,6 @@
         <button id="refresh-btn" class="btn btn-primary btn-sm">Refresh Now</button>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=4"></script>
 </body>
 </html>

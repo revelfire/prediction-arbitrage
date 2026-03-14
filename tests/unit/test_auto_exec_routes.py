@@ -43,6 +43,7 @@ def _test_config() -> Settings:
 def _make_client(
     *,
     pipeline: Any = None,
+    flip_pipeline: Any = None,
     breakers: CircuitBreakerManager | None = None,
     auto_repo: Any = None,
 ) -> TestClient:
@@ -56,6 +57,8 @@ def _make_client(
     app.state.config = config
     if pipeline is not None:
         app.state.arb_pipeline = pipeline
+    if flip_pipeline is not None:
+        app.state.flip_pipeline = flip_pipeline
     if breakers is not None:
         app.state.arb_breakers = breakers
         app.state.flip_breakers = breakers
@@ -89,14 +92,37 @@ class TestGetStatus:
         """Returns initialised=True with active pipeline."""
         pipeline = MagicMock()
         pipeline.mode = "auto"
+        flip_pipeline = MagicMock()
+        flip_pipeline.get_exit_watchdog_metrics.return_value = {
+            "stale_detected": 2,
+            "cancel_failed": 1,
+            "retries_placed": 3,
+            "retry_exhausted": 0,
+            "retry_failed": 1,
+            "retry_closed": 1,
+        }
+        flip_pipeline.get_runtime_confidence_state.return_value = {
+            "min_confidence": 0.62,
+            "guardrail_enabled": True,
+            "recent_attempts": 5,
+            "recent_failed": 2,
+            "recent_fail_rate": 0.4,
+        }
         breakers = CircuitBreakerManager(AutoExecutionConfig())
-        client = _make_client(pipeline=pipeline, breakers=breakers)
+        client = _make_client(pipeline=pipeline, flip_pipeline=flip_pipeline, breakers=breakers)
         resp = client.get("/api/auto-execution/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["initialised"] is True
         assert data["mode"] == "auto"
         assert len(data["arb_breakers"]) == 3
+        assert data["flip_watchdog"]["stale_detected"] == 2
+        assert "flip_failure_probe" in data
+        assert data["flip_failure_probe"]["attempts"] == 0
+        assert data["config"]["failure_probe_backoff_multiplier"] == 1.5
+        assert data["config"]["exit_pending_stale_seconds"] == 30
+        assert data["flip_runtime"]["min_confidence"] == 0.62
+        assert data["flip_runtime"]["recent_attempts"] == 5
 
 
 class TestEnableAutoExec:
@@ -145,6 +171,53 @@ class TestDisableAutoExec:
         client = _make_client()
         resp = client.post("/api/auto-execution/disable")
         assert resp.status_code == 503
+
+
+class TestUpdateAutoExecConfig:
+    """Tests for POST /api/auto-execution/config."""
+
+    def test_updates_min_confidence_live(self) -> None:
+        """Config update mutates runtime config and pipelines."""
+        pipeline = MagicMock()
+        pipeline.mode = "off"
+        flip_pipeline = MagicMock()
+        client = _make_client(pipeline=pipeline, flip_pipeline=flip_pipeline)
+
+        resp = client.post(
+            "/api/auto-execution/config",
+            json={"min_confidence": 0.62},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["min_confidence"] == 0.62
+        pipeline.set_min_confidence.assert_called_once_with(0.62)
+        flip_pipeline.set_min_confidence.assert_called_once_with(0.62)
+
+        status = client.get("/api/auto-execution/status")
+        assert status.status_code == 200
+        assert status.json()["config"]["min_confidence"] == 0.62
+
+    def test_rejects_empty_body(self) -> None:
+        """Returns 400 when no mutable config fields are supplied."""
+        pipeline = MagicMock()
+        pipeline.mode = "off"
+        client = _make_client(pipeline=pipeline)
+        resp = client.post("/api/auto-execution/config", json={})
+        assert resp.status_code == 400
+
+    def test_clamps_min_confidence(self) -> None:
+        """Values are bounded into [0, 1]."""
+        pipeline = MagicMock()
+        pipeline.mode = "off"
+        client = _make_client(pipeline=pipeline)
+        resp = client.post(
+            "/api/auto-execution/config",
+            json={"min_confidence": 5.0},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["min_confidence"] == 1.0
+        pipeline.set_min_confidence.assert_called_once_with(1.0)
 
 
 class TestGetLog:
@@ -253,6 +326,70 @@ class TestResetCircuitBreaker:
         )
         assert resp.status_code == 200
         assert breakers.is_any_tripped() is False
+
+
+class TestRetryFailedTrade:
+    """Tests for POST /api/auto-execution/retry/{log_id}."""
+
+    def test_retry_not_found(self) -> None:
+        """Returns 404 when log entry does not exist."""
+        repo = AsyncMock()
+        repo.get_log.return_value = None
+        client = _make_client(pipeline=MagicMock(), auto_repo=repo)
+        resp = client.post("/api/auto-execution/retry/no-such-id")
+        assert resp.status_code == 404
+
+    def test_retry_non_failed_rejected(self) -> None:
+        """Returns 400 when log entry is not failed."""
+        repo = AsyncMock()
+        repo.get_log.return_value = {"id": "log1", "status": "executed"}
+        client = _make_client(pipeline=MagicMock(), auto_repo=repo)
+        resp = client.post("/api/auto-execution/retry/log1")
+        assert resp.status_code == 400
+
+    def test_retry_flip_trade(self) -> None:
+        """Retries a failed flip trade via the flip pipeline."""
+        repo = AsyncMock()
+        repo.get_log.return_value = {
+            "id": "log1",
+            "arb_id": "evt-1",
+            "status": "failed",
+            "source": "flippening",
+            "trigger_spread_pct": 0.15,
+            "trigger_confidence": 0.80,
+        }
+
+        flip = MagicMock()
+        flip.process_opportunity = AsyncMock(return_value="ok")
+
+        mock_db = MagicMock()
+        mock_row = {
+            "event_id": "evt-1",
+            "market_id": "m1",
+            "market_title": "Test",
+            "spike_magnitude": 0.15,
+            "confidence": 0.80,
+            "category": "nba",
+            "category_type": "sport",
+            "side": "yes",
+            "entry_price": 0.50,
+            "token_id": "tok-1",
+        }
+        mock_db.pool = AsyncMock()
+        mock_db.pool.fetchrow = AsyncMock(return_value=mock_row)
+
+        client = _make_client(
+            pipeline=MagicMock(),
+            flip_pipeline=flip,
+            auto_repo=repo,
+        )
+        client.app.state.db = mock_db
+
+        resp = client.post("/api/auto-execution/retry/log1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["retry_result"] == "submitted"
+        flip.process_opportunity.assert_awaited_once()
 
     def test_unknown_breaker_type_returns_400(self) -> None:
         """Returns 400 for unknown breaker type."""

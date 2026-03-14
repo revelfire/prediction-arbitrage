@@ -104,6 +104,13 @@ class ArbAutoExecutionPipeline:
         self._killed = mode == "off"
         logger.info("arb_pipeline_mode_changed", mode=mode)
 
+    def set_min_confidence(self, value: float) -> float:
+        """Update runtime min-confidence threshold for this pipeline."""
+        bounded = max(0.0, min(float(value), 1.0))
+        self._ac.min_confidence = bounded
+        logger.info("arb_min_confidence_updated", min_confidence=bounded)
+        return bounded
+
     def kill(self) -> None:
         """Emergency kill switch."""
         self._mode = "off"
@@ -214,6 +221,9 @@ class ArbAutoExecutionPipeline:
         """Execute two-leg arb order through the orchestrator."""
         title = str(opp.get("title", opp.get("market_title", "")))
         try:
+            consume_probe = getattr(self._infra.breakers, "consume_failure_probe_attempt", None)
+            if callable(consume_probe):
+                consume_probe()
             result = await self._orchestrator.execute(run.arb_id, size)
             status_map = {"complete": "executed", "partial": "partial", "failed": "failed"}
             log_status = status_map.get(result.status, "failed")
@@ -223,6 +233,11 @@ class ArbAutoExecutionPipeline:
                 self._infra.breakers.record_failure()
             if result.error_message == "GEOBLOCK":
                 await dispatch_geoblock(run.arb_id, self._infra)
+            criteria_snapshot: dict[str, Any] | None = None
+            if result.error_message:
+                criteria_snapshot = {"execution_error": str(result.error_message)}
+                if log_status != "executed":
+                    criteria_snapshot["execution_status"] = str(result.status)
             entry = build_entry(
                 run,
                 log_status,
@@ -231,6 +246,7 @@ class ArbAutoExecutionPipeline:
                 execution_result_id=result.id,
                 actual_spread=result.actual_spread,
                 slippage=result.slippage_from_ticket,
+                criteria_snapshot=criteria_snapshot,
                 title=title,
             )
         except Exception as exc:
@@ -243,6 +259,7 @@ class ArbAutoExecutionPipeline:
                 "failed",
                 size_usd=size,
                 verdict=verdict,
+                criteria_snapshot={"execution_error": str(exc)},
                 title=title,
             )
 

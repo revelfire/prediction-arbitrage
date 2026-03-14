@@ -215,10 +215,35 @@ LEFT JOIN LATERAL (
 LEFT JOIN flippening_signals x
     ON x.event_id = s.event_id AND x.signal_type = 'exit'
 LEFT JOIN flippening_auto_positions p
-    ON p.market_id = e.market_id AND p.status = 'open'
+    ON p.market_id = e.market_id AND p.status IN ('open', 'exit_pending', 'exit_failed')
 WHERE s.signal_type = 'entry'
   AND x.id IS NULL
   AND p.id IS NULL
 ORDER BY e.market_id, s.created_at DESC
 LIMIT $1
+"""
+
+GET_RETRY_OPPORTUNITY = """
+SELECT
+    e.id AS event_id,
+    e.market_id,
+    e.market_title,
+    e.spike_magnitude,
+    e.confidence,
+    e.category,
+    e.category_type,
+    s.side,
+    s.price AS entry_price,
+    b.token_id
+FROM flippening_events e
+JOIN flippening_signals s
+    ON s.event_id = e.id AND s.signal_type = 'entry'
+LEFT JOIN LATERAL (
+    SELECT token_id FROM flippening_baselines
+    WHERE market_id = e.market_id
+    ORDER BY captured_at DESC LIMIT 1
+) b ON true
+WHERE e.id = $1
+ORDER BY s.created_at DESC
+LIMIT 1
 """

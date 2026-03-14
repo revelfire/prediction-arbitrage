@@ -151,6 +151,27 @@ class TestMarkExitFailed:
         mock_pool.execute.assert_awaited_once_with(Q.MARK_EXIT_FAILED, "m1")
 
 
+class TestMarkExitPending:
+    """Tests for mark_exit_pending()."""
+
+    @pytest.mark.asyncio()
+    async def test_executes_update(self, repo: FlipPositionRepo, mock_pool: AsyncMock) -> None:
+        """Executes MARK_EXIT_PENDING query."""
+        await repo.mark_exit_pending(
+            "m1",
+            exit_order_id="order-1",
+            exit_price=Decimal("0.51"),
+            exit_reason="timeout",
+        )
+        mock_pool.execute.assert_awaited_once_with(
+            Q.MARK_EXIT_PENDING,
+            "m1",
+            "order-1",
+            Decimal("0.51"),
+            "timeout",
+        )
+
+
 class TestGetOrphanedPositions:
     """Tests for get_orphaned_positions()."""
 

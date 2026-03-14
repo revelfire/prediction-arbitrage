@@ -120,8 +120,8 @@ class TestExitStatusHandling:
         pos_repo.mark_exit_failed.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_submitted_response_closes_position(self) -> None:
-        """Submitted status also closes position."""
+    async def test_submitted_response_marks_exit_pending(self) -> None:
+        """Submitted without fill price leaves position as exit_pending."""
         poly = AsyncMock()
         poly.place_order.return_value = SimpleNamespace(
             status="submitted",
@@ -137,7 +137,49 @@ class TestExitStatusHandling:
         result = await executor.execute_exit(_exit_sig(), _entry_sig(), _event())
 
         assert result is not None
+        pos_repo.mark_exit_pending.assert_called_once()
+        pos_repo.close_position.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_submitted_with_fill_price_closes_position(self) -> None:
+        """Submitted + fill_price closes position using fill price."""
+        poly = AsyncMock()
+        poly.place_order.return_value = SimpleNamespace(
+            status="submitted",
+            fill_price=Decimal("0.57"),
+            venue_order_id="v-3",
+            error_message=None,
+        )
+        exec_repo = AsyncMock()
+        pos_repo = AsyncMock()
+        pos_repo.get_open_position.return_value = _position()
+
+        executor = FlipExitExecutor(poly, exec_repo, pos_repo)
+        result = await executor.execute_exit(_exit_sig(), _entry_sig(), _event())
+
+        assert result is not None
         pos_repo.close_position.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_partially_filled_stays_pending(self) -> None:
+        """Partially filled response remains exit_pending for later reconciliation."""
+        poly = AsyncMock()
+        poly.place_order.return_value = SimpleNamespace(
+            status="partially_filled",
+            fill_price=Decimal("0.57"),
+            venue_order_id="v-4",
+            error_message=None,
+        )
+        exec_repo = AsyncMock()
+        pos_repo = AsyncMock()
+        pos_repo.get_open_position.return_value = _position()
+
+        executor = FlipExitExecutor(poly, exec_repo, pos_repo)
+        result = await executor.execute_exit(_exit_sig(), _entry_sig(), _event())
+
+        assert result is not None
+        pos_repo.mark_exit_pending.assert_called_once()
+        pos_repo.close_position.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_position_skips_gracefully(self) -> None:

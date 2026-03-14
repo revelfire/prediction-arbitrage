@@ -41,10 +41,7 @@ def evaluate_arb_criteria(
     """
     reasons: list[str] = []
 
-    if breakers.is_any_tripped():
-        tripped = [s for s in breakers.get_state() if s.tripped]
-        for s in tripped:
-            reasons.append(f"circuit_breaker_{s.breaker_type.value}: {s.reason}")
+    reasons.extend(breakers.get_blocking_reasons())
 
     spread = float(opportunity.get("spread_pct", opportunity.get("net_spread_pct", 0)))
     if spread < config.min_spread_pct:

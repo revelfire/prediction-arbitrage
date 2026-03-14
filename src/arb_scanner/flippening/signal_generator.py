@@ -23,6 +23,14 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="flippening.signal_generator",
 )
 
+_CONFIDENCE_NEUTRAL = 0.80
+_CONFIDENCE_FLOOR = 0.50
+_MAGNITUDE_NEUTRAL = 0.20
+_MAGNITUDE_FLOOR = 0.05
+_TARGET_TIGHTEN_MAX = 0.35
+_STOP_TIGHTEN_MAX = 0.35
+_HOLD_REDUCTION_MAX = 0.55
+
 
 class SignalGenerator:
     """Generate entry/exit signals and execution tickets.
@@ -82,6 +90,13 @@ class SignalGenerator:
             if cat_cfg and cat_cfg.max_hold_minutes is not None
             else self._config.max_hold_minutes
         )
+        reversion_pct, stop_pct, max_hold = _adaptive_exit_profile(
+            event,
+            reversion_pct=reversion_pct,
+            stop_pct=stop_pct,
+            max_hold=max_hold,
+            min_hold_minutes=max(int(self._config.min_hold_seconds / 60), 1),
+        )
 
         side = _determine_side(event, baseline)
         entry_price = current_ask
@@ -118,6 +133,7 @@ class SignalGenerator:
             target=float(target_exit),
             stop=float(stop_loss),
             size=float(suggested_size),
+            max_hold_minutes=max_hold,
         )
         return signal
 
@@ -237,6 +253,44 @@ def _determine_side(event: FlippeningEvent, baseline: Baseline) -> str:
     if event.spike_direction == SpikeDirection.FAVORITE_DROP:
         return "no"
     return "yes"
+
+
+def _adaptive_exit_profile(
+    event: FlippeningEvent,
+    *,
+    reversion_pct: float,
+    stop_pct: float,
+    max_hold: int,
+    min_hold_minutes: int,
+) -> tuple[float, float, int]:
+    """Adapt target/stop/hold for weaker signals to reduce time-at-risk."""
+    penalty = _signal_penalty(event)
+    if penalty <= 0:
+        return reversion_pct, stop_pct, max_hold
+
+    reversion = max(reversion_pct * (1 - (_TARGET_TIGHTEN_MAX * penalty)), 0.05)
+    stop = max(stop_pct * (1 - (_STOP_TIGHTEN_MAX * penalty)), 0.01)
+    hold_scaled = int(round(max_hold * (1 - (_HOLD_REDUCTION_MAX * penalty))))
+    hold = max(min_hold_minutes, min(hold_scaled, max_hold))
+    return reversion, stop, hold
+
+
+def _signal_penalty(event: FlippeningEvent) -> float:
+    """Compute [0,1] penalty for weaker confidence/magnitude signals."""
+    conf = float(event.confidence)
+    conf_clamped = max(_CONFIDENCE_FLOOR, min(conf, 1.0))
+    conf_penalty = max(_CONFIDENCE_NEUTRAL - conf_clamped, 0.0) / max(
+        _CONFIDENCE_NEUTRAL - _CONFIDENCE_FLOOR,
+        0.01,
+    )
+
+    magnitude = abs(float(event.spike_magnitude_pct))
+    mag_clamped = max(_MAGNITUDE_FLOOR, min(magnitude, 1.0))
+    mag_penalty = max(_MAGNITUDE_NEUTRAL - mag_clamped, 0.0) / max(
+        _MAGNITUDE_NEUTRAL - _MAGNITUDE_FLOOR,
+        0.01,
+    )
+    return max(0.0, min(max(conf_penalty, mag_penalty), 1.0))
 
 
 def _build_exit(

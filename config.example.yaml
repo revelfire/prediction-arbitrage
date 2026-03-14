@@ -220,7 +220,7 @@ auto_execution:
   mode: "off"  # off | monitor | auto
   min_spread_pct: 0.03
   max_spread_pct: 0.50
-  min_confidence: 0.70
+  min_confidence: 0.62
   min_liquidity_usd: 100.0
   max_size_usd: 50.0
   min_size_usd: 5.0
@@ -232,6 +232,18 @@ auto_execution:
   max_daily_trades: 50
   max_open_positions: 10  # Hard cap on simultaneous open positions (set to 1 for safe testing)
   cooldown_seconds: 30
+  confidence_guardrail_enabled: true
+  confidence_guardrail_window_attempts: 20
+  confidence_guardrail_fail_rate: 0.55
+  confidence_guardrail_raise_to: 0.65
+  failure_probe_cooldown_min_seconds: ${AUTO_FAILURE_PROBE_COOLDOWN_MIN_SECONDS:15}
+  failure_probe_cooldown_max_seconds: ${AUTO_FAILURE_PROBE_COOLDOWN_MAX_SECONDS:300}
+  failure_probe_backoff_multiplier: ${AUTO_FAILURE_PROBE_BACKOFF_MULTIPLIER:1.5}
+  failure_probe_recovery_multiplier: ${AUTO_FAILURE_PROBE_RECOVERY_MULTIPLIER:0.75}
+  exit_pending_stale_seconds: ${AUTO_EXIT_PENDING_STALE_SECONDS:30}
+  exit_retry_max_attempts: ${AUTO_EXIT_RETRY_MAX_ATTEMPTS:4}
+  exit_retry_reprice_pct: ${AUTO_EXIT_REPRICE_PCT:0.02}
+  exit_retry_min_price: ${AUTO_EXIT_RETRY_MIN_PRICE:0.01}
   require_both_venues: true
   allowed_categories: []
   blocked_categories: []

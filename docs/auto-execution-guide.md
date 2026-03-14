@@ -62,7 +62,7 @@ auto_execution:
   # Criteria gates
   min_spread_pct: 0.03           # Minimum 3% spread to consider
   max_spread_pct: 0.50           # Reject spreads above 50% (likely data error)
-  min_confidence: 0.70           # Minimum match confidence
+  min_confidence: 0.62           # Minimum match confidence
   min_liquidity_usd: 100.0       # Minimum market liquidity
   allowed_categories: []         # Empty = all categories; ["nba", "nfl"] to restrict
   blocked_categories: []         # Categories to always exclude
@@ -84,9 +84,21 @@ auto_execution:
   max_daily_trades: 50           # Hard cap on trades per day
   max_consecutive_failures: 3    # Breaker trips after 3 consecutive failures
   cooldown_seconds: 30           # Wait between successive auto-trades
+  confidence_guardrail_enabled: true      # Raise threshold if recent execution failures spike
+  confidence_guardrail_window_attempts: 20
+  confidence_guardrail_fail_rate: 0.55
+  confidence_guardrail_raise_to: 0.65
+  failure_probe_cooldown_min_seconds: 15  # Floor for breaker probe cooldown
+  failure_probe_cooldown_max_seconds: 300 # Ceiling for breaker probe cooldown
+  failure_probe_backoff_multiplier: 1.5   # Cooldown growth after failed probe
+  failure_probe_recovery_multiplier: 0.75 # Cooldown shrink after successful probe
 
   # Flippening exit
   stop_loss_aggression_pct: 0.02 # Discount stop-loss limit price by 2% for fill priority
+  exit_pending_stale_seconds: 30 # If pending sell is older than this, retry
+  exit_retry_max_attempts: 4      # Max cancel/reprice retries per position
+  exit_retry_reprice_pct: 0.02    # Lower retry limit by 2% each attempt
+  exit_retry_min_price: 0.01      # Absolute floor for retry pricing
 
   # AI Trade Critic
   critic:
@@ -134,7 +146,8 @@ The `--auto-execute` flag sets `mode: "auto"` and `enabled: true` for the sessio
 
 1. Navigate to the **Auto-Exec** tab
 2. Select **auto** from the mode dropdown
-3. Click **Set Mode**
+3. Set **Min Confidence** (optional) and click **Set** to apply live
+4. Click **Set Mode**
 
 ### Via API
 
@@ -143,6 +156,11 @@ The `--auto-execute` flag sets `mode: "auto"` and `enabled: true` for the sessio
 curl -X POST http://localhost:8000/api/auto-execution/enable \
   -H "Content-Type: application/json" \
   -d '{"mode": "auto"}'
+
+# Update min confidence live (no restart)
+curl -X POST http://localhost:8000/api/auto-execution/config \
+  -H "Content-Type: application/json" \
+  -d '{"min_confidence": 0.62}'
 
 # Check status
 curl http://localhost:8000/api/auto-execution/status
@@ -201,7 +219,7 @@ Trips when cumulative daily P&L exceeds `daily_loss_limit_usd`. Auto-resets at m
 
 ### 2. Failure Breaker
 
-Trips after `max_consecutive_failures` consecutive execution failures (exchange errors, timeouts). Resets on next successful trade.
+Trips after `max_consecutive_failures` consecutive execution failures (exchange errors, timeouts). Resets on next successful trade. While tripped, the flip pipeline allows one timed probe attempt per cooldown window so it can recover without remaining fully blocked.
 
 ### 3. Anomaly Breaker
 
@@ -270,7 +288,19 @@ GameManager detects exit condition
   → Position marked closed with realized P&L
 ```
 
-> Exit orders that return a failed or rejected status from Polymarket will NOT close the position. Instead, the position is marked `exit_failed` and the operator is notified. Use the **Exit Now** button or manual API call to retry.
+> Exit orders that fail are marked `exit_failed` (still treated as active inventory). Pending exits are monitored and retried automatically by the stale watchdog.
+
+### Stale Pending Exit Watchdog
+
+If a sell order sits in `exit_pending` too long:
+
+1. Check order age against `exit_pending_stale_seconds`
+2. Cancel stale venue order
+3. Reprice down by `exit_retry_reprice_pct`
+4. Place replacement sell order
+5. Repeat until `exit_retry_max_attempts` reached
+
+When retry budget is exhausted, the position is marked `exit_failed`.
 
 ### Exit Reasons
 
@@ -285,7 +315,12 @@ The `stop_loss_aggression_pct` discount (default 2%) lowers the stop-loss limit 
 
 ### Orphan Detection
 
-On startup, the flippening orchestrator queries `flippening_auto_positions` for any rows with `status = 'open'`. If found, a Slack/Discord alert is dispatched listing each orphaned position — positions left open from a previous session where the exit signal was never received. **No automatic action is taken; the operator must close them manually on Polymarket.**
+On startup, the flippening orchestrator queries `flippening_auto_positions` for active rows (`open`, `exit_pending`, `exit_failed`). If found, a Slack/Discord alert is dispatched listing each orphaned position.
+
+After startup, periodic tasks automatically:
+- attempt timeout exits for stale active positions
+- reconcile pending exits against venue state
+- retry stale pending sells with cancel/reprice logic
 
 ### Manual Exit
 
@@ -326,10 +361,30 @@ The Auto-Exec tab provides real-time visibility into autonomous execution:
 
 ### Controls Row
 - **Mode selector:** Dropdown (off / manual / auto) with Set Mode button
+- **Min Confidence:** Numeric input + Set button; applies at runtime without restart
+- **Runtime confidence labels:** Shows current live threshold and guardrail fail-rate window
 - **Kill switch:** Red button, immediately halts all auto-execution
 
 ### Circuit Breakers
 Three status indicators showing green (clear) or red (tripped) for each breaker type. Hover for trip reason when active.
+
+### Flip Failure Probe
+Five cards show failure-breaker recovery telemetry:
+- **Attempts:** Probe trade attempts made while failure breaker was tripped
+- **Successes / Failures:** Probe outcomes
+- **Success Rate:** Probe success ratio
+- **Next Window:** Next eligible probe time (or `open`/`active`)
+
+Probe cooldown is adaptive: failed probes increase the cooldown window; successful probes decrease it (bounded to a safe minimum/maximum).
+
+### Flip Exit Watchdog
+Six cards show pending-exit recovery telemetry:
+- **Stale Detected**
+- **Retries Placed**
+- **Retry Closed**
+- **Cancel Failed**
+- **Retry Failed**
+- **Retry Exhausted**
 
 ### Today's Stats
 Four summary cards:
@@ -351,6 +406,8 @@ Table of the 20 most recent auto-execution entries:
 | Status | executed, rejected, critic_rejected, or failed |
 | Duration | Pipeline processing time in ms |
 
+Above the log table, a **Top rejection/failure reasons** panel summarizes the most frequent recent blockers and execution errors.
+
 ### Ticket Detail: Flippening Positions
 
 When viewing an executed flippening ticket, the detail modal shows an **Open Position** card displaying:
@@ -370,6 +427,7 @@ When viewing an executed flippening ticket, the detail modal shows an **Open Pos
 | GET | `/status` | Mode, breaker state, config summary, critic config |
 | POST | `/enable` | Set mode (body: `{"mode": "auto"}`) |
 | POST | `/disable` | Kill switch |
+| POST | `/config` | Update runtime knobs (currently `min_confidence`) |
 | GET | `/log?limit=50` | Audit log entries |
 | GET | `/positions` | Currently open positions |
 | GET | `/stats?days=7` | Performance statistics over N days |
@@ -462,6 +520,13 @@ Common causes:
 - `daily_loss_limit_usd` hit — loss breaker tripped, resets at midnight UTC
 - `max_daily_trades` reached — hard cap for the day, resets at midnight UTC
 
+You can tune `min_confidence` live from the Auto-Exec tab, or via API:
+```bash
+curl -X POST http://localhost:8000/api/auto-execution/config \
+  -H "Content-Type: application/json" \
+  -d '{"min_confidence": 0.62}'
+```
+
 ### Critic rejecting everything
 
 1. Check the mechanical flags in the log — are they legitimate warnings?
@@ -478,7 +543,7 @@ curl -X POST http://localhost:8000/api/auto-execution/circuit-breaker/reset \
   -d '{"breaker_type": "anomaly"}'
 ```
 
-Loss and failure breakers auto-reset (midnight UTC and on next success, respectively).
+Loss and failure breakers auto-reset (midnight UTC and on next success, respectively). In addition, failure-only trips on the flip pipeline now permit periodic probe attempts so the system can self-recover from transient venue issues instead of staying hard-blocked.
 
 You can target specific pipelines when resetting breakers:
 ```bash

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import structlog
@@ -238,6 +238,34 @@ class PolymarketExecutor:
             )
             return False
 
+    async def get_order_status(self, venue_order_id: str) -> OrderResponse:
+        """Fetch normalized status for an existing venue order.
+
+        Args:
+            venue_order_id: The CLOB order ID.
+
+        Returns:
+            OrderResponse with normalized status and optional fill price.
+        """
+        client = await self._ensure_level2_client()
+        loop = asyncio.get_running_loop()
+        raw: Any = await loop.run_in_executor(None, client.get_order, venue_order_id)
+        if not isinstance(raw, dict):
+            return OrderResponse(
+                venue_order_id=venue_order_id,
+                status="submitted",
+                error_message="invalid_order_response",
+            )
+
+        status = _map_poly_order_status(raw.get("status"))
+        fill_price = _extract_fill_price(raw)
+        return OrderResponse(
+            venue_order_id=str(raw.get("id", venue_order_id)),
+            status=status,
+            fill_price=fill_price,
+            error_message=str(raw.get("error", "")) or None,
+        )
+
     async def get_balance(self) -> Decimal:
         """Fetch USDC collateral balance on Polygon.
 
@@ -287,6 +315,54 @@ class PolymarketExecutor:
                 exc_info=True,
             )
             return _ZERO
+
+    async def get_token_balance(self, token_id: str) -> int:
+        """Fetch conditional token balance for a specific token ID.
+
+        Returns the number of shares held.  Returns -1 if the balance
+        could not be retrieved (e.g. network error).
+
+        Args:
+            token_id: CLOB conditional token ID.
+
+        Returns:
+            Number of shares held, or -1 on error.
+        """
+        try:
+            from py_clob_client.clob_types import (
+                AssetType,
+                BalanceAllowanceParams,
+            )
+
+            client = await self._ensure_level2_client()
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_id,
+                signature_type=self._signature_type,
+            )
+            loop = asyncio.get_running_loop()
+            resp: Any = await loop.run_in_executor(
+                None,
+                client.get_balance_allowance,
+                params,
+            )
+            bal = resp.get("balance", "0") if isinstance(resp, dict) else "0"
+            result = int(Decimal(str(bal)))
+            logger.info(
+                "poly_token_balance_ok",
+                token_id=token_id[:16],
+                balance=result,
+            )
+            return result
+        except Exception as exc:
+            logger.error(
+                "poly_token_balance_failed",
+                token_id=token_id[:16],
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            return -1
 
     async def get_book_depth(self, token_or_ticker: str) -> dict[str, Any]:
         """Fetch the full CLOB order book.
@@ -379,3 +455,44 @@ def _normalize_poly_levels(levels: Any) -> list[dict[str, str]]:
             continue
         out.append({"price": str(price), "size": str(size)})
     return out
+
+
+def _map_poly_order_status(raw_status: object) -> str:
+    """Map Polymarket order status text to internal OrderStatus."""
+    s = str(raw_status or "").strip().lower()
+    if s in {"filled", "matched", "executed", "complete", "completed", "done"}:
+        return "filled"
+    if s in {"partial", "partially_filled", "partiallyfilled", "partially-filled"}:
+        return "partially_filled"
+    if s in {"cancelled", "canceled", "expired"}:
+        return "cancelled"
+    if s in {"rejected", "failed", "error"}:
+        return "failed"
+    if s in {"submitting"}:
+        return "submitting"
+    return "submitted"
+
+
+def _extract_fill_price(raw: dict[str, Any]) -> Decimal | None:
+    """Extract fill price from a Polymarket order payload.
+
+    Note: ``price`` is deliberately excluded — it is the *requested*
+    limit price, not the actual fill price.  Including it caused
+    unfilled limit orders to appear filled at the requested price.
+    """
+    for key in (
+        "avgPrice",
+        "averagePrice",
+        "average_price",
+        "avg_price",
+        "fillPrice",
+        "fill_price",
+    ):
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+    return None

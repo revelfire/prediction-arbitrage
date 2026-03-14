@@ -173,6 +173,7 @@ class TestArbPipeline:
         entry = await pipeline.process_opportunity(_opp())
         assert entry is not None
         assert entry.status == "failed"
+        assert entry.criteria_snapshot.get("execution_error") == "exec failed"
         assert deps["breakers"]._failure_count >= 1
 
     @pytest.mark.asyncio

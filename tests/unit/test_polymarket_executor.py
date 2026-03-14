@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from py_clob_client.clob_types import OrderArgs
 
-from arb_scanner.execution.polymarket_executor import PolymarketExecutor
+from arb_scanner.execution.polymarket_executor import (
+    PolymarketExecutor,
+    _extract_fill_price,
+    _map_poly_order_status,
+)
 from arb_scanner.models.config import PolyExecConfig
 from arb_scanner.models.execution import OrderRequest
 
@@ -139,3 +143,97 @@ async def test_get_book_depth_normalizes_sdk_levels() -> None:
 
     assert book["asks"][0]["price"] == "0.51"
     assert book["asks"][0]["size"] == "120"
+
+
+@pytest.mark.asyncio()
+async def test_get_order_status_normalizes_filled_payload() -> None:
+    """Order status endpoint is normalized into OrderResponse."""
+    executor = PolymarketExecutor(PolyExecConfig())
+    client = Mock()
+    client.get_order = Mock(
+        return_value={
+            "id": "venue-1",
+            "status": "completed",
+            "averagePrice": "0.57",
+        }
+    )
+    executor._ensure_level2_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    status = await executor.get_order_status("venue-1")
+
+    assert status.venue_order_id == "venue-1"
+    assert status.status == "filled"
+    assert status.fill_price == Decimal("0.57")
+
+
+@pytest.mark.asyncio()
+async def test_get_order_status_invalid_payload_defaults_to_submitted() -> None:
+    """Non-dict SDK responses degrade safely to submitted."""
+    executor = PolymarketExecutor(PolyExecConfig())
+    client = Mock()
+    client.get_order = Mock(return_value="bad-response")
+    executor._ensure_level2_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    status = await executor.get_order_status("venue-2")
+
+    assert status.venue_order_id == "venue-2"
+    assert status.status == "submitted"
+    assert status.error_message == "invalid_order_response"
+
+
+@pytest.mark.parametrize(
+    ("raw_status", "expected"),
+    [
+        ("filled", "filled"),
+        ("partially-filled", "partially_filled"),
+        ("expired", "cancelled"),
+        ("rejected", "failed"),
+        ("unknown", "submitted"),
+    ],
+)
+def test_map_poly_order_status(raw_status: str, expected: str) -> None:
+    """Status mapper handles known and unknown venue status values."""
+    assert _map_poly_order_status(raw_status) == expected
+
+
+@pytest.mark.asyncio()
+async def test_get_token_balance_returns_share_count() -> None:
+    """Token balance query returns the conditional token count."""
+    executor = PolymarketExecutor(PolyExecConfig())
+    client = Mock()
+    client.get_balance_allowance = Mock(return_value={"balance": "50"})
+    executor._ensure_level2_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    balance = await executor.get_token_balance("tok-abc")
+
+    assert balance == 50
+
+
+@pytest.mark.asyncio()
+async def test_get_token_balance_returns_zero_when_no_shares() -> None:
+    """Token balance is zero when no shares are held."""
+    executor = PolymarketExecutor(PolyExecConfig())
+    client = Mock()
+    client.get_balance_allowance = Mock(return_value={"balance": "0"})
+    executor._ensure_level2_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+
+    balance = await executor.get_token_balance("tok-abc")
+
+    assert balance == 0
+
+
+@pytest.mark.asyncio()
+async def test_get_token_balance_returns_negative_on_error() -> None:
+    """Token balance returns -1 when the API call fails."""
+    executor = PolymarketExecutor(PolyExecConfig())
+    executor._ensure_level2_client = AsyncMock(side_effect=RuntimeError("no key"))  # type: ignore[method-assign]
+
+    balance = await executor.get_token_balance("tok-abc")
+
+    assert balance == -1
+
+
+def test_extract_fill_price_ignores_invalid_values() -> None:
+    """Fill-price extractor skips invalid candidates and uses first valid key."""
+    raw = {"avgPrice": "bad", "averagePrice": "0.611", "price": "0.55"}
+    assert _extract_fill_price(raw) == Decimal("0.611")
