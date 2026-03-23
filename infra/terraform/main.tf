@@ -19,13 +19,6 @@ resource "digitalocean_firewall" "scanner" {
     source_addresses = var.allowed_ssh_cidrs
   }
 
-  # Tailscale WireGuard (UDP 41641) from anywhere — Tailscale handles its own auth
-  inbound_rule {
-    protocol         = "udp"
-    port_range       = "41641"
-    source_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
   # All outbound traffic (API calls, GHCR pulls, etc.)
   outbound_rule {
     protocol              = "tcp"
@@ -65,14 +58,11 @@ resource "digitalocean_droplet" "scanner" {
   ssh_keys = [digitalocean_ssh_key.deploy.fingerprint]
 
   user_data = templatefile("${path.module}/cloud-init.yml", {
-    tailscale_auth_key         = var.tailscale_auth_key
-    ghcr_username              = var.ghcr_username
-    ghcr_token                 = var.ghcr_token
-    spaces_access_key          = var.spaces_access_key
-    spaces_secret_key          = var.spaces_secret_key
-    spaces_region              = var.spaces_region
-    expressvpn_activation_code = var.expressvpn_activation_code
-    expressvpn_location        = var.expressvpn_location
+    ghcr_username     = var.ghcr_username
+    ghcr_token        = var.ghcr_token
+    spaces_access_key = var.spaces_access_key
+    spaces_secret_key = var.spaces_secret_key
+    spaces_region     = var.spaces_region
   })
 
   volume_ids = [digitalocean_volume.pgdata.id]

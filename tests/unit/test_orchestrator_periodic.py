@@ -60,6 +60,10 @@ class TestPeriodicTaskExecution:
 
         with (
             patch(
+                "arb_scanner.flippening.orchestrator.time.monotonic",
+                return_value=999_999.0,
+            ),
+            patch(
                 "arb_scanner.flippening.orchestrator._periodic_discovery",
                 new_callable=AsyncMock,
                 return_value=None,

@@ -69,14 +69,16 @@ jobs:
         env:
           KALSHI_PEM: ${{ secrets.KALSHI_RSA_PRIVATE_KEY_PEM }}
 
-      - name: Deploy to DigitalOcean
+      - name: Deploy to Hetzner
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: deploy
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          envs: GHCR_TOKEN
           script: |
             cd /opt/arb-scanner
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u revelfire --password-stdin
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
             sleep 10
@@ -90,6 +92,8 @@ jobs:
             done
             echo "Health check failed after 3 attempts"
             exit 1
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
 
       - name: Notify success
         if: success()
