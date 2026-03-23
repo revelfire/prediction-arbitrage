@@ -278,7 +278,7 @@ def build_geoblock_slack_payload(arb_id: str) -> dict[str, Any]:
                     {"type": "mrkdwn", "text": f"*Arb ID:* `{arb_id[:12]}...`"},
                     {
                         "type": "mrkdwn",
-                        "text": "*Action required:* Connect via ExpressVPN or another supported region before the next trade.",
+                        "text": "*Action required:* Verify server region supports Polymarket trading before the next trade.",
                     },
                 ],
             },
@@ -305,7 +305,7 @@ def build_geoblock_discord_payload(arb_id: str) -> dict[str, Any]:
                     {"name": "Arb ID", "value": f"`{arb_id[:12]}...`", "inline": True},
                     {
                         "name": "Action Required",
-                        "value": "Connect via ExpressVPN or another supported region.",
+                        "value": "Verify server region supports Polymarket trading.",
                         "inline": False,
                     },
                 ],

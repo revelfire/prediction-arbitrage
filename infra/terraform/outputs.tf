@@ -43,7 +43,7 @@ output "post_provision_steps" {
        chown -R deploy:deploy /home/deploy/.ssh
        ln -s /opt/arb-scanner /home/deploy/arb-scanner
 
-    5. Access dashboard via Tailscale:
-       http://<tailscale-ip>:8000
+    5. Access dashboard:
+       http://${digitalocean_droplet.scanner.ipv4_address}:8060
   EOT
 }

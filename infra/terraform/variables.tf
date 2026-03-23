@@ -27,12 +27,6 @@ variable "allowed_ssh_cidrs" {
   default     = ["0.0.0.0/0", "::/0"]
 }
 
-variable "tailscale_auth_key" {
-  description = "Tailscale pre-auth key for joining the tailnet"
-  type        = string
-  sensitive   = true
-}
-
 variable "ghcr_username" {
   description = "GitHub username for GHCR image pulls"
   type        = string
@@ -65,14 +59,3 @@ variable "spaces_region" {
   default     = "nyc3"
 }
 
-variable "expressvpn_activation_code" {
-  description = "ExpressVPN activation code for geo-routing through Mexico"
-  type        = string
-  sensitive   = true
-}
-
-variable "expressvpn_location" {
-  description = "ExpressVPN server location to connect to"
-  type        = string
-  default     = "Mexico"
-}
