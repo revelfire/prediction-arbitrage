@@ -123,6 +123,70 @@ class TestFailureBreaker:
         mgr.record_success()
         assert mgr.is_any_tripped() is False
 
+    def test_failure_probe_window_allows_periodic_attempt(self) -> None:
+        """Failure-only trip can periodically allow one probe attempt."""
+        mgr = _make_breakers(max_consecutive_failures=1, cooldown_seconds=30)
+        mgr.record_failure()
+
+        reasons = mgr.get_blocking_reasons(allow_failure_probe=True)
+        assert any("circuit_breaker_failure" in r for r in reasons)
+        mgr._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        reasons = mgr.get_blocking_reasons(allow_failure_probe=True)
+        assert reasons == []
+
+        reasons = mgr.get_blocking_reasons(allow_failure_probe=True)
+        assert any("circuit_breaker_failure" in r for r in reasons)
+
+    def test_failure_probe_metrics_track_failed_probe(self) -> None:
+        """Probe attempt that fails is reflected in telemetry counters."""
+        mgr = _make_breakers(max_consecutive_failures=1, cooldown_seconds=30)
+        mgr.record_failure()
+        mgr._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mgr.get_blocking_reasons(allow_failure_probe=True) == []
+        assert mgr.consume_failure_probe_attempt() is True
+        mgr.record_failure()
+
+        metrics = mgr.get_failure_probe_metrics()
+        assert metrics["attempts"] == 1
+        assert metrics["failures"] == 1
+        assert metrics["successes"] == 0
+
+    def test_failure_probe_metrics_track_successful_probe(self) -> None:
+        """Probe attempt that succeeds updates success rate."""
+        mgr = _make_breakers(max_consecutive_failures=1, cooldown_seconds=30)
+        mgr.record_failure()
+        mgr._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mgr.get_blocking_reasons(allow_failure_probe=True) == []
+        assert mgr.consume_failure_probe_attempt() is True
+        mgr.record_success()
+
+        metrics = mgr.get_failure_probe_metrics()
+        assert metrics["attempts"] == 1
+        assert metrics["failures"] == 0
+        assert metrics["successes"] == 1
+        assert metrics["success_rate"] == 1.0
+
+    def test_failure_probe_cooldown_adapts_to_outcomes(self) -> None:
+        """Probe cooldown grows on failed probes and shrinks on successful probes."""
+        mgr = _make_breakers(max_consecutive_failures=1, cooldown_seconds=40)
+        mgr.record_failure()
+        baseline = float(mgr.get_failure_probe_metrics()["cooldown_seconds"])
+
+        mgr._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mgr.get_blocking_reasons(allow_failure_probe=True) == []
+        assert mgr.consume_failure_probe_attempt() is True
+        mgr.record_failure()
+        grown = float(mgr.get_failure_probe_metrics()["cooldown_seconds"])
+        assert grown > baseline
+
+        mgr._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert mgr.get_blocking_reasons(allow_failure_probe=True) == []
+        assert mgr.consume_failure_probe_attempt() is True
+        mgr.record_success()
+        shrunk = float(mgr.get_failure_probe_metrics()["cooldown_seconds"])
+        assert shrunk < grown
+        assert shrunk >= 15.0
+
 
 class TestAnomalyBreaker:
     """Tests for the anomaly spread circuit breaker."""

@@ -10,13 +10,13 @@ RETURNING id
 """
 
 _POS_COLS = """id, arb_id, market_id, token_id, side, size_contracts,
-       entry_price, entry_order_id, status, opened_at, max_hold_minutes,
+       entry_price, entry_order_id, exit_order_id, status, opened_at, max_hold_minutes,
        market_title, market_slug"""
 
 GET_OPEN_POSITION = f"""
 SELECT {_POS_COLS}
 FROM flippening_auto_positions
-WHERE market_id = $1 AND status = 'open'
+WHERE market_id = $1 AND status IN ('open', 'exit_failed')
 LIMIT 1
 """
 
@@ -28,13 +28,22 @@ SET status = 'closed',
     realized_pnl = $4,
     exit_reason = $5,
     closed_at = NOW()
-WHERE market_id = $1 AND status = 'open'
+WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed')
+"""
+
+MARK_EXIT_PENDING = """
+UPDATE flippening_auto_positions
+SET status = 'exit_pending',
+    exit_order_id = $2,
+    exit_price = $3,
+    exit_reason = $4
+WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed')
 """
 
 MARK_EXIT_FAILED = """
 UPDATE flippening_auto_positions
 SET status = 'exit_failed'
-WHERE market_id = $1 AND status = 'open'
+WHERE market_id = $1 AND status IN ('open', 'exit_pending')
 """
 
 GET_POSITION_BY_ARB_ID = f"""
@@ -48,7 +57,14 @@ LIMIT 1
 GET_OPEN_POSITIONS_LIST = f"""
 SELECT {_POS_COLS}
 FROM flippening_auto_positions
-WHERE status = 'open'
+WHERE status IN ('open', 'exit_pending', 'exit_failed')
+ORDER BY opened_at ASC
+"""
+
+GET_EXIT_PENDING_POSITIONS = f"""
+SELECT {_POS_COLS}
+FROM flippening_auto_positions
+WHERE status = 'exit_pending'
 ORDER BY opened_at ASC
 """
 
@@ -57,7 +73,7 @@ UPDATE flippening_auto_positions
 SET status = 'abandoned',
     exit_reason = 'hold_time_exceeded',
     closed_at = NOW()
-WHERE status = 'open'
+WHERE status IN ('open', 'exit_failed')
   AND max_hold_minutes IS NOT NULL
   AND opened_at + (max_hold_minutes || ' minutes')::INTERVAL < NOW()
 RETURNING id, arb_id, market_id, market_title, max_hold_minutes,
@@ -76,6 +92,6 @@ LEFT JOIN LATERAL (
     WHERE market_id = p.market_id
     ORDER BY detected_at DESC LIMIT 1
 ) e ON true
-WHERE p.status = 'open'
+WHERE p.status IN ('open', 'exit_pending', 'exit_failed')
 ORDER BY p.opened_at ASC
 """

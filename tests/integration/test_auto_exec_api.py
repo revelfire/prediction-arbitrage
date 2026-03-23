@@ -181,6 +181,7 @@ class TestAutoExecAPIIntegration:
             assert "tripped" in cb
         assert "flip_breakers" in data
         assert len(data["flip_breakers"]) == 3
+        assert "flip_failure_probe" in data
 
     def test_enable_then_disable_flow(self, client: TestClient) -> None:
         """Full enable/disable lifecycle works end-to-end."""

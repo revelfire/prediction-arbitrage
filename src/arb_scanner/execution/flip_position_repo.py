@@ -93,7 +93,9 @@ class FlipPositionRepo:
         return dict(row) if row is not None else None
 
     async def get_open_position(self, market_id: str) -> dict[str, Any] | None:
-        """Return the open position for a market, or None if none exists.
+        """Return the active position for a market, or None if none exists.
+
+        Active includes ``open`` and ``exit_failed`` states (inventory still held).
 
         Args:
             market_id: Polymarket market identifier.
@@ -145,13 +147,53 @@ class FlipPositionRepo:
         await self._pool.execute(Q.MARK_EXIT_FAILED, market_id)
         logger.warning("flip_position_exit_failed", market_id=market_id)
 
+    async def mark_exit_pending(
+        self,
+        market_id: str,
+        *,
+        exit_order_id: str,
+        exit_price: Decimal,
+        exit_reason: str,
+    ) -> None:
+        """Mark a position as exit_pending after a submitted sell.
+
+        Args:
+            market_id: Polymarket market identifier.
+            exit_order_id: Internal execution order UUID for the sell.
+            exit_price: Requested exit price.
+            exit_reason: Human-readable exit reason string.
+        """
+        await self._pool.execute(
+            Q.MARK_EXIT_PENDING,
+            market_id,
+            exit_order_id,
+            exit_price,
+            exit_reason,
+        )
+        logger.info(
+            "flip_position_exit_pending",
+            market_id=market_id,
+            exit_order_id=exit_order_id,
+            exit_price=float(exit_price),
+            reason=exit_reason,
+        )
+
     async def get_open_positions(self) -> list[dict[str, Any]]:
-        """Return all open flip positions for limit enforcement.
+        """Return all active flip positions for limit enforcement.
 
         Returns:
-            List of open position dicts ordered by opened_at ascending.
+            List of active position dicts ordered by opened_at ascending.
         """
         rows = await self._pool.fetch(Q.GET_OPEN_POSITIONS_LIST)
+        return [dict(r) for r in rows]
+
+    async def get_exit_pending_positions(self) -> list[dict[str, Any]]:
+        """Return positions currently waiting on exit fill confirmation.
+
+        Returns:
+            List of exit_pending position dicts ordered by opened_at ascending.
+        """
+        rows = await self._pool.fetch(Q.GET_EXIT_PENDING_POSITIONS)
         return [dict(r) for r in rows]
 
     async def abandon_expired(self) -> list[dict[str, Any]]:
@@ -167,10 +209,10 @@ class FlipPositionRepo:
         return abandoned
 
     async def get_orphaned_positions(self) -> list[dict[str, Any]]:
-        """Return all open positions, used for startup orphan detection.
+        """Return all active positions, used for startup orphan detection.
 
         Returns:
-            List of open position dicts ordered by opened_at ascending.
+            List of active position dicts ordered by opened_at ascending.
         """
         rows = await self._pool.fetch(Q.GET_ORPHANED_POSITIONS)
         return [dict(r) for r in rows]

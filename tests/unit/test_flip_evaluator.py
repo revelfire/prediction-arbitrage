@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 
@@ -51,6 +52,31 @@ class TestFlipEvaluator:
         assert ok is False
         assert any("confidence" in r for r in reasons)
 
+    def test_dynamic_confidence_relaxes_for_strong_spread(self) -> None:
+        """High spread in healthy regime can pass slightly below base min confidence."""
+        ok, reasons = evaluate_flip_criteria(
+            _opp(confidence=0.62, spread_pct=0.30),
+            _config(min_confidence=0.65, min_spread_pct=0.03),
+            [],
+            Decimal("0"),
+            _breakers(),
+        )
+        assert ok is True
+        assert reasons == []
+
+    def test_dynamic_confidence_tightens_under_drawdown_and_load(self) -> None:
+        """Drawdown and position load increase required confidence."""
+        positions = [{"arb_id": f"pos-{i}"} for i in range(8)]
+        ok, reasons = evaluate_flip_criteria(
+            _opp(confidence=0.62, spread_pct=0.30),
+            _config(min_confidence=0.65, min_spread_pct=0.03, max_open_positions=10),
+            positions,
+            Decimal("-180"),
+            _breakers(),
+        )
+        assert ok is False
+        assert any("drawdown_penalty" in r for r in reasons)
+
     def test_rejects_blocked_category(self) -> None:
         """Blocked category triggers rejection."""
         ok, reasons = evaluate_flip_criteria(
@@ -73,7 +99,7 @@ class TestFlipEvaluator:
 
     def test_rejects_max_open_positions(self) -> None:
         """Max open positions triggers rejection."""
-        positions = [{"arb_id": f"pos-{i}"} for i in range(10)]
+        positions = [{"arb_id": f"pos-{i}", "status": "open"} for i in range(10)]
         ok, reasons = evaluate_flip_criteria(
             _opp(), _config(max_open_positions=10), positions, Decimal("0"), _breakers()
         )
@@ -89,13 +115,23 @@ class TestFlipEvaluator:
         assert reasons == []
 
     def test_rejects_duplicate_position(self) -> None:
-        """Duplicate arb_id triggers rejection."""
-        positions = [{"arb_id": "flip-1"}]
+        """Duplicate arb_id with status=open triggers rejection."""
+        positions = [{"arb_id": "flip-1", "status": "open"}]
         ok, reasons = evaluate_flip_criteria(
             _opp(arb_id="flip-1"), _config(), positions, Decimal("0"), _breakers()
         )
         assert ok is False
         assert any("duplicate" in r for r in reasons)
+
+    def test_allows_duplicate_when_exiting(self) -> None:
+        """Duplicate arb_id with exit_pending/exit_failed does NOT reject."""
+        for status in ("exit_pending", "exit_failed"):
+            positions = [{"arb_id": "flip-1", "status": status}]
+            ok, reasons = evaluate_flip_criteria(
+                _opp(arb_id="flip-1"), _config(), positions, Decimal("0"), _breakers()
+            )
+            assert ok is True, f"Should allow re-entry when status={status}"
+            assert not any("duplicate" in r for r in reasons)
 
     def test_rejects_tripped_breaker(self) -> None:
         """Tripped circuit breaker triggers rejection."""
@@ -104,6 +140,14 @@ class TestFlipEvaluator:
         )
         assert ok is False
         assert any("circuit_breaker" in r for r in reasons)
+
+    def test_failure_probe_allows_attempt_after_cooldown(self) -> None:
+        """Flip evaluator allows periodic probes when only failure breaker is tripped."""
+        breakers = _breakers(tripped=True)
+        breakers._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        ok, reasons = evaluate_flip_criteria(_opp(), _config(), [], Decimal("0"), breakers)
+        assert ok is True
+        assert reasons == []
 
 
 class TestFlipEvaluatorVerification:

@@ -42,14 +42,28 @@ def evaluate_flip_criteria(
     """
     reasons: list[str] = []
 
-    if breakers.is_any_tripped():
-        tripped = [s for s in breakers.get_state() if s.tripped]
-        for s in tripped:
-            reasons.append(f"circuit_breaker_{s.breaker_type.value}: {s.reason}")
+    reasons.extend(breakers.get_blocking_reasons(allow_failure_probe=True))
 
     confidence = float(opportunity.get("confidence", 0))
-    if confidence < config.min_confidence:
-        reasons.append(f"confidence {confidence:.2f} < min {config.min_confidence}")
+    spread = float(opportunity.get("spread_pct", opportunity.get("net_spread_pct", 0)))
+    eff_min_conf, conf_ctx = _effective_min_confidence(
+        base_min_conf=config.min_confidence,
+        spread=spread,
+        min_spread=config.min_spread_pct,
+        daily_pnl=daily_pnl,
+        daily_loss_limit=config.daily_loss_limit_usd,
+        open_positions=len(open_positions),
+        max_open_positions=config.max_open_positions,
+    )
+    if confidence < eff_min_conf:
+        reasons.append(
+            "confidence "
+            f"{confidence:.2f} < min {eff_min_conf:.2f} "
+            f"(base={conf_ctx['base_min_conf']:.2f}, "
+            f"spread_bonus={conf_ctx['spread_bonus']:.2f}, "
+            f"drawdown_penalty={conf_ctx['drawdown_penalty']:.2f}, "
+            f"load_penalty={conf_ctx['load_penalty']:.2f})"
+        )
 
     category = opportunity.get("category", "")
     if config.allowed_categories and category not in config.allowed_categories:
@@ -64,11 +78,14 @@ def evaluate_flip_criteria(
         )
 
     max_pos = config.max_open_positions
-    if len(open_positions) >= max_pos:
-        reasons.append(f"open_positions {len(open_positions)} >= max {max_pos}")
+    active_positions = [p for p in open_positions if p.get("status") == "open"]
+    if len(active_positions) >= max_pos:
+        reasons.append(f"open_positions {len(active_positions)} >= max {max_pos}")
 
     arb_id = opportunity.get("arb_id", "")
-    if arb_id and any(p.get("arb_id") == arb_id for p in open_positions):
+    if arb_id and any(
+        p.get("arb_id") == arb_id and p.get("status") == "open" for p in open_positions
+    ):
         reasons.append(f"duplicate position for {arb_id}")
 
     ticket_type = str(opportunity.get("ticket_type", ""))
@@ -86,3 +103,48 @@ def evaluate_flip_criteria(
     if not eligible:
         logger.info("flip_criteria_failed", reasons=reasons)
     return eligible, reasons
+
+
+def _effective_min_confidence(
+    *,
+    base_min_conf: float,
+    spread: float,
+    min_spread: float,
+    daily_pnl: Decimal,
+    daily_loss_limit: float,
+    open_positions: int,
+    max_open_positions: int,
+) -> tuple[float, dict[str, float]]:
+    """Compute adaptive min-confidence threshold for entry gating.
+
+    Low-risk, high-deviation setups get a modest confidence discount so the
+    engine can execute more often. Drawdown and position-load apply penalties
+    to protect capital during stressed periods.
+    """
+    spread_delta = max(spread - min_spread, 0.0)
+    spread_span = max(0.40 - min_spread, 0.05)
+    spread_score = min(spread_delta / spread_span, 1.0)
+    spread_bonus = 0.10 * spread_score
+
+    loss_limit = max(float(daily_loss_limit), 1.0)
+    drawdown_ratio = (
+        min(float(abs(daily_pnl)) / loss_limit, 1.0) if daily_pnl < Decimal("0") else 0.0
+    )
+    drawdown_penalty = 0.15 * drawdown_ratio
+
+    if max_open_positions > 0:
+        load_ratio = min(open_positions / max_open_positions, 1.0)
+    else:
+        load_ratio = 0.0
+    load_penalty = 0.05 * load_ratio
+
+    raw = base_min_conf - spread_bonus + drawdown_penalty + load_penalty
+    floor = max(0.50, base_min_conf - 0.15)
+    ceiling = min(0.95, base_min_conf + 0.20)
+    effective = max(floor, min(raw, ceiling))
+    return effective, {
+        "base_min_conf": base_min_conf,
+        "spread_bonus": spread_bonus,
+        "drawdown_penalty": drawdown_penalty,
+        "load_penalty": load_penalty,
+    }

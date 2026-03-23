@@ -11,8 +11,8 @@ import pytest
 from arb_scanner.execution.flip_exit_executor import (
     FlipExitExecutor,
     _build_sell_request,
-    _compute_realized_pnl,
 )
+from arb_scanner.execution.flip_position_math import compute_realized_pnl
 from arb_scanner.models.execution import OrderResponse
 from arb_scanner.models.flippening import (
     EntrySignal,
@@ -105,6 +105,7 @@ def _make_executor(
     position_repo.get_open_position = AsyncMock(return_value=position)
     position_repo.close_position = AsyncMock()
     position_repo.mark_exit_failed = AsyncMock()
+    position_repo.mark_exit_pending = AsyncMock()
 
     executor = FlipExitExecutor(
         poly=poly,
@@ -160,6 +161,36 @@ class TestExecuteExitSuccess:
         executor, _, _, position_repo = _make_executor(position=_make_position())
         await executor.execute_exit(_make_exit(), _make_entry(), _make_event())
         position_repo.close_position.assert_awaited_once()
+
+    @pytest.mark.asyncio()
+    async def test_submitted_without_fill_marks_pending(self) -> None:
+        """Submitted without fill keeps position pending."""
+        executor, _, _, position_repo = _make_executor(
+            position=_make_position(),
+            poly_resp=OrderResponse(
+                venue_order_id="poly-order-99",
+                status="submitted",
+                fill_price=None,
+            ),
+        )
+        await executor.execute_exit(_make_exit(), _make_entry(), _make_event())
+        position_repo.mark_exit_pending.assert_awaited_once()
+        position_repo.close_position.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_partially_filled_with_fill_stays_pending(self) -> None:
+        """Partial fills remain pending until a terminal status is observed."""
+        executor, _, _, position_repo = _make_executor(
+            position=_make_position(),
+            poly_resp=OrderResponse(
+                venue_order_id="poly-order-99",
+                status="partially_filled",
+                fill_price=Decimal("0.59"),
+            ),
+        )
+        await executor.execute_exit(_make_exit(), _make_entry(), _make_event())
+        position_repo.mark_exit_pending.assert_awaited_once()
+        position_repo.close_position.assert_not_awaited()
 
     @pytest.mark.asyncio()
     async def test_close_position_exit_reason(self) -> None:
@@ -258,24 +289,24 @@ class TestBuildSellRequest:
 
 
 class TestComputeRealizedPnl:
-    """_compute_realized_pnl() calculation tests."""
+    """compute_realized_pnl() calculation tests."""
 
     def test_profit(self) -> None:
         """Exit higher than entry is a profit."""
-        pnl = _compute_realized_pnl(Decimal("0.45"), Decimal("0.60"), 100)
+        pnl = compute_realized_pnl(Decimal("0.45"), Decimal("0.60"), 100)
         assert pnl == Decimal("15")
 
     def test_loss(self) -> None:
         """Exit lower than entry is a loss."""
-        pnl = _compute_realized_pnl(Decimal("0.60"), Decimal("0.45"), 100)
+        pnl = compute_realized_pnl(Decimal("0.60"), Decimal("0.45"), 100)
         assert pnl == Decimal("-15")
 
     def test_breakeven(self) -> None:
         """Same entry/exit price is zero P&L."""
-        pnl = _compute_realized_pnl(Decimal("0.50"), Decimal("0.50"), 50)
+        pnl = compute_realized_pnl(Decimal("0.50"), Decimal("0.50"), 50)
         assert pnl == Decimal("0")
 
     def test_scales_with_contracts(self) -> None:
         """P&L scales linearly with number of contracts."""
-        pnl = _compute_realized_pnl(Decimal("0.40"), Decimal("0.60"), 200)
+        pnl = compute_realized_pnl(Decimal("0.40"), Decimal("0.60"), 200)
         assert pnl == Decimal("40")

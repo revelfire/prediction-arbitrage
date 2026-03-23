@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -204,3 +205,71 @@ class TestPipelineIsolation:
         }
         result = await flip_p.process_opportunity(flip_opp)
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_flip_failure_probe_recovers_from_breaker_blocked(self) -> None:
+        """Flip pipeline recovers via timed failure probe after breaker trip."""
+        arb_p, flip_p, arb_b, flip_b, _ = _make_pipelines()
+        del arb_p, arb_b
+        flip_p._poly.place_order = AsyncMock(  # type: ignore[attr-defined]
+            return_value=OrderResponse(status="failed", error_message="network timeout"),
+        )
+
+        for i in range(3):
+            entry = await flip_p.process_opportunity(
+                {
+                    "arb_id": f"flip-fail-{i}",
+                    "confidence": 0.90,
+                    "spread_pct": 0.20,
+                    "category": "nba",
+                    "title": "Probe Recovery Test",
+                    "entry_price": 0.45,
+                    "side": "yes",
+                    "token_id": "tok-1",
+                    "market_id": "mkt-1",
+                }
+            )
+            assert entry is not None
+            assert entry.status == "failed"
+
+        assert flip_b._failure_tripped is True
+
+        blocked = await flip_p.process_opportunity(
+            {
+                "arb_id": "flip-blocked",
+                "confidence": 0.90,
+                "spread_pct": 0.20,
+                "category": "nba",
+                "title": "Probe Recovery Test",
+                "entry_price": 0.45,
+                "side": "yes",
+                "token_id": "tok-1",
+                "market_id": "mkt-1",
+            }
+        )
+        assert blocked is not None
+        assert blocked.status == "breaker_blocked"
+
+        flip_b._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+        flip_p._poly.place_order = AsyncMock(  # type: ignore[attr-defined]
+            return_value=OrderResponse(status="filled", venue_order_id="v-recover"),
+        )
+        recovered = await flip_p.process_opportunity(
+            {
+                "arb_id": "flip-recover",
+                "confidence": 0.90,
+                "spread_pct": 0.20,
+                "category": "nba",
+                "title": "Probe Recovery Test",
+                "entry_price": 0.45,
+                "side": "yes",
+                "token_id": "tok-1",
+                "market_id": "mkt-1",
+            }
+        )
+        assert recovered is not None
+        assert recovered.status == "executed"
+        assert flip_b._failure_tripped is False
+        metrics = flip_b.get_failure_probe_metrics()
+        assert metrics["attempts"] == 1
+        assert metrics["successes"] == 1

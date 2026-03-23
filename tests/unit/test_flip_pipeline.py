@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -154,7 +155,37 @@ class TestFlipPipeline:
         entry = await pipeline.process_opportunity(_opp())
         assert entry is not None
         assert entry.status == "failed"
+        assert entry.criteria_snapshot.get("execution_error") == "order failed"
         assert deps["breakers"]._failure_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_non_counting_failure_does_not_increment_breaker(self) -> None:
+        """Config/geoblock failures do not count toward breaker trips."""
+        pipeline, deps = _pipeline(
+            order_response=OrderResponse(
+                status="failed",
+                error_message="GEOBLOCK: restricted in your region",
+            )
+        )
+        entry = await pipeline.process_opportunity(_opp())
+        assert entry is not None
+        assert entry.status == "failed"
+        assert "GEOBLOCK" in str(entry.criteria_snapshot.get("execution_error"))
+        assert deps["breakers"]._failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_counting_failure_increments_breaker(self) -> None:
+        """Execution failures without non-counting markers increment breaker."""
+        pipeline, deps = _pipeline(
+            order_response=OrderResponse(
+                status="failed",
+                error_message="network timeout",
+            )
+        )
+        entry = await pipeline.process_opportunity(_opp())
+        assert entry is not None
+        assert entry.status == "failed"
+        assert deps["breakers"]._failure_count == 1
 
     @pytest.mark.asyncio
     async def test_records_success_resets_breaker(self) -> None:
@@ -166,6 +197,95 @@ class TestFlipPipeline:
         assert entry is not None
         assert entry.status == "executed"
         assert deps["breakers"]._failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_failure_probe_attempt_metrics_update_on_success(self) -> None:
+        """Breaker probe success updates attempts/success counters."""
+        ac = _auto_config(max_consecutive_failures=1, cooldown_seconds=30)
+        pipeline, deps = _pipeline(auto_config=ac)
+        deps["breakers"].record_failure()
+        deps["breakers"]._failure_probe_after = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        entry = await pipeline.process_opportunity(_opp())
+        assert entry is not None
+        assert entry.status == "executed"
+        metrics = deps["breakers"].get_failure_probe_metrics()
+        assert metrics["attempts"] == 1
+        assert metrics["successes"] == 1
+        assert metrics["failures"] == 0
+
+    @pytest.mark.asyncio
+    async def test_size_throttles_for_lower_confidence(self) -> None:
+        """Near-threshold confidence gets smaller size than high confidence."""
+        ac = _auto_config(min_confidence=0.65, base_size_usd=25.0, max_size_usd=50.0)
+        low_pipeline, low_deps = _pipeline(auto_config=ac)
+        high_pipeline, high_deps = _pipeline(auto_config=ac)
+
+        low_entry = await low_pipeline.process_opportunity(_opp(confidence=0.66, spread_pct=0.30))
+        high_entry = await high_pipeline.process_opportunity(_opp(confidence=0.95, spread_pct=0.30))
+
+        assert low_entry is not None and low_entry.status == "executed"
+        assert high_entry is not None and high_entry.status == "executed"
+        low_req = low_deps["poly"].place_order.await_args.args[0]
+        high_req = high_deps["poly"].place_order.await_args.args[0]
+        assert low_req.size_usd < high_req.size_usd
+
+    @pytest.mark.asyncio
+    async def test_size_throttles_under_drawdown(self) -> None:
+        """Negative daily PnL reduces requested order size."""
+        ac = _auto_config(base_size_usd=25.0, max_size_usd=50.0, daily_loss_limit_usd=200.0)
+        healthy_pipeline, healthy_deps = _pipeline(auto_config=ac)
+        stressed_pipeline, stressed_deps = _pipeline(auto_config=ac)
+        stressed_deps["capital"].daily_pnl = Decimal("-100")
+
+        healthy_entry = await healthy_pipeline.process_opportunity(_opp(confidence=0.90))
+        stressed_entry = await stressed_pipeline.process_opportunity(_opp(confidence=0.90))
+
+        assert healthy_entry is not None and healthy_entry.status == "executed"
+        assert stressed_entry is not None and stressed_entry.status == "executed"
+        healthy_req = healthy_deps["poly"].place_order.await_args.args[0]
+        stressed_req = stressed_deps["poly"].place_order.await_args.args[0]
+        assert stressed_req.size_usd < healthy_req.size_usd
+
+    def test_confidence_guardrail_raises_threshold_when_fail_rate_breaches(self) -> None:
+        """Recent failed entries can raise runtime min-confidence to guardrail value."""
+        ac = _auto_config(
+            min_confidence=0.60,
+            confidence_guardrail_enabled=True,
+            confidence_guardrail_window_attempts=4,
+            confidence_guardrail_fail_rate=0.50,
+            confidence_guardrail_raise_to=0.68,
+        )
+        pipeline, _ = _pipeline(auto_config=ac)
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-1")
+        pipeline._update_confidence_guardrail("executed", arb_id="arb-2")
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-3")
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-4")
+
+        runtime = pipeline.get_runtime_confidence_state()
+        assert runtime["min_confidence"] == 0.68
+        assert runtime["recent_attempts"] == 4
+        assert runtime["recent_failed"] == 3
+        assert runtime["recent_fail_rate"] == 0.75
+
+    def test_confidence_guardrail_disabled_does_not_raise_threshold(self) -> None:
+        """Guardrail disabled keeps runtime min-confidence unchanged."""
+        ac = _auto_config(
+            min_confidence=0.60,
+            confidence_guardrail_enabled=False,
+            confidence_guardrail_window_attempts=3,
+            confidence_guardrail_fail_rate=0.30,
+            confidence_guardrail_raise_to=0.70,
+        )
+        pipeline, _ = _pipeline(auto_config=ac)
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-1")
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-2")
+        pipeline._update_confidence_guardrail("failed", arb_id="arb-3")
+
+        runtime = pipeline.get_runtime_confidence_state()
+        assert runtime["min_confidence"] == 0.60
+        assert runtime["recent_attempts"] == 3
+        assert runtime["recent_failed"] == 3
 
     @pytest.mark.asyncio
     async def test_process_exit_delegates(self) -> None:

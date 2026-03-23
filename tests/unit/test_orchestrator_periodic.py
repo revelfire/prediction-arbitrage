@@ -28,6 +28,7 @@ class TestOrchestratorPeriodicTimers:
         assert hasattr(timers, "stall_count")
         assert hasattr(timers, "last_stall_received")
         assert hasattr(timers, "last_drift_alert")
+        assert hasattr(timers, "last_pending_exit_reconcile")
         assert timers.stall_count == 0
 
 
@@ -44,6 +45,7 @@ class TestPeriodicTaskExecution:
         timers.last_tick_flush = 0.0
         timers.last_alert_flush = 0.0
         timers.last_discovery = 0.0
+        timers.last_pending_exit_reconcile = 0.0
 
         config = MagicMock()
         config.flippening.tick_flush_interval_seconds = 1
@@ -67,6 +69,26 @@ class TestPeriodicTaskExecution:
                 new_callable=AsyncMock,
                 return_value=(0, 0, 0.0, 0.0),
             ),
+            patch(
+                "arb_scanner.flippening.orchestrator.reconcile_pending_db_positions",
+                new_callable=AsyncMock,
+            ) as mock_reconcile,
+            patch(
+                "arb_scanner.flippening.orchestrator.sweep_overtime_signals",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.sweep_overtime_db_positions",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.reconcile_open_positions_with_exchange",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "arb_scanner.flippening.orchestrator.retry_active_signals",
+                new_callable=AsyncMock,
+            ),
         ):
             await _run_periodic_tasks(
                 timers,
@@ -87,3 +109,4 @@ class TestPeriodicTaskExecution:
         tick_buffer.flush.assert_called()
         alert_buffer.flush.assert_called()
         mock_discovery.assert_called_once()
+        mock_reconcile.assert_called_once()

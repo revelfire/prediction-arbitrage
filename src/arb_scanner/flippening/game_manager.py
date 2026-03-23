@@ -45,6 +45,7 @@ class GameState:
     event_window_hours: float = 4.0
     baseline: Baseline | None = None
     active_signal: EntrySignal | None = None
+    active_event: FlippeningEvent | None = None
     price_history: deque[PriceUpdate] = field(
         default_factory=lambda: deque(maxlen=_PRICE_HISTORY_MAXLEN),
     )
@@ -272,17 +273,30 @@ class GameManager:
             return self._games.get(resolved)
         return None
 
-    def set_active_signal(self, market_id: str, signal: EntrySignal) -> None:
-        """Record an active entry signal for a game."""
+    def set_active_signal(
+        self,
+        market_id: str,
+        signal: EntrySignal,
+        event: FlippeningEvent | None = None,
+    ) -> None:
+        """Record an active entry signal (and originating event) for a game.
+
+        Args:
+            market_id: Market identifier.
+            signal: Entry signal.
+            event: Originating flippening event (stored for re-feed).
+        """
         state = self.get_state(market_id)
         if state is not None:
             state.active_signal = signal
+            state.active_event = event
 
     def clear_active_signal(self, market_id: str) -> None:
         """Clear the active signal for a game."""
         state = self._games.get(market_id)
         if state is not None:
             state.active_signal = None
+            state.active_event = None
 
     def remove_game(self, market_id: str) -> None:
         """Remove a completed game from tracking."""
@@ -358,6 +372,7 @@ class GameManager:
         pnl_pct = pnl / entry.entry_price if entry.entry_price else Decimal("0")
         hold = Decimal(str((update.timestamp - entry.created_at).total_seconds() / 60.0))
         state.active_signal = None
+        state.active_event = None
         return ExitSignal(
             event_id=entry.event_id,
             side=entry.side,

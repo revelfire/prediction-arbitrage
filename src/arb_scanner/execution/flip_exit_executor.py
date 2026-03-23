@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 
+from arb_scanner.execution.flip_position_math import compute_realized_pnl
 from arb_scanner.execution.flip_position_repo import FlipPositionRepo
 from arb_scanner.models.execution import OrderRequest, OrderSide
 from arb_scanner.models.flippening import EntrySignal, ExitReason, ExitSignal, FlippeningEvent
@@ -106,7 +107,7 @@ class FlipExitExecutor:
             logger.error("flip_exit_order_failed", market_id=event.market_id, error=str(exc))
             raise
 
-        if resp.status not in ("filled", "submitted"):
+        if resp.status not in ("filled", "submitted", "partially_filled"):
             await self._position_repo.mark_exit_failed(event.market_id)
             logger.warning(
                 "flip_exit_response_failed",
@@ -115,20 +116,41 @@ class FlipExitExecutor:
             )
             return None
 
-        pnl = _compute_realized_pnl(
-            Decimal(str(position["entry_price"])),
-            req.price,
-            position["size_contracts"],
-        )
-        await self._position_repo.close_position(
+        effective_fill = Decimal(str(resp.fill_price)) if resp.fill_price is not None else None
+        # Treat status=filled as terminal. For status=submitted, allow immediate
+        # completion only when venue already reports a fill price.
+        if resp.status == "filled" or (resp.status == "submitted" and effective_fill is not None):
+            final_exit_price = effective_fill or req.price
+            pnl = compute_realized_pnl(
+                Decimal(str(position["entry_price"])),
+                final_exit_price,
+                position["size_contracts"],
+            )
+            await self._position_repo.close_position(
+                event.market_id,
+                exit_order_id=order_id,
+                exit_price=final_exit_price,
+                realized_pnl=pnl,
+                exit_reason=exit_sig.exit_reason.value,
+            )
+            logger.info(
+                "flip_exit_placed",
+                market_id=event.market_id,
+                side=req.side,
+                price=float(final_exit_price),
+                contracts=req.size_contracts,
+                reason=exit_sig.exit_reason.value,
+            )
+            return order_id
+
+        await self._position_repo.mark_exit_pending(
             event.market_id,
             exit_order_id=order_id,
             exit_price=req.price,
-            realized_pnl=pnl,
             exit_reason=exit_sig.exit_reason.value,
         )
         logger.info(
-            "flip_exit_placed",
+            "flip_exit_pending",
             market_id=event.market_id,
             side=req.side,
             price=float(req.price),
@@ -177,21 +199,3 @@ def _build_sell_request(
         size_contracts=int(position["size_contracts"]),
         token_id=str(position["token_id"]),
     )
-
-
-def _compute_realized_pnl(
-    entry_price: Decimal,
-    exit_price: Decimal,
-    size_contracts: int,
-) -> Decimal:
-    """Compute realized P&L for a closed position.
-
-    Args:
-        entry_price: Price paid per contract at entry.
-        exit_price: Price received per contract at exit.
-        size_contracts: Number of contracts.
-
-    Returns:
-        Total realized P&L (positive = profit).
-    """
-    return (exit_price - entry_price) * Decimal(size_contracts)

@@ -451,6 +451,36 @@ tr.clickable { cursor: pointer; }
 /* Btn warning for cancel */
 .btn-warning { background: var(--warning); color: #000; }
 
+/* Retry button */
+.btn-retry {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.btn-retry:hover { opacity: 0.85; }
+.btn-retry:disabled { cursor: default; opacity: 0.7; }
+.btn-retry-ok { background: var(--success); }
+.btn-retry-failed { background: var(--danger); color: #fff; }
+
+/* Execution error box */
+.ae-error-box {
+    background: rgba(233, 69, 96, 0.12);
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--danger);
+    word-break: break-word;
+    line-height: 1.4;
+}
+
 /* Execution engine indicator */
 .exec-indicator {
     font-size: 10px;
@@ -512,6 +542,8 @@ tr.clickable { cursor: pointer; }
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
     margin-bottom: 24px;
     padding: 12px 16px;
     background: var(--bg-secondary);
@@ -522,6 +554,7 @@ tr.clickable { cursor: pointer; }
     display: flex;
     gap: 8px;
     align-items: center;
+    flex-wrap: wrap;
 }
 .autoexec-mode select {
     background: var(--bg-accent);
@@ -531,6 +564,27 @@ tr.clickable { cursor: pointer; }
     border-radius: 4px;
     font-family: inherit;
     font-size: 12px;
+}
+.autoexec-threshold {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.autoexec-threshold input {
+    width: 84px;
+    background: var(--bg-accent);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+}
+.ae-subtle-text {
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
 }
 .ae-mode-badge {
     display: inline-block;

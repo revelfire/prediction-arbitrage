@@ -216,6 +216,52 @@ claude:
             settings = load_config(str(cfg_path))
         assert settings.claude.api_key == "sk-ant-test123"
 
+    def test_auto_exit_watchdog_env_overrides_apply(self, tmp_path: Path) -> None:
+        """Explicit env vars override auto-exec exit watchdog settings."""
+        yaml_content = """\
+storage:
+  database_url: "postgresql://localhost/db"
+fees:
+  polymarket:
+    taker_fee_pct: 0.0
+    fee_model: "on_winnings"
+  kalshi:
+    taker_fee_pct: 0.07
+    fee_model: "per_contract"
+auto_execution:
+  enabled: true
+  mode: "auto"
+  exit_pending_stale_seconds: 30
+  exit_retry_max_attempts: 4
+  exit_retry_reprice_pct: 0.02
+  exit_retry_min_price: 0.01
+"""
+        cfg_path = _write_config(tmp_path, yaml_content)
+        env = {
+            "AUTO_FAILURE_PROBE_COOLDOWN_MIN_SECONDS": "20",
+            "AUTO_FAILURE_PROBE_COOLDOWN_MAX_SECONDS": "240",
+            "AUTO_FAILURE_PROBE_BACKOFF_MULTIPLIER": "1.8",
+            "AUTO_FAILURE_PROBE_RECOVERY_MULTIPLIER": "0.70",
+            "AUTO_EXIT_PENDING_STALE_SECONDS": "25",
+            "AUTO_EXIT_RETRY_MAX_ATTEMPTS": "5",
+            "AUTO_EXIT_REPRICE_PCT": "0.03",
+            "AUTO_EXIT_RETRY_MIN_PRICE": "0.02",
+        }
+        with patch.dict(os.environ, env):
+            settings = load_config(str(cfg_path))
+        assert settings.auto_execution.failure_probe_cooldown_min_seconds == 20.0
+        assert settings.auto_execution.failure_probe_cooldown_max_seconds == 240.0
+        assert settings.auto_execution.failure_probe_backoff_multiplier == 1.8
+        assert settings.auto_execution.failure_probe_recovery_multiplier == 0.70
+        assert settings.auto_execution.exit_pending_stale_seconds == 25
+        assert settings.auto_execution.exit_retry_max_attempts == 5
+        assert settings.auto_execution.exit_retry_reprice_pct == 0.03
+        assert settings.auto_execution.exit_retry_min_price == 0.02
+        assert settings.auto_execution.flip_overrides["failure_probe_cooldown_min_seconds"] == 20.0
+        assert settings.auto_execution.flip_overrides["failure_probe_cooldown_max_seconds"] == 240.0
+        assert settings.auto_execution.flip_overrides["exit_pending_stale_seconds"] == 25
+        assert settings.auto_execution.flip_overrides["exit_retry_max_attempts"] == 5
+
 
 # ---------------------------------------------------------------------------
 # Config path resolution

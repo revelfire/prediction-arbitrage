@@ -106,6 +106,18 @@ class ExecutionRepository:
         rows = await self._pool.fetch(EQ.GET_ORDERS_FOR_TICKET, arb_id)
         return [dict(r) for r in rows]
 
+    async def get_order(self, order_id: str) -> dict[str, Any] | None:
+        """Get a single execution order by internal order ID.
+
+        Args:
+            order_id: Internal order UUID.
+
+        Returns:
+            Order dict or None if missing.
+        """
+        row = await self._pool.fetchrow(EQ.GET_ORDER_BY_ID, order_id)
+        return dict(row) if row else None
+
     async def get_open_orders(self) -> list[dict[str, Any]]:
         """Get all currently open execution orders.
 

@@ -62,6 +62,14 @@ class TestAutoExecutionConfig:
         assert ac.max_consecutive_failures == 3
         assert ac.max_daily_trades == 50
         assert ac.cooldown_seconds == 30
+        assert ac.failure_probe_cooldown_min_seconds == 15.0
+        assert ac.failure_probe_cooldown_max_seconds == 300.0
+        assert ac.failure_probe_backoff_multiplier == 1.5
+        assert ac.failure_probe_recovery_multiplier == 0.75
+        assert ac.exit_pending_stale_seconds == 30
+        assert ac.exit_retry_max_attempts == 4
+        assert ac.exit_retry_reprice_pct == 0.02
+        assert ac.exit_retry_min_price == 0.01
         assert ac.allowed_categories == []
         assert ac.blocked_categories == []
         assert ac.allowed_ticket_types == ["arbitrage", "flippening"]

@@ -74,7 +74,7 @@ class TestListLog:
         mock_pool.fetch.return_value = [{"id": "log-1", "status": "executed"}]
         result = await repo.list_log(limit=10)
         assert result == [{"id": "log-1", "status": "executed"}]
-        mock_pool.fetch.assert_awaited_once_with(AQ.LIST_LOG, 10)
+        mock_pool.fetch.assert_awaited_once_with(AQ.LIST_LOG_DEDUPED, 10)
 
 
 class TestGetLog:

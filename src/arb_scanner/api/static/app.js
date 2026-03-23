@@ -14,6 +14,7 @@ let tickerSource = null;
 let tickerSparklines = {};
 let wsThroughputChart = null;
 let wsSchemaTrendChart = null;
+let aeMinConfidenceEditing = false;
 
 // --- Auth ---
 const _apiToken = document.querySelector('meta[name="api-token"]')?.content || '';
@@ -1544,7 +1545,8 @@ function closeAeSSE() {
 
 // --- Auto-Exec Tab ---
 async function refreshAutoExec() {
-    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshAutoExecLog(), refreshOpenPositions()]);
+    await Promise.all([refreshAutoExecStatus(), refreshAutoExecStats(), refreshOpenPositions()]);
+    await refreshAutoExecLog();
     if (!_aeSSE) initAeSSE();
 }
 
@@ -1559,6 +1561,26 @@ async function refreshAutoExecStatus() {
         badge.textContent = mode.toUpperCase();
         badge.className = `ae-mode-badge ae-mode-${mode}`;
     }
+    const runtime = data.flip_runtime || {};
+    const minConfidence = Number(runtime.min_confidence ?? data.config?.min_confidence);
+    if (Number.isFinite(minConfidence)) {
+        const confInput = el('autoexec-min-confidence');
+        if (confInput && !aeMinConfidenceEditing) {
+            confInput.value = minConfidence.toFixed(2);
+        }
+        setText('autoexec-confidence-runtime', `runtime ${minConfidence.toFixed(2)}`);
+    } else {
+        setText('autoexec-confidence-runtime', 'runtime --');
+    }
+    const guardrailEnabled = runtime.guardrail_enabled !== false;
+    const attempts = Number(runtime.recent_attempts || 0);
+    const failed = Number(runtime.recent_failed || 0);
+    const failRate = Number(runtime.recent_fail_rate || 0);
+    let guardrailText = guardrailEnabled ? 'guardrail idle' : 'guardrail off';
+    if (guardrailEnabled && attempts > 0) {
+        guardrailText = `guardrail ${(failRate * 100).toFixed(0)}% fail (${failed}/${attempts})`;
+    }
+    setText('autoexec-guardrail-state', guardrailText);
     function _updateBreakers(prefix, breakers) {
         if (!breakers) return;
         breakers.forEach(cb => {
@@ -1584,6 +1606,28 @@ async function refreshAutoExecStatus() {
     }
     _updateBreakers('arb', data.arb_breakers);
     _updateBreakers('flip', data.flip_breakers);
+    const probe = data.flip_failure_probe || {};
+    setText('ae-probe-attempts', String(probe.attempts || 0));
+    setText('ae-probe-successes', String(probe.successes || 0));
+    setText('ae-probe-failures', String(probe.failures || 0));
+    const probeRate = Number(probe.success_rate || 0);
+    setText('ae-probe-rate', `${(probeRate * 100).toFixed(0)}%`);
+    let nextProbe = '-';
+    if (probe.attempt_active) {
+        nextProbe = 'active';
+    } else if (probe.token_active) {
+        nextProbe = 'open';
+    } else if (probe.next_probe_after) {
+        nextProbe = shortTime(probe.next_probe_after);
+    }
+    setText('ae-probe-next', nextProbe);
+    const wd = data.flip_watchdog || {};
+    setText('ae-wd-stale', String(wd.stale_detected || 0));
+    setText('ae-wd-retries', String(wd.retries_placed || 0));
+    setText('ae-wd-closed', String(wd.retry_closed || 0));
+    setText('ae-wd-cancel-failed', String(wd.cancel_failed || 0));
+    setText('ae-wd-retry-failed', String(wd.retry_failed || 0));
+    setText('ae-wd-exhausted', String(wd.retry_exhausted || 0));
 }
 
 async function refreshAutoExecStats() {
@@ -1748,20 +1792,86 @@ async function closePosition(arbId) {
 
 let _aeLogCache = {};
 
+function parseMaybeJSON(value, fallback = {}) {
+    if (!value) return fallback;
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch (_) {
+            return fallback;
+        }
+    }
+    if (typeof value === 'object') return value;
+    return fallback;
+}
+
+function normalizeAutoExecReason(reason) {
+    const r = String(reason || '').trim();
+    if (!r) return '';
+    if (r.startsWith('circuit_breaker_')) return r.split(':')[0];
+    if (r.startsWith('confidence ')) return 'confidence_threshold';
+    if (r.startsWith('daily_pnl ')) return 'daily_loss_limit';
+    if (r.startsWith('daily_trades ')) return 'max_daily_trades';
+    if (r.startsWith('open_positions ')) return 'max_open_positions';
+    if (r.startsWith('slippage_exceeded')) return 'slippage_exceeded';
+    if (r.startsWith('size_below_minimum')) return 'size_below_minimum';
+    return r.length > 96 ? r.substring(0, 96) + '...' : r;
+}
+
+function renderAutoExecReasonBreakdown(entries) {
+    const host = el('ae-reason-breakdown');
+    if (!host) return;
+    const counts = new Map();
+    for (const entry of (entries || [])) {
+        const snap = parseMaybeJSON(entry.criteria_snapshot, {});
+        const reasons = Array.isArray(snap.rejection_reasons) ? snap.rejection_reasons : [];
+        reasons.forEach(raw => {
+            const key = normalizeAutoExecReason(raw);
+            if (!key) return;
+            counts.set(key, (counts.get(key) || 0) + 1);
+        });
+        if (entry.status === 'failed' || entry.status === 'partial') {
+            const execErr = normalizeAutoExecReason(snap.execution_error || '');
+            if (execErr) {
+                const key = `execution_error: ${execErr}`;
+                counts.set(key, (counts.get(key) || 0) + 1);
+            }
+        }
+    }
+    if (counts.size === 0) {
+        host.innerHTML = 'No rejection/failure reasons yet';
+        return;
+    }
+    const rows = Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6);
+    host.innerHTML = `
+        <strong>Top rejection/failure reasons (recent)</strong>
+        <ul class="ae-reasons-list">
+            ${rows.map(([reason, count]) => `<li>${reason} (${count})</li>`).join('')}
+        </ul>
+    `;
+}
+
 async function refreshAutoExecLog() {
-    const data = await fetchJSON('/api/auto-execution/log?limit=20');
+    const data = await fetchJSON('/api/auto-execution/log?limit=40');
     const tbody = el('autoexec-log-tbody');
     if (!tbody) return;
     if (!data || data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No auto-trades yet</td></tr>';
+        renderAutoExecReasonBreakdown([]);
         return;
     }
+    // Hide executed entries that have active open positions
+    const openArbIds = new Set(Object.keys(_positionCache));
+    const filtered = data.filter(e =>
+        !(e.status === 'executed' && openArbIds.has(e.arb_id))
+    );
     _aeLogCache = {};
-    tbody.innerHTML = data.map(e => {
+    renderAutoExecReasonBreakdown(filtered);
+    tbody.innerHTML = filtered.map(e => {
         _aeLogCache[e.id] = e;
-        const snap = typeof e.criteria_snapshot === 'string'
-            ? JSON.parse(e.criteria_snapshot || '{}')
-            : (e.criteria_snapshot || {});
+        const snap = parseMaybeJSON(e.criteria_snapshot, {});
         const name = snap.title || e.arb_id || '';
         const shortName = name.length > 30 ? name.substring(0, 30) + '...' : name;
         const source = e.source || '';
@@ -1809,9 +1919,7 @@ function openAeLogDetail(logId) {
                        e.status === 'rejected' ? 'badge-expired' : 'badge-pending';
 
     // Rejection reasons — JSONB may arrive as string or object depending on asyncpg codec
-    const snap = typeof e.criteria_snapshot === 'string'
-        ? JSON.parse(e.criteria_snapshot)
-        : (e.criteria_snapshot || {});
+    const snap = parseMaybeJSON(e.criteria_snapshot, {});
     const reasons = snap.rejection_reasons || [];
     let reasonsHtml = '';
     if (reasons.length > 0) {
@@ -1824,10 +1932,19 @@ function openAeLogDetail(logId) {
         </div>`;
     }
 
+    // Execution error (for failed trades)
+    const execError = snap.execution_error || '';
+    let errorHtml = '';
+    if (execError) {
+        errorHtml = `
+        <div class="detail-section">
+            <h4>Failure Reason</h4>
+            <div class="ae-error-box">${execError}</div>
+        </div>`;
+    }
+
     // Critic verdict — JSONB may arrive as string or object
-    const cv = typeof e.critic_verdict === 'string'
-        ? JSON.parse(e.critic_verdict)
-        : (e.critic_verdict || null);
+    const cv = parseMaybeJSON(e.critic_verdict, null);
     let criticHtml = '';
     if (cv) {
         const cvStatus = cv.skipped ? 'Skipped (mechanical check)' :
@@ -1852,9 +1969,7 @@ function openAeLogDetail(logId) {
     }
 
     // Balances — JSONB may arrive as string or object
-    const bals = typeof e.pre_exec_balances === 'string'
-        ? JSON.parse(e.pre_exec_balances)
-        : (e.pre_exec_balances || {});
+    const bals = parseMaybeJSON(e.pre_exec_balances, {});
     const balsHtml = (bals.poly != null || bals.kalshi != null) ? `
         <div class="detail-section">
             <h4>Balances at Trigger</h4>
@@ -1862,6 +1977,11 @@ function openAeLogDetail(logId) {
                 ${bals.poly != null ? `<div class="detail-row"><span class="detail-label">Polymarket</span><span class="detail-value">${formatUSD(bals.poly)}</span></div>` : ''}
                 ${bals.kalshi != null ? `<div class="detail-row"><span class="detail-label">Kalshi</span><span class="detail-value">${formatUSD(bals.kalshi)}</span></div>` : ''}
             </div>
+        </div>` : '';
+
+    const retryHtml = e.status === 'failed' ? `
+        <div class="detail-section" style="text-align:right;padding-top:8px">
+            <button class="btn btn-retry" onclick="retryAeLog('${e.id}')">Retry Trade</button>
         </div>` : '';
 
     if (title) title.textContent = `Auto-Exec — ${e.status.toUpperCase()}`;
@@ -1888,8 +2008,10 @@ function openAeLogDetail(logId) {
             </div>
         </div>
         ${reasonsHtml}
+        ${errorHtml}
         ${criticHtml}
         ${balsHtml}
+        ${retryHtml}
     `;
     modal.style.display = 'flex';
 }
@@ -1898,6 +2020,27 @@ function closeAeLogModal(evt) {
     if (evt && evt.target !== el('ae-log-modal')) return;
     const modal = el('ae-log-modal');
     if (modal) modal.style.display = 'none';
+}
+
+async function retryAeLog(logId) {
+    const btn = document.querySelector('.btn-retry');
+    if (btn) { btn.disabled = true; btn.textContent = 'Retrying...'; }
+    try {
+        const resp = await fetch(`/api/auto-execution/retry/${logId}`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) {
+            const msg = data.detail || 'Retry failed';
+            if (btn) { btn.textContent = msg; btn.classList.add('btn-retry-failed'); }
+            return;
+        }
+        if (btn) {
+            btn.textContent = data.retry_result === 'submitted' ? 'Submitted!' : 'Rejected';
+            btn.classList.add(data.retry_result === 'submitted' ? 'btn-retry-ok' : 'btn-retry-failed');
+        }
+        setTimeout(() => refreshAutoExecLog(), 1500);
+    } catch {
+        if (btn) { btn.textContent = 'Network error'; btn.classList.add('btn-retry-failed'); }
+    }
 }
 
 function setText(id, text) {
@@ -1909,7 +2052,7 @@ async function postJSONBody(url, body) {
     try {
         const resp = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body),
         });
         if (!resp.ok) {
@@ -1936,6 +2079,38 @@ async function setAutoExecMode() {
         setStatus(`Auto-exec mode set to "${result.mode}"`);
         await refreshAutoExecStatus();
     }
+}
+
+async function setAutoExecMinConfidence() {
+    const input = el('autoexec-min-confidence');
+    const btn = el('autoexec-confidence-apply-btn');
+    if (!input) return;
+    const raw = Number(input.value);
+    if (!Number.isFinite(raw)) {
+        setStatus('Min confidence must be a number between 0 and 1');
+        return;
+    }
+    const bounded = Math.max(0, Math.min(raw, 1));
+    input.value = bounded.toFixed(2);
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Setting...';
+    }
+    const result = await postJSONBody('/api/auto-execution/config', { min_confidence: bounded });
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Set';
+    }
+    if (!result) return;
+    const updated = Number(result.min_confidence);
+    if (Number.isFinite(updated)) {
+        input.value = updated.toFixed(2);
+        aeMinConfidenceEditing = false;
+        setStatus(`Auto-exec min confidence set to ${updated.toFixed(2)}`);
+    } else {
+        setStatus('Auto-exec min confidence updated');
+    }
+    await refreshAutoExecStatus();
 }
 
 async function killAutoExec() {
@@ -2234,6 +2409,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ticketCatFilter) ticketCatFilter.addEventListener('change', refreshTickets);
     const ticketTypeFilter = el('ticket-type-filter');
     if (ticketTypeFilter) ticketTypeFilter.addEventListener('change', refreshTickets);
+    const minConfInput = el('autoexec-min-confidence');
+    if (minConfInput) {
+        minConfInput.addEventListener('focus', () => { aeMinConfidenceEditing = true; });
+        minConfInput.addEventListener('blur', () => { aeMinConfidenceEditing = false; });
+        minConfInput.addEventListener('input', () => { aeMinConfidenceEditing = true; });
+        minConfInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                setAutoExecMinConfidence();
+            }
+        });
+    }
 
     // Close modals on Escape key or overlay click
     document.addEventListener('keydown', (e) => {

@@ -27,6 +27,15 @@ WHERE arb_id = $1
 ORDER BY created_at
 """
 
+GET_ORDER_BY_ID = """
+SELECT id, arb_id, venue, venue_order_id, side,
+       requested_price, fill_price, size_usd, size_contracts,
+       status, error_message, created_at, updated_at
+FROM execution_orders
+WHERE id = $1
+LIMIT 1
+"""
+
 GET_OPEN_ORDERS = """
 SELECT id, arb_id, venue, venue_order_id, side,
        requested_price, size_usd, status, created_at
