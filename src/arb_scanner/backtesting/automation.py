@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, cast
 
 from arb_scanner.backtesting.csv_importer import parse_csv_bytes
 from arb_scanner.backtesting.performance_tracker import (
@@ -29,6 +29,7 @@ _ALIGNMENT_KEYS = ("aligned", "contrary", "no_signal")
 _MAX_SWEEP_CATEGORIES = 3
 _MIN_SIGNALS_FOR_SUGGESTION = 5
 _AUTO_EXEC_CONFIDENCE_CANDIDATES = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+ProgressCallback = Callable[[str, float, str], Awaitable[None] | None]
 _SWEEP_SPECS: dict[str, dict[str, Any]] = {
     "min_confidence": {
         "min": 0.50,
@@ -142,31 +143,51 @@ async def run_import_workflow(
     config: Settings,
     repo: Any,
     flip_repo: Any,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Import a Polymarket CSV and run the full backtesting workflow."""
+    await _emit_progress(progress, "parsing_csv", 0.05, "Parsing uploaded CSV")
     imported_trades = parse_csv_bytes(content)
+    await _emit_progress(progress, "importing_trades", 0.2, "Importing uploaded trades")
     import_result = await repo.import_trades(imported_trades)
+    since, until = trade_window(imported_trades)
 
-    report = await build_backtest_report_data(repo, flip_repo)
+    await _emit_progress(
+        progress,
+        "building_report",
+        0.45,
+        "Rebuilding backtest report for imported trade window",
+    )
+    report = await build_backtest_report_data(repo, flip_repo, since=since, until=until)
     positions = cast(list[TradePosition], report["positions"])
     trades = cast(list[ImportedTrade], report["trades"])
     signals = cast(list[dict[str, Any]], report["signals"])
     category_models = cast(list[Any], report["category_models"])
+    await _emit_progress(
+        progress,
+        "generating_suggestions",
+        0.75,
+        "Running replay-backed config suggestion sweep",
+    )
     suggestions = await generate_config_suggestions(
         config,
-        positions=positions,
         trades=trades,
         signal_history=signals,
+        comparisons=cast(
+            list[tuple[ImportedTrade, Any, dict[str, Any] | None]],
+            report["comparisons"],
+        ),
         pool=getattr(repo, "_pool"),
     )
 
+    await _emit_progress(progress, "persisting_results", 0.9, "Persisting report snapshots")
     for perf in category_models:
         await repo.upsert_category_performance(perf)
 
     for pos in positions:
         await repo.upsert_position(pos)
 
-    return {
+    result = {
         "import_result": import_result.model_dump(),
         "portfolio": report["portfolio"],
         "signal_alignment": report["signal_alignment"],
@@ -174,36 +195,37 @@ async def run_import_workflow(
         "trade_count": len([t for t in trades if t.action in (TradeAction.Buy, TradeAction.Sell)]),
         "suggestions": suggestions,
     }
+    await _emit_progress(progress, "completed", 1.0, "Backtesting workflow completed")
+    return result
 
 
 async def generate_config_suggestions(
     config: Settings,
     *,
-    positions: list[TradePosition],
     trades: list[ImportedTrade],
     signal_history: list[dict[str, Any]],
+    comparisons: list[tuple[ImportedTrade, Any, dict[str, Any] | None]],
     pool: Any,
 ) -> list[dict[str, Any]]:
     """Generate replay-backed config suggestions for imported trade categories."""
     if not trades:
         return []
 
-    since, until = trade_window(trades)
-    categories = _top_categories(positions)
+    replay_groups = _matched_replay_windows(config, comparisons)
     suggestions: list[dict[str, Any]] = []
 
     auto_exec_suggestion = _suggest_flip_auto_exec_min_confidence(config, signal_history)
     if auto_exec_suggestion is not None:
         suggestions.append(auto_exec_suggestion)
 
-    if not categories:
+    if not replay_groups:
         return suggestions
 
     engine = ReplayEngine(TickRepository(pool), config.flippening)
-    for category in categories[:_MAX_SWEEP_CATEGORIES]:
+    for category, market_windows in replay_groups[:_MAX_SWEEP_CATEGORIES]:
         try:
             current_eval = evaluate_replay(
-                await engine.replay_category(category, since, until),
+                await _replay_market_windows(engine, category, market_windows),
             )
         except Exception:
             continue
@@ -216,8 +238,7 @@ async def generate_config_suggestions(
                     engine,
                     config,
                     category,
-                    since,
-                    until,
+                    market_windows,
                     param_name,
                     min_value=spec["min"],
                     max_value=spec["max"],
@@ -248,14 +269,101 @@ async def generate_config_suggestions(
     return suggestions
 
 
-def _top_categories(positions: list[TradePosition]) -> list[str]:
-    """Return the most active non-uncategorized categories in the positions set."""
+def _matched_replay_groups(
+    comparisons: list[tuple[ImportedTrade, Any, dict[str, Any] | None]],
+) -> list[tuple[str, list[str]]]:
+    """Return matched replay market IDs grouped by category, ordered by activity."""
     counts: Counter[str] = Counter()
-    for pos in positions:
-        category = classify_market_category(pos.market_name, DEFAULT_SPORT_KEYWORDS)
-        if category and category != "uncategorized":
-            counts[category] += 1
-    return [category for category, _count in counts.most_common()]
+    grouped: dict[str, set[str]] = {}
+    for _trade, _alignment, signal in comparisons:
+        if signal is None:
+            continue
+        market_id = str(signal.get("market_id", "") or "").strip()
+        if not market_id:
+            continue
+        category = str(signal.get("category") or signal.get("sport") or "").strip().lower()
+        if not category or category == "uncategorized":
+            continue
+        grouped.setdefault(category, set()).add(market_id)
+        counts[category] += 1
+
+    return [
+        (category, sorted(market_ids))
+        for category, market_ids in sorted(
+            grouped.items(),
+            key=lambda item: (-counts[item[0]], item[0]),
+        )
+    ]
+
+
+def _matched_replay_windows(
+    config: Settings,
+    comparisons: list[tuple[ImportedTrade, Any, dict[str, Any] | None]],
+) -> list[tuple[str, dict[str, tuple[datetime, datetime]]]]:
+    """Build replay windows per matched market instead of using one global range."""
+    counts: Counter[str] = Counter()
+    grouped: dict[str, dict[str, tuple[datetime, datetime]]] = {}
+    pre_padding = timedelta(minutes=max(config.flippening.spike_window_minutes, 15))
+
+    for trade, _alignment, signal in comparisons:
+        if signal is None:
+            continue
+        market_id = str(signal.get("market_id", "") or "").strip()
+        if not market_id:
+            continue
+        category = str(signal.get("category") or signal.get("sport") or "").strip().lower()
+        if not category or category == "uncategorized":
+            continue
+
+        max_hold_minutes = _current_category_config_value(config, category, "max_hold_minutes")
+        post_padding = timedelta(minutes=max(int(max_hold_minutes), 15) + 15)
+        anchors = [trade.timestamp]
+        entry_at = signal.get("entry_at")
+        exit_at = signal.get("exit_at")
+        if entry_at is not None:
+            anchors.append(entry_at)
+        if exit_at is not None:
+            anchors.append(exit_at)
+
+        window = (min(anchors) - pre_padding, max(anchors) + post_padding)
+        current = grouped.setdefault(category, {}).get(market_id)
+        if current is None:
+            grouped[category][market_id] = window
+        else:
+            grouped[category][market_id] = (
+                min(current[0], window[0]),
+                max(current[1], window[1]),
+            )
+        counts[category] += 1
+
+    return [
+        (category, market_windows)
+        for category, market_windows in sorted(
+            grouped.items(),
+            key=lambda item: (-counts[item[0]], item[0]),
+        )
+    ]
+
+
+async def _replay_market_windows(
+    engine: ReplayEngine,
+    category: str,
+    market_windows: dict[str, tuple[datetime, datetime]],
+    overrides: dict[str, Any] | None = None,
+) -> list[Any]:
+    """Replay a matched set of markets using per-market local windows."""
+    signals: list[Any] = []
+    for market_id, (since, until) in market_windows.items():
+        signals.extend(
+            await engine.replay_market(
+                market_id,
+                since,
+                until,
+                overrides=overrides,
+                category_hint=category,
+            ),
+        )
+    return signals
 
 
 def _suggest_flip_auto_exec_min_confidence(
@@ -425,8 +533,7 @@ async def _sweep_category_parameter(
     engine: ReplayEngine,
     config: Settings,
     category: str,
-    since: datetime,
-    until: datetime,
+    market_windows: dict[str, tuple[datetime, datetime]],
     param_name: str,
     *,
     min_value: float,
@@ -439,10 +546,10 @@ async def _sweep_category_parameter(
     for value in _generate_sweep_values(min_value, max_value, step):
         cast_value = caster(value)
         overrides = _category_override_payload(config, category, param_name, cast_value)
-        signals = await engine.replay_category(
+        signals = await _replay_market_windows(
+            engine,
             category,
-            since,
-            until,
+            market_windows,
             overrides=overrides,
         )
         evaluation = evaluate_replay(signals, overrides)
@@ -474,3 +581,17 @@ def _generate_sweep_values(min_value: float, max_value: float, step: float) -> l
         values.append(float(current))
         current += delta
     return values
+
+
+async def _emit_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    progress: float,
+    message: str,
+) -> None:
+    """Invoke a workflow progress callback if supplied."""
+    if callback is None:
+        return
+    result = callback(stage, progress, message)
+    if result is not None:
+        await result
