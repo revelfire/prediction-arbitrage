@@ -62,11 +62,11 @@ def classify_markets(
         market_ids_in_api.add(mid)
         if detected is not None:
             cat_id, method = detected
-            token_id = _extract_token_id(market.raw_data)
-            if not token_id:
+            yes_tid, no_tid = _extract_token_ids(market.raw_data)
+            if not yes_tid:
                 continue
             cat_cfg = enabled[cat_id]
-            results.append(_build_category_market(market, cat_id, cat_cfg, token_id, method))
+            results.append(_build_category_market(market, cat_id, cat_cfg, yes_tid, method, no_tid))
         else:
             unmatched.append(market)
 
@@ -77,13 +77,13 @@ def classify_markets(
         mid = _market_key(market)
         if mid in manual_overrides and manual_overrides[mid] in enabled:
             cat_id = manual_overrides[mid]
-            token_id = _extract_token_id(market.raw_data)
-            if not token_id:
+            yes_tid, no_tid = _extract_token_ids(market.raw_data)
+            if not yes_tid:
                 still_unmatched.append(market)
                 continue
             cat_cfg = enabled[cat_id]
             results.append(
-                _build_category_market(market, cat_id, cat_cfg, token_id, "manual_override")
+                _build_category_market(market, cat_id, cat_cfg, yes_tid, "manual_override", no_tid)
             )
             overrides_applied += 1
         else:
@@ -98,12 +98,14 @@ def classify_markets(
         question = str(market.raw_data.get("question", ""))
         fuzzy_cat = fuzzy_match_category(title, question, enabled, keyword_map)
         if fuzzy_cat is not None:
-            token_id = _extract_token_id(market.raw_data)
-            if not token_id:
+            yes_tid, no_tid = _extract_token_ids(market.raw_data)
+            if not yes_tid:
                 fuzzy_unmatched.append(market)
                 continue
             cat_cfg = enabled[fuzzy_cat]
-            results.append(_build_category_market(market, fuzzy_cat, cat_cfg, token_id, "fuzzy"))
+            results.append(
+                _build_category_market(market, fuzzy_cat, cat_cfg, yes_tid, "fuzzy", no_tid)
+            )
         else:
             fuzzy_unmatched.append(market)
 
@@ -157,6 +159,7 @@ def _build_category_market(
     cat_cfg: CategoryConfig,
     token_id: str,
     method: str,
+    no_token_id: str = "",
 ) -> CategoryMarket:
     """Build a CategoryMarket from discovery results."""
     return CategoryMarket(
@@ -166,6 +169,7 @@ def _build_category_market(
         category_type=cat_cfg.category_type,
         game_start_time=_extract_game_start(market.raw_data),
         token_id=token_id,
+        no_token_id=no_token_id,
         classification_method=method,
     )
 
@@ -241,7 +245,7 @@ def _detect_category(
     categories: dict[str, CategoryConfig],
 ) -> tuple[str, str] | None:
     """Return (category_id, method) from slug/tag/title, or None."""
-    slug = str(raw_data.get("groupSlug", "")).lower()
+    slug = str(raw_data.get("groupSlug") or raw_data.get("slug") or "").lower()
     for cat_id, cat_cfg in sorted(categories.items()):
         slugs = cat_cfg.discovery_slugs or [f"{cat_id}-"]
         for prefix in slugs:
@@ -283,18 +287,34 @@ def _extract_game_start(raw_data: dict[str, object]) -> datetime | None:
 
 
 def _extract_token_id(raw_data: dict[str, object]) -> str:
-    """Return CLOB token ID, or empty string."""
+    """Return YES CLOB token ID, or empty string."""
+    yes_id, _no_id = _extract_token_ids(raw_data)
+    return yes_id
+
+
+def _extract_token_ids(raw_data: dict[str, object]) -> tuple[str, str]:
+    """Return (yes_token_id, no_token_id) from Polymarket raw data.
+
+    Args:
+        raw_data: Raw market payload with clobTokenIds.
+
+    Returns:
+        Tuple of (yes_token_id, no_token_id). Either may be empty.
+    """
     clob_ids = raw_data.get("clobTokenIds")
+    tokens: list[str] = []
     if isinstance(clob_ids, str):
         try:
             parsed: list[str] = json.loads(clob_ids)
-            if parsed:
-                return parsed[0]
+            tokens = [str(x) for x in parsed if x]
         except (json.JSONDecodeError, TypeError):
             pass
-    if isinstance(clob_ids, list) and clob_ids:
-        return str(clob_ids[0])
+    elif isinstance(clob_ids, list):
+        tokens = [str(x) for x in clob_ids if x]
+    if len(tokens) >= 2:
+        return tokens[0], tokens[1]
+    if len(tokens) == 1:
+        return tokens[0], ""
     condition_id = raw_data.get("conditionId", "")
-    if isinstance(condition_id, str):
-        return condition_id
-    return str(condition_id) if condition_id else ""
+    cid = str(condition_id) if condition_id else ""
+    return cid, ""

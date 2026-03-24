@@ -119,15 +119,14 @@ This project uses Spec-Driven Development (GitHub Spec-Kit):
 ```bash
 cp .env.example .env              # Edit with your API keys and passwords
 docker compose up -d db           # Start just PostgreSQL + pgvector
-docker compose up -d              # Start db + migrations + dashboard
-docker compose up -d                 # Start db + migrations + dashboard + scanner
+docker compose up -d              # Start db + migrations + dashboard (with embedded flip-watch)
 docker compose run --rm scan      # One-shot scan via Docker
 docker compose logs -f dashboard  # Tail dashboard logs
 docker compose down               # Stop all services
 docker compose down -v            # Stop and delete database volume
 ```
 
-Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000), `scanner` (watch mode), `flip-watch` (flippening engine, live sports), `scan` (one-shot, `tools` profile).
+Services: `db` (pgvector/pgvector:pg15), `migrate` (runs once), `dashboard` (:8000, embeds flip-watch via `--flip-watch`), `scanner` (watch mode), `scan` (one-shot, `tools` profile). The flippening engine runs in-process with the dashboard to share the `PriceRingBuffer`.
 
 Environment variables: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `ARBITRAGE_SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`. `VOYAGE_API_KEY` only needed if using `provider: voyage` for embeddings. See `.env.example`.
 
@@ -138,19 +137,14 @@ For local development without Docker, just start the database: `docker compose u
 - PostgreSQL 15+ with pgvector extension (via asyncpg) (001-arb-scanner-core)
 - fastembed (ONNX, BAAI/bge-small-en-v1.5, 384-dim) for local embedding pre-filter. Voyage AI optional via `provider: voyage` (007-local-embeddings)
 - websockets (>=16.0) for Polymarket CLOB WebSocket price streaming in flippening engine. Polling fallback via httpx. (008-flippening-engine)
+- Python 3.11+ + httpx, pydantic v2, anthropic SDK, asyncpg, structlog, FastAPI, typer (022-split-execution-paths)
+- PostgreSQL + pgvector (asyncpg, no ORM). Tables: `auto_execution_log`, `auto_execution_positions`, `flippening_auto_positions`, `execution_orders` (022-split-execution-paths)
 
 ## Live Test Gating
 
 Live API tests (`tests/live/`) are excluded from default `pytest` runs via `-m "not live"` in `pyproject.toml` addopts. To run them, set `LIVE_TESTS=1`. Claude semantic matching tests additionally require `ANTHROPIC_API_KEY`. Live tests hit real Polymarket Gamma/CLOB, Kalshi, and Anthropic APIs -- they need network access and may incur API costs.
 
 ## Recent Changes
+- 022-split-execution-paths: Added Python 3.11+ + httpx, pydantic v2, anthropic SDK, asyncpg, structlog, FastAPI, typer
 - 013-event-market-reversion: Generalized flippening engine from sports-only to any market category (entertainment, politics, crypto, economics, corporate). New `CategoryConfig` model replaces per-sport overrides with per-category config (baseline strategy, event window, discovery keywords/slugs/tags). Three baseline strategies: `first_price` (sports), `rolling_window` (crypto), `pre_event_snapshot` (awards/debates). `FlippeningConfig.migrate_sports_to_categories` auto-converts legacy `sports` list to `categories` at load time. New modules: `market_classifier.py` (replaces `sports_filter.py`), `category_keywords.py` (replaces `sport_keywords.py`), `baseline_strategy.py`, `drift_tracker.py`. Orchestrator split into 5 modules (`_orch_processing.py`, `_orch_alerts.py`, `_orch_telemetry.py`, `_orch_repo.py`). CLI: `--categories` on `flip-watch`, `--category`/`--category-type` on history/stats/replay. Migration 017 adds `category`, `category_type`, `baseline_strategy` columns. `SportsMarket` aliased to `CategoryMarket` for backward compatibility. 745 tests passing, 77% coverage.
 - 012-backtesting-replay: Added tick capture, replay engine, and parameter tuning for the flippening engine. TickBuffer captures live price ticks to PostgreSQL (non-blocking, fire-and-forget). ReplayEngine replays stored ticks through production SpikeDetector + SignalGenerator with config overrides. ReplayEvaluator computes win rate, avg P&L, max drawdown, profit factor. sweep_parameter iterates config values via Decimal arithmetic. GameManager.process() returns 3-tuple (event, exit_sig, drift_info) to expose baseline drifts. New CLI commands: `flip-replay`, `flip-evaluate`, `flip-sweep`, `flip-tick-prune`. Replay CLI extracted to `cli/replay_commands.py`. Migration 016 (flippening_price_ticks, flippening_baseline_drifts tables). Models in `models/replay.py` (ReplaySignal, ReplayEvaluation, SweepResult).
-- 008-flippening-engine: Added mean reversion engine for live sports markets. `flippening/` subpackage with SpikeDetector (threshold + confidence scoring), SignalGenerator (entry/exit/ticket), GameManager (lifecycle + baseline drift EC-006), WebSocket price streaming (with polling fallback), alert formatting (Slack/Discord). Sports filter classifies Polymarket markets by sport slug/tags. FlippeningConfig with per-sport overrides, confidence weights, late-join penalty. New CLI commands (`flip-watch`, `flip-history`, `flip-stats`), 3 REST API endpoints, Flippenings dashboard tab. Edge cases: late join penalty (EC-001), multiple flippenings blocked while signal active (EC-002), game resolution exit (EC-003), WS disconnect handling (EC-004), no-markets retry (EC-005), baseline drift detection (EC-006). Migration 012 (flippening_baselines, flippening_events, flippening_signals tables).
-- 007-local-embeddings: Replaced Voyage AI as default embedding provider with local ONNX model (BAAI/bge-small-en-v1.5 via fastembed, 384-dim). No API key needed for embeddings. Added embedding cache read path — previously-seen markets skip regeneration by loading from pgvector. Voyage AI remains available as `provider: voyage` fallback. New `title_embedding_384` column (migration 011).
-- 006-dashboard-web-ui: Added FastAPI REST API with 11 endpoints wrapping existing repository methods. Vanilla JS dashboard with dark-theme UI, Chart.js spread/health charts, tab-based layout (Opportunities, Health, Alerts, Tickets). DashboardConfig for host/port. `serve` CLI command starts uvicorn. Ticket approve/expire from dashboard. Auto-refresh every 30s.
-- 005-trend-alerting: Added TrendDetector engine with rolling-window convergence/divergence/new-high/disappeared/health detection. Alert webhooks dispatch via existing Slack/Discord infrastructure with distinct emoji/color per alert type. TrendAlertConfig with configurable thresholds, window size, and cooldown. Alert persistence to trend_alerts table (migration 010). New `alerts` CLI command.
-- 004-live-api-testing: Added live API test suite (`tests/live/`) for Polymarket, Kalshi, and Claude semantic matching. Fixed Kalshi volume field bug (`volume_fp` -> `volume_dollars_24h_fp` with fallback). Added `live` pytest marker gated by `LIVE_TESTS=1` env var, excluded from default runs via addopts. Added `requires_live` and `requires_anthropic` skip markers in live conftest.
-- 003-pgvector-embedding-prefilter: Added Voyage AI embedding client (`matching/embedding.py`), cosine-similarity reranker (`matching/embedding_prefilter.py`), `EmbeddingConfig` model, pgvector type registration in `db.py`, `UPDATE_MARKET_EMBEDDING` query + `update_market_embedding()` repository method, fire-and-forget embedding persistence in orchestrator, and integration tests for the full embedding pipeline
-- 002-arb-history-analytics: Added `history` and `stats` CLI commands, analytics models (SpreadSnapshot, PairStats, ScannerHealth), analytics_repository with time-windowed queries, date-range filtering on `report`/`match-audit`, and V002 migration for spread_snapshots + scan_log tables
-- 001-arb-scanner-core: Added Python 3.11+ + httpx (async HTTP), pydantic v2, anthropic SDK, bm25s, asyncpg, typer, structlog, pyyaml

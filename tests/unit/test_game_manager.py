@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from arb_scanner.flippening.game_manager import GameManager
-from arb_scanner.models.config import FlippeningConfig
+from arb_scanner.models.config import CategoryConfig, FlippeningConfig
 from arb_scanner.models.flippening import (
     EntrySignal,
     ExitReason,
@@ -270,3 +270,235 @@ class TestRemoveGame:
         gm.remove_game("m1")
         assert gm.active_game_count == 0
         assert gm.get_state("m1") is None
+
+
+def _category_market(
+    event_id: str = "m1",
+    start_time: datetime | None = None,
+    category: str = "nba",
+    category_type: str = "sport",
+) -> SportsMarket:
+    """Create a CategoryMarket with configurable category_type."""
+    return SportsMarket(
+        market=_market(event_id),
+        sport=category if category_type == "sport" else "",
+        category=category,
+        category_type=category_type,
+        game_start_time=start_time,
+        token_id="tok-1",
+    )
+
+
+class TestSportFilterInit:
+    """Tests for sport market filtering in initialize()."""
+
+    def test_sport_without_start_time_skipped(self) -> None:
+        """Sport markets with no game_start_time are skipped."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(start_time=None, category_type="sport")
+        gm.initialize([sm])
+        assert gm.get_state("m1") is None
+
+    def test_sport_with_stale_start_time_skipped(self) -> None:
+        """Sport markets with game_start_time far in the past are skipped."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(
+            start_time=_NOW - timedelta(hours=10),
+            category_type="sport",
+        )
+        gm.initialize([sm])
+        assert gm.get_state("m1") is None
+
+    def test_sport_with_recent_start_time_allowed(self) -> None:
+        """Sport markets with recent game_start_time are accepted."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(
+            start_time=_NOW - timedelta(hours=1),
+            category_type="sport",
+        )
+        gm.initialize([sm])
+        assert gm.get_state("m1") is not None
+
+    def test_non_sport_without_start_time_allowed(self) -> None:
+        """Non-sport markets without game_start_time are accepted."""
+        cfg = FlippeningConfig(
+            enabled=True,
+            categories={"crypto": CategoryConfig(category_type="crypto")},
+        )
+        gm = GameManager(cfg)
+        sm = _category_market(
+            start_time=None,
+            category="crypto",
+            category_type="crypto",
+        )
+        gm.initialize([sm])
+        assert gm.get_state("m1") is not None
+
+
+class TestBaselineSanity:
+    """Tests for baseline rejection and recapture."""
+
+    def test_extreme_low_baseline_rejected(self) -> None:
+        """Baseline with yes_price < min_baseline_price is rejected."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(start_time=_NOW - timedelta(minutes=5))
+        gm.initialize([sm])
+        state = gm.get_state("m1")
+        assert state is not None
+        update = _update(yes_bid="0.001", yes_ask="0.003")
+        gm.process(update)
+        assert state.baseline is None
+
+    def test_extreme_high_baseline_rejected(self) -> None:
+        """Baseline with yes_price > max_baseline_price is rejected."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(start_time=_NOW - timedelta(minutes=5))
+        gm.initialize([sm])
+        state = gm.get_state("m1")
+        assert state is not None
+        update = _update(yes_bid="0.97", yes_ask="0.99")
+        gm.process(update)
+        assert state.baseline is None
+
+    def test_normal_baseline_accepted(self) -> None:
+        """Baseline within bounds is accepted."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(start_time=_NOW - timedelta(minutes=5))
+        gm.initialize([sm])
+        state = gm.get_state("m1")
+        assert state is not None
+        update = _update(yes_bid="0.50", yes_ask="0.52")
+        gm.process(update)
+        assert state.baseline is not None
+        assert state.baseline.yes_price == Decimal("0.51")
+
+    def test_stale_baseline_recaptured(self) -> None:
+        """Baseline is recaptured when deviation exceeds threshold."""
+        cfg = FlippeningConfig(enabled=True, max_deviation_recapture_pct=100.0)
+        gm = GameManager(cfg)
+        sm = _category_market(start_time=_NOW - timedelta(minutes=30))
+        gm.initialize([sm])
+
+        gm.process(_update(yes_bid="0.10", yes_ask="0.12", ts=_NOW))
+        state = gm.get_state("m1")
+        assert state is not None
+        assert state.baseline is not None
+        old_yes = state.baseline.yes_price
+
+        gm.process(
+            _update(
+                yes_bid="0.50",
+                yes_ask="0.52",
+                ts=_NOW + timedelta(minutes=1),
+            )
+        )
+        assert state.baseline is not None
+        assert state.baseline.yes_price != old_yes
+
+    def test_moderate_deviation_no_recapture(self) -> None:
+        """Moderate deviation does not trigger recapture."""
+        gm = GameManager(_CONFIG)
+        sm = _category_market(start_time=_NOW - timedelta(minutes=30))
+        gm.initialize([sm])
+
+        gm.process(_update(yes_bid="0.50", yes_ask="0.52", ts=_NOW))
+        state = gm.get_state("m1")
+        assert state is not None
+        assert state.baseline is not None
+        old_yes = state.baseline.yes_price
+
+        gm.process(
+            _update(
+                yes_bid="0.55",
+                yes_ask="0.57",
+                ts=_NOW + timedelta(minutes=1),
+            )
+        )
+        assert state.baseline is not None
+        assert state.baseline.yes_price == old_yes
+
+
+class TestDeviationCap:
+    """Tests for deviation clamping in _push_price_tick."""
+
+    def test_deviation_capped_positive(self) -> None:
+        """Positive deviation is capped at 999.99."""
+        from arb_scanner.flippening._orch_processing import _push_price_tick
+        from arb_scanner.flippening.game_manager import GameState
+        from arb_scanner.flippening.price_ring_buffer import (
+            PriceRingBuffer,
+            get_shared_buffer,
+            set_shared_buffer,
+        )
+        from arb_scanner.models.flippening import Baseline
+
+        set_shared_buffer(PriceRingBuffer(max_per_market=100))
+        state = GameState(
+            market_id="m1",
+            market_title="Test",
+            token_id="tok-1",
+            sport="nba",
+            phase=GamePhase.LIVE,
+            baseline=Baseline(
+                market_id="m1",
+                token_id="tok-1",
+                sport="nba",
+                category="nba",
+                category_type="sport",
+                yes_price=Decimal("0.001"),
+                no_price=Decimal("0.999"),
+                captured_at=_NOW,
+            ),
+        )
+        update = _update(yes_bid="0.50", yes_ask="0.52")
+        _push_price_tick(update, state)
+        buf = get_shared_buffer()
+        assert buf is not None
+        ticks = buf.get_history("m1")
+        assert len(ticks) >= 1
+        assert ticks[-1].deviation_pct <= 999.99
+
+    def test_deviation_capped_negative(self) -> None:
+        """Negative deviation is capped at -999.99."""
+        from arb_scanner.flippening._orch_processing import _push_price_tick
+        from arb_scanner.flippening.game_manager import GameState
+        from arb_scanner.flippening.price_ring_buffer import (
+            PriceRingBuffer,
+            get_shared_buffer,
+            set_shared_buffer,
+        )
+        from arb_scanner.models.flippening import Baseline
+
+        set_shared_buffer(PriceRingBuffer(max_per_market=100))
+        state = GameState(
+            market_id="m2",
+            market_title="Test2",
+            token_id="tok-2",
+            sport="nba",
+            phase=GamePhase.LIVE,
+            baseline=Baseline(
+                market_id="m2",
+                token_id="tok-2",
+                sport="nba",
+                category="nba",
+                category_type="sport",
+                yes_price=Decimal("0.999"),
+                no_price=Decimal("0.001"),
+                captured_at=_NOW,
+            ),
+        )
+        update = PriceUpdate(
+            market_id="m2",
+            token_id="tok-2",
+            yes_bid=Decimal("0.001"),
+            yes_ask=Decimal("0.003"),
+            no_bid=Decimal("0.99"),
+            no_ask=Decimal("1.00"),
+            timestamp=_NOW,
+        )
+        _push_price_tick(update, state)
+        buf = get_shared_buffer()
+        assert buf is not None
+        ticks = buf.get_history("m2")
+        assert len(ticks) >= 1
+        assert ticks[-1].deviation_pct >= -999.99

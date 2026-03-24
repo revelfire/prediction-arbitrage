@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from arb_scanner.cli.watch import _extract_new_opps, run_watch
+from arb_scanner.cli.watch import _extract_new_opps, _opp_dedup_key, run_watch
 from arb_scanner.models.arbitrage import ArbOpportunity
 from arb_scanner.models.config import (
     ArbThresholds,
@@ -51,11 +51,16 @@ def _make_settings(interval: int = 1) -> Settings:
     )
 
 
-def _make_opp(opp_id: str = "opp-001", spread: str = "0.05") -> ArbOpportunity:
+def _make_opp(
+    opp_id: str = "opp-001",
+    spread: str = "0.05",
+    poly_eid: str = "poly-001",
+    kalshi_eid: str = "kalshi-001",
+) -> ArbOpportunity:
     """Build a test ArbOpportunity with configurable id and spread."""
     match = MatchResult(
-        poly_event_id="poly-001",
-        kalshi_event_id="kalshi-001",
+        poly_event_id=poly_eid,
+        kalshi_event_id=kalshi_eid,
         match_confidence=0.95,
         resolution_equivalent=True,
         resolution_risks=[],
@@ -66,7 +71,7 @@ def _make_opp(opp_id: str = "opp-001", spread: str = "0.05") -> ArbOpportunity:
     )
     poly = Market(
         venue=Venue.POLYMARKET,
-        event_id="poly-001",
+        event_id=poly_eid,
         title="Test market",
         description="desc",
         resolution_criteria="criteria",
@@ -81,7 +86,7 @@ def _make_opp(opp_id: str = "opp-001", spread: str = "0.05") -> ArbOpportunity:
     )
     kalshi = Market(
         venue=Venue.KALSHI,
-        event_id="kalshi-001",
+        event_id=kalshi_eid,
         title="Test market",
         description="desc",
         resolution_criteria="criteria",
@@ -135,9 +140,10 @@ class TestExtractNewOpps:
         assert result[0].id == "opp-1"
 
     def test_filters_already_seen(self) -> None:
-        """Previously-seen opportunity IDs are excluded."""
+        """Previously-seen opportunity dedup keys are excluded."""
         opp = _make_opp("opp-1", "0.05")
-        result = _extract_new_opps(_scan_result([opp]), {"opp-1"}, Decimal("0.01"))
+        seen = {_opp_dedup_key(opp)}
+        result = _extract_new_opps(_scan_result([opp]), seen, Decimal("0.01"))
         assert len(result) == 0
 
     def test_filters_below_threshold(self) -> None:
@@ -168,7 +174,7 @@ class TestWatchLoop:
 
         with (
             patch("arb_scanner.cli.watch.run_scan", side_effect=mock_scan),
-            patch("arb_scanner.cli.watch.dispatch_webhook", new_callable=AsyncMock),
+            patch("arb_scanner.cli.watch.dispatch_webhook_batch", new_callable=AsyncMock),
         ):
             await run_watch(config, stop_event, dry_run=True)
 
@@ -193,7 +199,8 @@ class TestWatchLoop:
 
         with (
             patch("arb_scanner.cli.watch.run_scan", side_effect=mock_scan),
-            patch("arb_scanner.cli.watch.dispatch_webhook", webhook_mock),
+            patch("arb_scanner.cli.watch.dispatch_webhook_batch", webhook_mock),
+            patch("arb_scanner.cli.watch._OPP_BATCH_INTERVAL_S", 0),
         ):
             await run_watch(config, stop_event, dry_run=True)
 
@@ -209,7 +216,11 @@ class TestWatchLoop:
         async def mock_scan(*args: Any, **kwargs: Any) -> dict[str, Any]:
             nonlocal cycle_count
             cycle_count += 1
-            opp = _make_opp(f"opp-{cycle_count}")
+            opp = _make_opp(
+                f"opp-{cycle_count}",
+                poly_eid=f"poly-{cycle_count}",
+                kalshi_eid=f"kalshi-{cycle_count}",
+            )
             if cycle_count >= 2:
                 stop_event.set()
             return _scan_result([opp])
@@ -219,7 +230,8 @@ class TestWatchLoop:
 
         with (
             patch("arb_scanner.cli.watch.run_scan", side_effect=mock_scan),
-            patch("arb_scanner.cli.watch.dispatch_webhook", webhook_mock),
+            patch("arb_scanner.cli.watch.dispatch_webhook_batch", webhook_mock),
+            patch("arb_scanner.cli.watch._OPP_BATCH_INTERVAL_S", 0),
         ):
             await run_watch(config, stop_event, dry_run=True)
 
@@ -245,7 +257,7 @@ class TestWatchLoop:
 
         with (
             patch("arb_scanner.cli.watch.run_scan", side_effect=mock_scan),
-            patch("arb_scanner.cli.watch.dispatch_webhook", new_callable=AsyncMock),
+            patch("arb_scanner.cli.watch.dispatch_webhook_batch", new_callable=AsyncMock),
         ):
             await run_watch(config, stop_event, dry_run=True)
 

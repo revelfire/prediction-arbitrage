@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from arb_scanner.models.market import Market, Venue
 from arb_scanner.models.matching import MatchResult
 
-_VALID_STATUSES = frozenset({"pending", "approved", "expired"})
+_VALID_STATUSES = frozenset({"pending", "approved", "expired", "executed", "cancelled"})
 _VALID_TICKET_TYPES = frozenset({"arbitrage", "flippening"})
 
 
@@ -63,6 +63,8 @@ class ExecutionTicket(BaseModel):
     expected_profit: Decimal
     status: str = "pending"
     ticket_type: str = "arbitrage"
+    category: str = ""
+    category_type: str = ""
 
     @field_validator("status")
     @classmethod

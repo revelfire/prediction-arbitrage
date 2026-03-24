@@ -1,0 +1,211 @@
+"""Tests for backtesting action API endpoints (analyze, report, sweep)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from arb_scanner.api.app import create_app
+from arb_scanner.api.deps import get_backtest_repo, get_config, get_flip_repo
+from arb_scanner.models.config import (
+    FeeSchedule,
+    FeesConfig,
+    Settings,
+    StorageConfig,
+)
+
+_NOW = datetime.now(tz=timezone.utc)
+
+
+def _test_config() -> Settings:
+    """Build a minimal Settings for testing."""
+    return Settings(
+        storage=StorageConfig(database_url="postgresql://test:test@localhost/test"),
+        fees=FeesConfig(
+            polymarket=FeeSchedule(
+                taker_fee_pct=Decimal("0.02"),
+                fee_model="percent_winnings",
+            ),
+            kalshi=FeeSchedule(
+                taker_fee_pct=Decimal("0.07"),
+                fee_model="per_contract",
+                fee_cap=Decimal("0.99"),
+            ),
+        ),
+    )
+
+
+def _sample_trade_row() -> dict[str, Any]:
+    """Return a sample trade row dict as the DB returns."""
+    return {
+        "id": 1,
+        "market_name": "BTC above $80k?",
+        "action": "Buy",
+        "usdc_amount": Decimal("10.0"),
+        "token_amount": Decimal("50"),
+        "token_name": "Yes",
+        "timestamp": _NOW,
+        "tx_hash": "0xabc123",
+        "condition_id": None,
+        "imported_at": _NOW,
+    }
+
+
+@pytest.fixture()
+def mock_backtest_repo() -> AsyncMock:
+    """Mock BacktestingRepository."""
+    repo = AsyncMock()
+    repo.get_trades = AsyncMock(return_value=[_sample_trade_row()])
+    repo.upsert_category_performance = AsyncMock()
+    repo.upsert_position = AsyncMock()
+    repo.upsert_optimal_param = AsyncMock()
+    return repo
+
+
+@pytest.fixture()
+def mock_flip_repo() -> AsyncMock:
+    """Mock FlippeningRepository."""
+    repo = AsyncMock()
+    repo.get_history = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture()
+def client(
+    mock_backtest_repo: AsyncMock,
+    mock_flip_repo: AsyncMock,
+) -> TestClient:
+    """Build a TestClient with mocked dependencies."""
+    config = _test_config()
+    with (
+        patch("arb_scanner.storage.db.Database.connect", new_callable=AsyncMock),
+        patch("arb_scanner.storage.db.Database.disconnect", new_callable=AsyncMock),
+    ):
+        app = create_app(config)
+        app.dependency_overrides[get_backtest_repo] = lambda: mock_backtest_repo
+        app.dependency_overrides[get_flip_repo] = lambda: mock_flip_repo
+        app.dependency_overrides[get_config] = lambda: config
+        with TestClient(app, raise_server_exceptions=False) as tc:
+            yield tc
+
+
+class TestAnalyzeEndpoint:
+    """Tests for POST /api/backtesting/analyze."""
+
+    def test_analyze_returns_portfolio(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Analyze reconstructs positions and returns portfolio."""
+        resp = client.post("/api/backtesting/analyze")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "portfolio" in data
+        assert "category_performance" in data
+        assert "trade_count" in data
+
+    def test_analyze_persists_category_performance(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Analyze upserts category performance to DB."""
+        client.post("/api/backtesting/analyze")
+        assert mock_backtest_repo.upsert_category_performance.called
+
+    def test_analyze_with_category_filter(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Analyze accepts category query param."""
+        resp = client.post("/api/backtesting/analyze?category=nba")
+        assert resp.status_code == 200
+
+    def test_analyze_empty_trades(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Analyze handles no trades gracefully."""
+        mock_backtest_repo.get_trades.return_value = []
+        resp = client.post("/api/backtesting/analyze")
+        assert resp.status_code == 200
+        assert resp.json()["trade_count"] == 0
+
+
+class TestReportEndpoint:
+    """Tests for POST /api/backtesting/report."""
+
+    def test_report_returns_signal_alignment(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Report includes signal alignment data."""
+        resp = client.post("/api/backtesting/report")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "portfolio" in data
+        assert "signal_alignment" in data
+        assert "category_performance" in data
+
+    def test_report_with_filters(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Report accepts category, since, until filters."""
+        resp = client.post(
+            "/api/backtesting/report?category=nba"
+            "&since=2026-01-01T00:00:00&until=2026-12-31T00:00:00",
+        )
+        assert resp.status_code == 200
+
+    def test_report_empty_trades(
+        self,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Report handles empty trade set."""
+        mock_backtest_repo.get_trades.return_value = []
+        resp = client.post("/api/backtesting/report")
+        assert resp.status_code == 200
+
+
+class TestSweepEndpoint:
+    """Tests for POST /api/backtesting/sweep."""
+
+    @patch("arb_scanner.cli._replay_helpers.run_sweep", new_callable=AsyncMock)
+    def test_sweep_calls_run_sweep(
+        self,
+        mock_run_sweep: AsyncMock,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+    ) -> None:
+        """Sweep endpoint delegates to run_sweep helper."""
+        mock_run_sweep.return_value = {
+            "param_name": "spike_threshold_pct",
+            "results": [[0.10, {"win_rate": 0.6, "avg_pnl": 1.5}]],
+        }
+        resp = client.post(
+            "/api/backtesting/sweep",
+            json={
+                "category": "nba",
+                "param": "spike_threshold_pct",
+                "min": 0.05,
+                "max": 0.20,
+                "step": 0.05,
+            },
+        )
+        assert resp.status_code == 200
+
+    def test_sweep_missing_body_returns_422(self, client: TestClient) -> None:
+        """Sweep without request body returns validation error."""
+        resp = client.post("/api/backtesting/sweep")
+        assert resp.status_code == 422

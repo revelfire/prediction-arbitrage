@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
 import structlog
 
 from arb_scanner.flippening._orch_alerts import handle_discovery_health
-from arb_scanner.flippening._orch_processing import process_update
+from arb_scanner.flippening._orch_processing import (
+    process_update,
+    reconcile_open_positions_with_exchange,
+    reconcile_pending_db_positions,
+    retry_active_signals,
+    sweep_overtime_db_positions,
+    sweep_overtime_signals,
+)
+from arb_scanner.flippening.alert_buffer import AlertBuffer
+from arb_scanner.flippening.price_ring_buffer import (
+    PriceRingBuffer,
+    set_shared_buffer,
+)
 from arb_scanner.flippening._orch_repo import (
     create_repo,
     create_tick_repo,
@@ -34,6 +47,10 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 )
 
 _DISCOVERY_INTERVAL_SECONDS = 300  # 5 minutes
+_POSITION_SWEEP_INTERVAL_S = 60  # 1 minute
+_PENDING_EXIT_RECONCILE_INTERVAL_S = 10  # 10 seconds
+_EXCHANGE_RECONCILE_INTERVAL_S = 300  # 5 minutes
+_SIGNAL_RETRY_INTERVAL_S = 60  # 1 minute
 
 
 async def run_flip_watch(
@@ -73,10 +90,17 @@ async def run_flip_watch(
 
     repo: Any = None
     tick_repo: Any = None
+    repo_db: Any = None
+    tick_db: Any = None
     if not dry_run:
-        repo = await create_repo(config)
-        tick_repo = await create_tick_repo(config)
+        repo, repo_db = await create_repo(config)
+        tick_repo, tick_db = await create_tick_repo(config)
+        await _check_orphaned_positions(config)
     tick_buffer = TickBuffer(tick_repo, flip_cfg)
+    alert_buffer = AlertBuffer() if not dry_run else None
+
+    price_buffer = PriceRingBuffer()
+    set_shared_buffer(price_buffer)
 
     http_client = httpx.AsyncClient(base_url="https://clob.polymarket.com", timeout=10.0)
     try:
@@ -91,11 +115,16 @@ async def run_flip_watch(
             repo,
             tick_repo,
             tick_buffer,
+            alert_buffer,
             http_client,
             dry_run,
         )
     finally:
         await http_client.aclose()
+        if repo_db is not None:
+            await repo_db.disconnect()
+        if tick_db is not None:
+            await tick_db.disconnect()
 
 
 async def _run_main_loop(
@@ -109,6 +138,7 @@ async def _run_main_loop(
     repo: Any,
     tick_repo: Any,
     tick_buffer: TickBuffer,
+    alert_buffer: AlertBuffer | None,
     http_client: httpx.AsyncClient,
     dry_run: bool,
 ) -> None:
@@ -145,7 +175,31 @@ async def _run_main_loop(
 
     timers = _LoopTimers()
     try:
-        async for update in stream:
+        while True:
+            try:
+                update = await asyncio.wait_for(
+                    stream.__anext__(),
+                    timeout=30.0,
+                )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                prev_health = await _run_periodic_tasks(
+                    timers,
+                    config,
+                    active_categories,
+                    http_client,
+                    game_mgr,
+                    stream,
+                    prev_health,
+                    repo,
+                    dry_run,
+                    tick_buffer,
+                    alert_buffer,
+                    book_cache,
+                    telemetry,
+                )
+                continue
             enriched = await book_cache.enrich(update, http_client)
             if tick_buffer.append(enriched):
                 await tick_buffer.flush()
@@ -159,48 +213,114 @@ async def _run_main_loop(
                 http_client,
                 dry_run,
                 tick_repo=tick_repo,
+                alert_buffer=alert_buffer,
             )
-            now = asyncio.get_event_loop().time()
-            if now - timers.last_tick_flush > config.flippening.tick_flush_interval_seconds:
-                await tick_buffer.flush()
-                timers.last_tick_flush = now
-            if now - timers.last_discovery > _DISCOVERY_INTERVAL_SECONDS:
-                prev_health = await _periodic_discovery(
-                    config,
-                    active_categories,
-                    http_client,
-                    game_mgr,
-                    stream,
-                    prev_health,
-                    repo,
-                    dry_run,
-                )
-                timers.last_discovery = now
-            (
-                timers.stall_count,
-                timers.last_stall_received,
-                timers.last_drift_alert,
-            ) = await check_telemetry(
-                telemetry,
-                book_cache,
+            prev_health = await _run_periodic_tasks(
+                timers,
                 config,
-                repo,
+                active_categories,
                 http_client,
-                dry_run,
-                now,
-                timers.last_persist,
-                timers.stall_count,
-                timers.last_stall_received,
-                timers.last_drift_alert,
+                game_mgr,
                 stream,
+                prev_health,
+                repo,
+                dry_run,
+                tick_buffer,
+                alert_buffer,
+                book_cache,
+                telemetry,
             )
-            if now - timers.last_persist > config.flippening.ws_telemetry_persist_interval_seconds:
-                timers.last_persist = now
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("flip_watch_shutting_down")
     finally:
         await tick_buffer.flush()
+        if alert_buffer is not None:
+            await alert_buffer.flush(config, http_client)
         await stream.close()
+
+
+async def _run_periodic_tasks(
+    timers: _LoopTimers,
+    config: Settings,
+    active_categories: dict[str, CategoryConfig],
+    http_client: httpx.AsyncClient,
+    game_mgr: GameManager,
+    stream: Any,
+    prev_health: DiscoveryHealthSnapshot | None,
+    repo: Any,
+    dry_run: bool,
+    tick_buffer: TickBuffer,
+    alert_buffer: AlertBuffer | None,
+    book_cache: OrderBookCache,
+    telemetry: WsTelemetry,
+) -> DiscoveryHealthSnapshot | None:
+    """Run tick/alert flush, discovery refresh, and telemetry checks."""
+    now = time.monotonic()
+    if now - timers.last_tick_flush > config.flippening.tick_flush_interval_seconds:
+        await tick_buffer.flush()
+        timers.last_tick_flush = now
+    alert_due = now - timers.last_alert_flush > config.flippening.alert_batch_interval_seconds
+    if alert_buffer is not None and alert_due:
+        await alert_buffer.flush(config, http_client)
+        timers.last_alert_flush = now
+    if not dry_run and now - timers.last_position_sweep > _POSITION_SWEEP_INTERVAL_S:
+        await sweep_overtime_signals(
+            game_mgr,
+            config,
+            repo,
+            http_client,
+            dry_run,
+            alert_buffer,
+        )
+        await sweep_overtime_db_positions(config)
+        timers.last_position_sweep = now
+    if (
+        not dry_run
+        and now - timers.last_pending_exit_reconcile > _PENDING_EXIT_RECONCILE_INTERVAL_S
+    ):
+        await reconcile_pending_db_positions(config)
+        timers.last_pending_exit_reconcile = now
+    if not dry_run and now - timers.last_exchange_reconcile > _EXCHANGE_RECONCILE_INTERVAL_S:
+        await reconcile_open_positions_with_exchange(config)
+        timers.last_exchange_reconcile = now
+    if not dry_run and now - timers.last_signal_retry > _SIGNAL_RETRY_INTERVAL_S:
+        await retry_active_signals(game_mgr, config)
+        timers.last_signal_retry = now
+    if now - timers.last_discovery > _DISCOVERY_INTERVAL_SECONDS:
+        prev_health = await _periodic_discovery(
+            config,
+            active_categories,
+            http_client,
+            game_mgr,
+            stream,
+            prev_health,
+            repo,
+            dry_run,
+        )
+        timers.last_discovery = now
+    (
+        timers.stall_count,
+        timers.last_stall_received,
+        timers.last_drift_alert,
+        timers.last_reconnect,
+    ) = await check_telemetry(
+        telemetry,
+        book_cache,
+        config,
+        repo,
+        http_client,
+        dry_run,
+        now,
+        timers.last_persist,
+        timers.stall_count,
+        timers.last_stall_received,
+        timers.last_drift_alert,
+        stream,
+        timers.last_reconnect,
+    )
+    if now - timers.last_persist > config.flippening.ws_telemetry_persist_interval_seconds:
+        timers.last_persist = now
+    return prev_health
 
 
 class _LoopTimers:
@@ -208,13 +328,19 @@ class _LoopTimers:
 
     def __init__(self) -> None:
         """Initialise timer values."""
-        _now = asyncio.get_event_loop().time()
+        _now = time.monotonic()
         self.last_discovery: float = _now
         self.last_persist: float = _now
         self.last_tick_flush: float = _now
+        self.last_alert_flush: float = _now
         self.stall_count: int = 0
         self.last_stall_received: int = 0
         self.last_drift_alert: float = 0.0
+        self.last_reconnect: float = 0.0
+        self.last_position_sweep: float = _now
+        self.last_pending_exit_reconcile: float = 0.0
+        self.last_exchange_reconcile: float = _now
+        self.last_signal_retry: float = _now
 
 
 async def _periodic_discovery(
@@ -269,19 +395,80 @@ async def _periodic_discovery(
         return prev_health
 
 
+async def _check_orphaned_positions(config: Settings) -> None:
+    """Reconcile and alert on open positions from prior sessions at startup.
+
+    First reconciles DB positions against actual Polymarket token
+    balances — any position whose tokens are no longer held is closed.
+    Then alerts on remaining orphaned positions.
+
+    Args:
+        config: Application settings with DB URL and notification webhooks.
+    """
+    try:
+        # Reconcile stale positions against exchange balances first
+        closed = await reconcile_open_positions_with_exchange(config)
+        if closed:
+            logger.info("startup_reconcile_closed", closed=closed)
+    except Exception:
+        logger.exception("startup_reconcile_failed")
+
+    try:
+        from arb_scanner.execution.flip_position_repo import FlipPositionRepo
+        from arb_scanner.flippening.alert_formatter import dispatch_flip_alert
+        from arb_scanner.storage.db import Database
+
+        db = Database(config.storage.database_url)
+        await db.connect()
+        try:
+            repo = FlipPositionRepo(db.pool)
+            orphans = await repo.get_orphaned_positions()
+        finally:
+            await db.disconnect()
+
+        if not orphans:
+            return
+
+        lines: list[str] = []
+        reconcile_note = f" ({closed} auto-closed)" if closed else ""
+        lines.append(
+            f":warning: *{len(orphans)} open position(s) from prior session{reconcile_note}:*"
+        )
+        for p in orphans:
+            max_hold = p.get("max_hold_minutes")
+            hold_tag = f" | max {max_hold}m" if max_hold else ""
+            lines.append(
+                f"  • `{p['market_id']}` | {p['side'].upper()}"
+                f" | {p['size_contracts']} contracts"
+                f" @ ${float(p['entry_price']):.3f}{hold_tag}"
+                f" | arb_id: `{p['arb_id'][:12]}...`"
+            )
+        lines.append("_Overtime positions will be auto-closed by the periodic sweep._")
+        msg = "\n".join(lines)
+
+        notif = config.notifications
+        slack = {"text": msg} if notif.effective_flippening_slack else None
+        discord = {"content": msg} if notif.discord_webhook else None
+        if slack or discord:
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                await dispatch_flip_alert(
+                    slack,
+                    discord,
+                    slack_url=notif.effective_flippening_slack,
+                    discord_url=notif.discord_webhook,
+                    client=client,
+                )
+    except Exception:
+        logger.exception("orphan_check_failed")
+
+
 def _resolve_categories(
     all_categories: dict[str, CategoryConfig],
     filter_list: list[str] | None,
 ) -> dict[str, CategoryConfig]:
-    """Resolve active categories from config and optional filter.
-
-    Args:
-        all_categories: All configured categories.
-        filter_list: Optional category/sport filter list.
-
-    Returns:
-        Dict of category_id -> CategoryConfig for active categories.
-    """
+    """Resolve active categories from config and optional filter."""
     if filter_list:
         return {k: v for k, v in all_categories.items() if k in filter_list and v.enabled}
     return {k: v for k, v in all_categories.items() if v.enabled}

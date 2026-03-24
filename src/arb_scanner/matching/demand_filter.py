@@ -59,7 +59,7 @@ async def rank_events(
 async def demand_rank(
     poly_markets: list[Market],
     kalshi_markets: list[Market],
-    max_markets: int = 500,
+    max_markets: int = 1000,
 ) -> list[Market]:
     """Select the most Poly-relevant Kalshi markets via BM25 scoring.
 

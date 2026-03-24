@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -33,7 +34,8 @@ async def check_telemetry(
     last_stall_received: int,
     last_drift_alert: float,
     stream: Any,
-) -> tuple[int, int, float]:
+    last_reconnect: float = 0.0,
+) -> tuple[int, int, float, float]:
     """Check telemetry health: persist, drift alerts, stall detection.
 
     Args:
@@ -49,19 +51,21 @@ async def check_telemetry(
         last_stall_received: cum_received at last stall check.
         last_drift_alert: Timestamp of last drift alert.
         stream: Price stream (for forced reconnect).
+        last_reconnect: Timestamp of last forced reconnect.
 
     Returns:
-        Updated (stall_count, last_stall_received, last_drift_alert).
+        Updated (stall_count, last_stall_received, last_drift_alert, last_reconnect).
     """
     flip_cfg = config.flippening
     logged = telemetry.should_log(flip_cfg.ws_telemetry_interval_seconds)
 
     if logged:
-        stall_count, last_stall_received = _handle_stall(
+        stall_count, last_stall_received, last_reconnect = await _handle_stall(
             telemetry,
             stall_count,
             last_stall_received,
             stream,
+            last_reconnect,
         )
         last_drift_alert = await _handle_schema_drift(
             telemetry,
@@ -82,26 +86,46 @@ async def check_telemetry(
         except Exception:
             logger.exception("ws_telemetry_persist_failed")
 
-    return stall_count, last_stall_received, last_drift_alert
+    return stall_count, last_stall_received, last_drift_alert, last_reconnect
 
 
-def _handle_stall(
+async def _handle_stall(
     telemetry: WsTelemetry,
     stall_count: int,
     last_stall_received: int,
     stream: Any,
-) -> tuple[int, int]:
-    """Detect and handle WebSocket stalls."""
+    last_reconnect: float,
+    min_reconnect_interval: float = 60.0,
+) -> tuple[int, int, float]:
+    """Detect and handle WebSocket stalls.
+
+    Args:
+        telemetry: WS telemetry tracker.
+        stall_count: Consecutive stall intervals.
+        last_stall_received: cum_received at last check.
+        stream: Price stream (for forced reconnect).
+        last_reconnect: Timestamp of last forced reconnect.
+        min_reconnect_interval: Minimum seconds between reconnects.
+
+    Returns:
+        Updated (stall_count, last_stall_received, last_reconnect).
+    """
+    now = time.monotonic()
     if telemetry.cum_received == last_stall_received:
         stall_count += 1
         if stall_count >= 2:
             logger.warning("ws_stall_detected", stalls=stall_count)
         if stall_count >= STALL_THRESHOLD:
-            logger.error("ws_stall_reconnect", stalls=stall_count)
+            if now - last_reconnect >= min_reconnect_interval:
+                logger.error("ws_stall_reconnect", stalls=stall_count)
+                reconnect_fn = getattr(stream, "reconnect", None)
+                if reconnect_fn is not None:
+                    await reconnect_fn()
+                last_reconnect = now
             stall_count = 0
     else:
         stall_count = 0
-    return stall_count, telemetry.cum_received
+    return stall_count, telemetry.cum_received, last_reconnect
 
 
 async def _handle_schema_drift(

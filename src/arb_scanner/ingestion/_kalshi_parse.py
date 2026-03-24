@@ -46,6 +46,28 @@ def clamp(value: Decimal) -> Decimal:
     return max(Decimal("0"), min(Decimal("1"), value))
 
 
+_CENTS = Decimal("100")
+
+
+def _price_field(raw: dict[str, object], prefix: str) -> Decimal:
+    """Read a Kalshi price, preferring ``*_dollars`` then ``*_fp`` (cents).
+
+    Args:
+        raw: Market dict from the API.
+        prefix: Field prefix, e.g. ``"yes_bid"``.
+
+    Returns:
+        Price as a Decimal in [0, 1] scale.
+    """
+    dollars = raw.get(f"{prefix}_dollars")
+    if dollars is not None:
+        return safe_decimal(dollars)
+    fp = raw.get(f"{prefix}_fp")
+    if fp is not None:
+        return safe_decimal(fp) / _CENTS
+    return Decimal("0")
+
+
 def parse_market(raw: dict[str, object]) -> Market | None:
     """Parse a single Kalshi API market dict into a :class:`Market`.
 
@@ -63,10 +85,10 @@ def parse_market(raw: dict[str, object]) -> Market | None:
         if not ticker or not title:
             return None
 
-        yes_bid = clamp(safe_decimal(raw.get("yes_bid_dollars")))
-        yes_ask = clamp(safe_decimal(raw.get("yes_ask_dollars")))
-        no_bid = clamp(safe_decimal(raw.get("no_bid_dollars")))
-        no_ask = clamp(safe_decimal(raw.get("no_ask_dollars")))
+        yes_bid = clamp(_price_field(raw, "yes_bid"))
+        yes_ask = clamp(_price_field(raw, "yes_ask"))
+        no_bid = clamp(_price_field(raw, "no_bid"))
+        no_ask = clamp(_price_field(raw, "no_ask"))
 
         if yes_bid > yes_ask:
             yes_bid, yes_ask = yes_ask, yes_bid

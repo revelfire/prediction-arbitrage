@@ -9,6 +9,19 @@ from __future__ import annotations
 from arb_scanner.models.config import CategoryConfig
 
 DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
+    "esports": [
+        "valorant",
+        "counter-strike",
+        "cs2",
+        "rocket league",
+        "league of legends",
+        "dota 2",
+        "dota2",
+        "overwatch",
+        "blast premier",
+        "vcl ",
+        "vct ",
+    ],
     "nba": [
         "lakers",
         "celtics",
@@ -169,9 +182,7 @@ DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
         "ppv",
         "conor",
         "mcgregor",
-        "jones",
         "adesanya",
-        "pereira",
         "volkanovski",
         "makhachev",
         "o'malley",
@@ -179,8 +190,6 @@ DEFAULT_SPORT_KEYWORDS: dict[str, list[str]] = {
         "topuria",
         "strickland",
         "poirier",
-        "diaz",
-        "paul",
     ],
 }
 

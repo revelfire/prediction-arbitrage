@@ -39,3 +39,4 @@ htmlcov/
 # Temporary files
 *.tmp
 *.swp
+/kalshi-key.pem

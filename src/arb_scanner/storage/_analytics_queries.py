@@ -42,8 +42,8 @@ SELECT date_trunc('hour', started_at)                            AS hour,
                                                                  AS avg_duration_s,
        COALESCE(SUM(llm_evaluations), 0)                        AS total_llm_calls,
        COALESCE(SUM(opportunities_found), 0)                    AS total_opps,
-       SUM(jsonb_array_length(COALESCE(errors::jsonb, '[]'::jsonb)))
-                                                                 AS total_errors
+       SUM(CASE WHEN jsonb_typeof(errors) = 'array'
+                THEN jsonb_array_length(errors) ELSE 0 END)     AS total_errors
 FROM scan_logs
 WHERE started_at >= $1
 GROUP BY 1
@@ -76,6 +76,7 @@ FROM execution_tickets t
 JOIN arb_opportunities o ON t.arb_id = o.id
 WHERE t.created_at >= $1
   AND ($2::timestamptz IS NULL OR t.created_at < $2)
+  AND t.expected_profit > 0
 ORDER BY t.created_at DESC
 LIMIT $3;
 """

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import structlog
@@ -18,14 +19,14 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(
 )
 
 
-async def create_repo(config: Settings) -> Any:
+async def create_repo(config: Settings) -> tuple[Any, Any]:
     """Create FlippeningRepository from config.
 
     Args:
         config: Application settings with storage config.
 
     Returns:
-        FlippeningRepository instance or None.
+        Tuple of (FlippeningRepository, Database) or (None, None).
     """
     try:
         from arb_scanner.storage.db import Database
@@ -33,20 +34,20 @@ async def create_repo(config: Settings) -> Any:
 
         db = Database(config.storage.database_url)
         await db.connect()
-        return FlippeningRepository(db.pool)
+        return FlippeningRepository(db.pool), db
     except Exception:
         logger.exception("repo_creation_failed")
-        return None
+        return None, None
 
 
-async def create_tick_repo(config: Settings) -> Any:
+async def create_tick_repo(config: Settings) -> tuple[Any, Any]:
     """Create TickRepository from config.
 
     Args:
         config: Application settings with storage config.
 
     Returns:
-        TickRepository instance or None.
+        Tuple of (TickRepository, Database) or (None, None).
     """
     try:
         from arb_scanner.storage.db import Database
@@ -54,10 +55,10 @@ async def create_tick_repo(config: Settings) -> Any:
 
         db = Database(config.storage.database_url)
         await db.connect()
-        return TickRepository(db.pool)
+        return TickRepository(db.pool), db
     except Exception:
         logger.exception("tick_repo_creation_failed")
-        return None
+        return None, None
 
 
 async def persist_entry(
@@ -65,6 +66,9 @@ async def persist_entry(
     event: FlippeningEvent,
     entry: EntrySignal,
     baseline: Any,
+    *,
+    min_expected_profit_usd: Decimal = Decimal("1.00"),
+    market_slug: str = "",
 ) -> None:
     """Persist entry data to the database.
 
@@ -73,12 +77,19 @@ async def persist_entry(
         event: Detected flippening event.
         entry: Entry signal.
         baseline: Baseline data.
+        min_expected_profit_usd: Minimum profit to create ticket.
+        market_slug: Polymarket slug for building market URL.
     """
     try:
         await repo.insert_baseline(baseline)
         await repo.insert_event(event)
         await repo.insert_signal(entry)
-        await repo.insert_flip_ticket(event, entry)
+        await repo.insert_flip_ticket(
+            event,
+            entry,
+            min_expected_profit_usd=min_expected_profit_usd,
+            market_slug=market_slug,
+        )
     except Exception:
         logger.exception("persist_entry_failed")
 

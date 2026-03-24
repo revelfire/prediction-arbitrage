@@ -44,6 +44,11 @@ from arb_scanner.cli import flippening_commands as _flippening  # noqa: E402
 
 _flippening.register(app)
 
+# Register backtesting commands (import-trades, portfolio, backtest-report).
+from arb_scanner.cli import backtesting_commands as _backtesting  # noqa: E402
+
+_backtesting.register(app)
+
 
 @app.command()
 def scan(
@@ -104,7 +109,7 @@ def watch(
 
 
 async def _run_watch_with_signals(config: Any) -> None:
-    """Set up signal handlers and run the watch loop."""
+    """Set up signal handlers, init arb pipeline, and run the watch loop."""
     from arb_scanner.cli.watch import run_watch
 
     stop_event = asyncio.Event()
@@ -113,9 +118,79 @@ async def _run_watch_with_signals(config: Any) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
+    db = await _maybe_init_arb_pipeline(config)
     logger.info("watch_started", interval=config.scanning.interval_seconds)
-    await run_watch(config, stop_event)
+    try:
+        await run_watch(config, stop_event)
+    finally:
+        if db is not None:
+            await db.disconnect()
     logger.info("watch_stopped")
+
+
+async def _maybe_init_arb_pipeline(config: Any) -> Any:
+    """Initialise arb auto-execution pipeline for the watch loop.
+
+    Returns the Database instance (for cleanup) or None if skipped.
+    """
+    ac = config.auto_execution
+    if not ac.enabled or ac.mode == "off":
+        logger.info("arb_pipeline_skipped", reason="auto_execution_disabled")
+        return None
+    try:
+        from arb_scanner.execution.arb_critic import ArbTradeCritic
+        from arb_scanner.execution.arb_pipeline import ArbAutoExecutionPipeline
+        from arb_scanner.execution.capital_manager import CapitalManager
+        from arb_scanner.execution.circuit_breaker import CircuitBreakerManager
+        from arb_scanner.execution.kalshi_executor import KalshiExecutor
+        from arb_scanner.execution.polymarket_executor import PolymarketExecutor
+        from arb_scanner.storage.auto_exec_repository import AutoExecRepository
+        from arb_scanner.storage.db import Database
+
+        db = Database(config.database.url)
+        await db.connect()
+        pool = db.pool
+        auto_repo = AutoExecRepository(pool)
+        poly = PolymarketExecutor(config.execution.polymarket)
+        kalshi = KalshiExecutor(config.execution.kalshi)
+        capital = CapitalManager(
+            config.execution,
+            poly.get_balance,
+            kalshi.get_balance,
+        )
+        breakers = CircuitBreakerManager(ac)
+        critic = ArbTradeCritic(ac.critic, config.claude)
+        from arb_scanner.execution.orchestrator import ExecutionOrchestrator
+        from arb_scanner.storage.execution_repository import ExecutionRepository
+        from arb_scanner.storage.ticket_repository import TicketRepository
+
+        exec_repo = ExecutionRepository(pool)
+        ticket_repo = TicketRepository(pool)
+        orch = ExecutionOrchestrator(
+            config=config.execution,
+            capital=capital,
+            poly=poly,
+            kalshi=kalshi,
+            exec_repo=exec_repo,
+            ticket_repo=ticket_repo,
+        )
+        pipeline = ArbAutoExecutionPipeline(
+            config=config,
+            auto_config=ac,
+            orchestrator=orch,
+            critic=critic,
+            breakers=breakers,
+            capital=capital,
+            poly=poly,
+            kalshi=kalshi,
+            auto_repo=auto_repo,
+        )
+        object.__setattr__(config, "_arb_pipeline", pipeline)
+        logger.info("arb_pipeline_initialised", mode=str(ac.mode))
+        return db
+    except Exception:
+        logger.exception("arb_pipeline_init_failed")
+        return None
 
 
 @app.command()
@@ -296,11 +371,77 @@ async def _run_migrate(config: Any) -> list[str]:
         return await run_migrations(db.pool)
 
 
+@app.command(name="ticket-prune")
+def ticket_prune(
+    days: int | None = typer.Option(
+        None, "--days", help="Delete terminal tickets older than N days (default: config)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be deleted without deleting."
+    ),
+) -> None:
+    """Delete expired/executed/cancelled tickets older than retention threshold."""
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.error("config_load_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    try:
+        result = asyncio.run(_run_ticket_prune(config, days, dry_run))
+    except Exception as exc:
+        logger.error("ticket_prune_failed", error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        retention = days if days is not None else config.ticket_lifecycle.retention_days
+        sys.stdout.write(
+            f"Dry run: would delete terminal tickets older than {retention} days "
+            f"(before {result['cutoff']}).\n"
+        )
+    else:
+        sys.stdout.write(f"Deleted {result['deleted']} terminal ticket(s).\n")
+
+
+async def _run_ticket_prune(
+    config: Any,
+    days: int | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Run ticket pruning.
+
+    Args:
+        config: Application settings.
+        days: Retention days override (None = use config default).
+        dry_run: Report only, don't delete.
+
+    Returns:
+        Dict with deleted count or dry-run info.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from arb_scanner.storage.db import Database
+    from arb_scanner.storage.ticket_repository import TicketRepository
+
+    retention = days if days is not None else config.ticket_lifecycle.retention_days
+    cutoff = datetime.now(tz=UTC) - timedelta(days=retention)
+    async with Database(config.storage.database_url) as db:
+        repo = TicketRepository(db.pool)
+        if dry_run:
+            return {"cutoff": cutoff.isoformat(), "days": retention, "dry_run": True}
+        count = await repo.prune_tickets(cutoff)
+        return {"deleted": count, "cutoff": cutoff.isoformat(), "days": retention}
+
+
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the dashboard server."),
-    port: int = typer.Option(8000, "--port", help="Port for the dashboard server."),
+    port: int = typer.Option(8061, "--port", help="Port for the dashboard server."),
     no_db: bool = typer.Option(False, "--no-db", help="Start without database (UI preview only)."),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)."),
+    flip_watch: bool = typer.Option(
+        False, "--flip-watch", help="Run flippening engine in-process."
+    ),
 ) -> None:
     """Start the web dashboard and API server."""
     try:
@@ -309,10 +450,23 @@ def serve(
         logger.error("config_load_failed", error=str(exc))
         raise typer.Exit(code=1) from exc
 
-    from arb_scanner.api.app import create_app
-
-    api_app = create_app(config, no_db=no_db)
-
     import uvicorn
 
-    uvicorn.run(api_app, host=host, port=port)
+    if reload:
+        import os
+
+        os.environ.setdefault("ARB_NO_DB", "1" if no_db else "0")
+        os.environ.setdefault("ARB_FLIP_WATCH", "1" if flip_watch else "0")
+        uvicorn.run(
+            "arb_scanner.api.app:create_app_from_env",
+            host=host,
+            port=port,
+            reload=True,
+            reload_dirs=["src"],
+            factory=True,
+        )
+    else:
+        from arb_scanner.api.app import create_app
+
+        api_app = create_app(config, no_db=no_db, flip_watch=flip_watch)
+        uvicorn.run(api_app, host=host, port=port)

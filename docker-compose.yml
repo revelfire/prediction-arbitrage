@@ -24,12 +24,17 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # Web dashboard + REST API
+  # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     build: .
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8061", "--flip-watch"]
     ports:
-      - "${DASHBOARD_PORT:-8000}:8000"
+      - "${DASHBOARD_PORT:-8061}:8061"
     env_file: .env
+    volumes:
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy
@@ -42,18 +47,10 @@ services:
     build: .
     command: ["uv", "run", "arb-scanner", "watch", "--interval", "${SCAN_INTERVAL:-60}"]
     env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  # Flippening mean reversion engine (live sports market monitoring)
-  flip-watch:
-    build: .
-    command: ["uv", "run", "arb-scanner", "flip-watch"]
-    env_file: .env
+    volumes:
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml:ro
+      - ./kalshi-key.pem:/app/kalshi-key.pem:ro
     depends_on:
       db:
         condition: service_healthy

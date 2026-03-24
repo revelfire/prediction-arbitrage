@@ -73,7 +73,7 @@ class Database:
 
 
 async def _init_connection(conn: asyncpg.Connection[asyncpg.Record]) -> None:
-    """Register pgvector types on each new pool connection.
+    """Register pgvector and JSONB types on each new pool connection.
 
     Gracefully skips registration if the pgvector extension is not yet
     installed (e.g. on a fresh database before migrations run).
@@ -81,9 +81,20 @@ async def _init_connection(conn: asyncpg.Connection[asyncpg.Record]) -> None:
     Args:
         conn: The newly created asyncpg connection.
     """
+    import json
+
     try:
         await register_vector(conn)
     except (ValueError, asyncpg.UndefinedObjectError):
         # pgvector extension not yet installed — skip type registration.
         # Happens on fresh databases before migrations run.
         pass
+
+    # Decode JSON/JSONB columns as Python objects instead of raw strings.
+    for pg_type in ("json", "jsonb"):
+        await conn.set_type_codec(
+            pg_type,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )

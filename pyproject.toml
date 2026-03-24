@@ -18,6 +18,9 @@ dependencies = [
     "uvicorn[standard]",
     "fastembed",
     "websockets>=16.0",
+    "py-clob-client>=0.34.6",
+    "cryptography>=43.0",
+    "python-multipart>=0.0.22",
 ]
 
 [project.scripts]

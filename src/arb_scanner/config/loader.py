@@ -3,7 +3,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 import yaml
@@ -52,6 +52,10 @@ def load_config(path: str | None = None) -> Settings:
 
     logger.info("loading_config", path=str(resolved))
 
+    if not resolved.exists() and path is None and "ARB_SCANNER_CONFIG" not in os.environ:
+        logger.info("config_file_missing_using_env_defaults", path=str(resolved))
+        return _settings_from_env()
+
     raw_text = resolved.read_text(encoding="utf-8")
     raw_data: Any = yaml.safe_load(raw_text)
 
@@ -61,5 +65,95 @@ def load_config(path: str | None = None) -> Settings:
     interpolated: Any = _interpolate_env_vars(raw_data)
 
     settings = Settings.model_validate(interpolated)
+    _apply_auto_exec_env_overrides(settings)
     logger.info("config_loaded", path=str(resolved))
     return settings
+
+
+def _settings_from_env() -> Settings:
+    """Build Settings from environment variables when no config file exists.
+
+    Uses DATABASE_URL from the environment and default fee schedules.
+    Useful for CI and minimal deployments.
+    """
+    from decimal import Decimal
+
+    from arb_scanner.models.config import FeeSchedule, FeesConfig, StorageConfig
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        raise ValueError("No config.yaml found and DATABASE_URL not set")
+
+    settings = Settings(
+        storage=StorageConfig(database_url=db_url),
+        fees=FeesConfig(
+            polymarket=FeeSchedule(taker_fee_pct=Decimal("0.02"), fee_model="percent_winnings"),
+            kalshi=FeeSchedule(taker_fee_pct=Decimal("0.07"), fee_model="per_contract"),
+        ),
+    )
+    _apply_auto_exec_env_overrides(settings)
+    return settings
+
+
+def _apply_auto_exec_env_overrides(settings: Settings) -> None:
+    """Apply explicit env overrides for auto-exec watchdog/probe controls."""
+    _set_env_float(
+        "AUTO_FAILURE_PROBE_COOLDOWN_MIN_SECONDS",
+        lambda v: _set_auto_exec_override(settings, "failure_probe_cooldown_min_seconds", v),
+    )
+    _set_env_float(
+        "AUTO_FAILURE_PROBE_COOLDOWN_MAX_SECONDS",
+        lambda v: _set_auto_exec_override(settings, "failure_probe_cooldown_max_seconds", v),
+    )
+    _set_env_float(
+        "AUTO_FAILURE_PROBE_BACKOFF_MULTIPLIER",
+        lambda v: _set_auto_exec_override(settings, "failure_probe_backoff_multiplier", v),
+    )
+    _set_env_float(
+        "AUTO_FAILURE_PROBE_RECOVERY_MULTIPLIER",
+        lambda v: _set_auto_exec_override(settings, "failure_probe_recovery_multiplier", v),
+    )
+    _set_env_int(
+        "AUTO_EXIT_PENDING_STALE_SECONDS",
+        lambda v: _set_auto_exec_override(settings, "exit_pending_stale_seconds", v),
+    )
+    _set_env_int(
+        "AUTO_EXIT_RETRY_MAX_ATTEMPTS",
+        lambda v: _set_auto_exec_override(settings, "exit_retry_max_attempts", v),
+    )
+    _set_env_float(
+        "AUTO_EXIT_REPRICE_PCT",
+        lambda v: _set_auto_exec_override(settings, "exit_retry_reprice_pct", v),
+    )
+    _set_env_float(
+        "AUTO_EXIT_RETRY_MIN_PRICE",
+        lambda v: _set_auto_exec_override(settings, "exit_retry_min_price", v),
+    )
+
+
+def _set_env_int(name: str, setter: Callable[[int], None]) -> None:
+    """Parse integer env var and apply via setter when present."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return
+    try:
+        setter(int(raw.strip()))
+    except ValueError:
+        logger.warning("invalid_env_override_int", var=name, value=raw)
+
+
+def _set_env_float(name: str, setter: Callable[[float], None]) -> None:
+    """Parse float env var and apply via setter when present."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return
+    try:
+        setter(float(raw.strip()))
+    except ValueError:
+        logger.warning("invalid_env_override_float", var=name, value=raw)
+
+
+def _set_auto_exec_override(settings: Settings, field: str, value: int | float) -> None:
+    """Apply value to root auto_exec config and flip_overrides."""
+    setattr(settings.auto_execution, field, value)
+    settings.auto_execution.flip_overrides[field] = value

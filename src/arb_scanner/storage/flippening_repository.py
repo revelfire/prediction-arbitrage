@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 import asyncpg
@@ -16,6 +17,7 @@ from arb_scanner.models.flippening import (
     FlippeningEvent,
 )
 from arb_scanner.storage import _flippening_queries as Q
+from arb_scanner.storage import _ws_telemetry_queries as WQ
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
     module="storage.flippening_repository",
@@ -38,11 +40,7 @@ class FlippeningRepository:
         self._pool = pool
 
     async def insert_baseline(self, baseline: Baseline) -> None:
-        """Persist a baseline odds capture.
-
-        Args:
-            baseline: Captured baseline odds for a market.
-        """
+        """Persist a baseline odds capture."""
         await self._pool.execute(
             Q.INSERT_BASELINE,
             baseline.market_id,
@@ -65,11 +63,7 @@ class FlippeningRepository:
         )
 
     async def insert_event(self, event: FlippeningEvent) -> None:
-        """Persist a detected flippening event.
-
-        Args:
-            event: The detected flippening.
-        """
+        """Persist a detected flippening event."""
         await self._pool.execute(
             Q.INSERT_EVENT,
             event.id,
@@ -92,15 +86,8 @@ class FlippeningRepository:
             category=event.category or event.sport,
         )
 
-    async def insert_signal(
-        self,
-        signal: EntrySignal | ExitSignal,
-    ) -> None:
-        """Persist an entry or exit signal.
-
-        Args:
-            signal: The signal to persist.
-        """
+    async def insert_signal(self, signal: EntrySignal | ExitSignal) -> None:
+        """Persist an entry or exit signal."""
         if isinstance(signal, EntrySignal):
             await self._pool.execute(
                 Q.INSERT_SIGNAL,
@@ -203,45 +190,72 @@ class FlippeningRepository:
         self,
         event: FlippeningEvent,
         entry: EntrySignal,
+        *,
+        min_expected_profit_usd: Decimal = Decimal("1.00"),
+        market_slug: str = "",
     ) -> None:
-        """Persist a flippening execution ticket.
+        """Persist a flippening execution ticket (skips duplicates).
+
+        Skips if expected profit is below threshold or if a pending
+        flippening ticket already exists for the same market_id.
 
         Args:
-            event: The flippening event.
-            entry: The entry signal.
+            event: Flippening event.
+            entry: Entry signal.
+            min_expected_profit_usd: Minimum profit to persist ticket.
+            market_slug: Polymarket slug for building market URL.
         """
+        expected_profit = entry.expected_profit_pct * entry.suggested_size_usd
+        if expected_profit < min_expected_profit_usd:
+            logger.debug("flip_ticket_skipped_below_min_profit", event_id=event.id)
+            return
+        existing = await self._pool.fetchrow(Q.HAS_PENDING_FLIP_TICKET, event.market_id)
+        if existing is not None:
+            logger.debug(
+                "flip_ticket_skipped_duplicate",
+                market_id=event.market_id,
+                event_id=event.id,
+            )
+            return
+        market_url = f"https://polymarket.com/event/{market_slug}" if market_slug else ""
+        side_token = event.token_for_side(entry.side)
         leg_1 = json.dumps(
             {
-                "action": f"BUY {entry.side.upper()}",
+                "venue": "polymarket",
+                "action": "buy",
+                "side": entry.side,
+                "token_id": side_token,
                 "market_id": event.market_id,
                 "market_title": event.market_title,
+                "market_url": market_url,
                 "price": str(entry.entry_price),
                 "sport": event.sport,
-            },
+            }
         )
         leg_2 = json.dumps(
             {
-                "action": f"SELL {entry.side.upper()} at target",
+                "venue": "polymarket",
+                "action": "sell",
+                "side": entry.side,
+                "token_id": side_token,
                 "target_price": str(entry.target_exit_price),
                 "stop_loss": str(entry.stop_loss_price),
                 "max_hold_minutes": entry.max_hold_minutes,
-            },
+            }
         )
         await self._pool.execute(
             Q.INSERT_FLIP_TICKET,
             event.id,
             leg_1,
             leg_2,
-            entry.entry_price * entry.suggested_size_usd,
-            entry.expected_profit_pct * entry.suggested_size_usd,
+            entry.suggested_size_usd,
+            expected_profit,
             "pending",
             "flippening",
+            event.category or event.sport,
+            event.category_type,
         )
-        logger.info(
-            "flip_ticket_created",
-            event_id=event.id,
-            side=entry.side,
-        )
+        logger.info("flip_ticket_created", event_id=event.id, side=entry.side)
 
     async def insert_ws_telemetry(self, snapshot: dict[str, Any]) -> None:
         """Persist a WS telemetry snapshot."""
@@ -261,3 +275,58 @@ class FlippeningRepository:
         """Fetch recent WS telemetry snapshots."""
         rows = await self._pool.fetch(Q.GET_WS_TELEMETRY, limit)
         return [dict(row) for row in rows]
+
+    async def get_ws_telemetry_latest(self) -> dict[str, Any] | None:
+        """Fetch the most recent WS telemetry snapshot."""
+        rows = await self._pool.fetch(WQ.GET_WS_TELEMETRY_LATEST)
+        return dict(rows[0]) if rows else None
+
+    async def get_ws_telemetry_history(
+        self,
+        since: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch WS telemetry snapshots since ``since``."""
+        rows = await self._pool.fetch(WQ.GET_WS_TELEMETRY_HISTORY, since)
+        return [dict(row) for row in rows]
+
+    async def get_ws_telemetry_events(
+        self,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch stall/reconnect events derived from snapshots."""
+        rows = await self._pool.fetch(WQ.GET_WS_TELEMETRY_EVENTS, limit)
+        return [dict(row) for row in rows]
+
+    async def get_discovery_health_history(
+        self,
+        since: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch discovery health snapshots since ``since``."""
+        rows = await self._pool.fetch(Q.SELECT_DISCOVERY_HEALTH_HISTORY, since)
+        return [dict(row) for row in rows]
+
+    async def get_discovery_alerts(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch recent degradation alerts, newest first."""
+        rows = await self._pool.fetch(Q.SELECT_DISCOVERY_ALERTS, limit)
+        return [dict(row) for row in rows]
+
+    async def insert_discovery_alert(
+        self,
+        alert_text: str,
+        category: str,
+    ) -> None:
+        """Persist a discovery degradation alert."""
+        await self._pool.execute(
+            Q.INSERT_DISCOVERY_ALERT,
+            alert_text,
+            category,
+            datetime.now(tz=timezone.utc),
+        )
+
+    async def resolve_discovery_alerts(self, category: str) -> None:
+        """Mark open alerts for a category as resolved."""
+        await self._pool.execute(
+            Q.RESOLVE_DISCOVERY_ALERT,
+            category,
+            datetime.now(tz=timezone.utc),
+        )

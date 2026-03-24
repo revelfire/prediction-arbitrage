@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arb_scanner.api.app import create_app
-from arb_scanner.api.deps import get_analytics_repo, get_config, get_repo
+from arb_scanner.api.deps import get_analytics_repo, get_config, get_repo, get_ticket_repo
 from arb_scanner.models.analytics import (
     AlertType,
     ScanHealthSummary,
@@ -178,7 +178,24 @@ def mock_analytics_repo() -> AsyncMock:
 
 
 @pytest.fixture()
-def client(mock_repo: AsyncMock, mock_analytics_repo: AsyncMock) -> TestClient:
+def mock_ticket_repo() -> AsyncMock:
+    """Create a mock TicketRepository with pre-configured async methods."""
+    repo = AsyncMock()
+    repo.get_tickets = AsyncMock(return_value=[])
+    repo.get_ticket = AsyncMock(return_value={"status": "pending", "leg_1": "{}", "leg_2": "{}"})
+    repo.update_status = AsyncMock()
+    repo.insert_action = AsyncMock()
+    repo.get_actions = AsyncMock(return_value=[])
+    repo.get_summary = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture()
+def client(
+    mock_repo: AsyncMock,
+    mock_analytics_repo: AsyncMock,
+    mock_ticket_repo: AsyncMock,
+) -> TestClient:
     """Build a TestClient with mocked DB and overridden dependencies."""
     config = _test_config()
 
@@ -189,6 +206,7 @@ def client(mock_repo: AsyncMock, mock_analytics_repo: AsyncMock) -> TestClient:
         app = create_app(config)
         app.dependency_overrides[get_repo] = lambda: mock_repo
         app.dependency_overrides[get_analytics_repo] = lambda: mock_analytics_repo
+        app.dependency_overrides[get_ticket_repo] = lambda: mock_ticket_repo
         app.dependency_overrides[get_config] = lambda: config
 
         with TestClient(app, raise_server_exceptions=False) as tc:
@@ -263,13 +281,15 @@ class TestAPIIntegration:
             limit=20, alert_type="convergence"
         )
 
-    def test_ticket_approve_updates_status(self, client: TestClient, mock_repo: AsyncMock) -> None:
+    def test_ticket_approve_updates_status(
+        self, client: TestClient, mock_ticket_repo: AsyncMock
+    ) -> None:
         """POST /api/tickets/test-id/approve updates ticket status."""
         resp = client.post("/api/tickets/test-id/approve")
         assert resp.status_code == 200
         assert resp.json() == {"status": "approved"}
 
-        mock_repo.update_ticket_status.assert_awaited_once_with("test-id", "approved")
+        mock_ticket_repo.update_status.assert_awaited_once_with("test-id", "approved")
 
     def test_scan_trigger_returns_result(self, client: TestClient) -> None:
         """POST /api/scan returns scan result without _raw_opps."""

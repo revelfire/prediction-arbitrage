@@ -1,4 +1,8 @@
-  011 — CI/CD Pipeline (highest operational priority)
+ ssh -L 8060:localhost:8060 arb-scanner
+ To kill it later: kill $(lsof -ti:8060)
+
+
+011 — CI/CD Pipeline (highest operational priority)
   No GitHub Actions workflow exists. The 5 quality gates (ruff, format, mypy, pytest, coverage) run only locally. A basic CI would run them on every push/PR, with nightly
   live API tests gated by secrets. Docker image build on main merge. This is the biggest gap between "works on my machine" and "production-ready."
 
@@ -169,6 +173,14 @@ src/arb_scanner/
 | `ARBITRAGE_SLACK_WEBHOOK_URL` | No | Slack notification webhook URL |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook URL |
 | `ARB_SCANNER_CONFIG` | No | Path to config file (default: `config.yaml`) |
+| `AUTO_FAILURE_PROBE_COOLDOWN_MIN_SECONDS` | No | Minimum failure-probe cooldown floor |
+| `AUTO_FAILURE_PROBE_COOLDOWN_MAX_SECONDS` | No | Maximum failure-probe cooldown cap |
+| `AUTO_FAILURE_PROBE_BACKOFF_MULTIPLIER` | No | Cooldown multiplier applied after failed probe |
+| `AUTO_FAILURE_PROBE_RECOVERY_MULTIPLIER` | No | Cooldown multiplier applied after successful probe |
+| `AUTO_EXIT_PENDING_STALE_SECONDS` | No | Flip exit watchdog stale threshold before cancel/retry |
+| `AUTO_EXIT_RETRY_MAX_ATTEMPTS` | No | Max stale exit retry attempts |
+| `AUTO_EXIT_REPRICE_PCT` | No | Reprice step per stale exit retry |
+| `AUTO_EXIT_RETRY_MIN_PRICE` | No | Minimum retry sell price floor |
 
 ## Development
 

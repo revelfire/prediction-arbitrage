@@ -318,3 +318,88 @@ class TestDepthRisk:
         result = calculate_arb(poly, kalshi, match, fees, thresholds)
         assert result is not None
         assert result.depth_risk is False
+
+
+# ---------------------------------------------------------------------------
+# Phantom price guard
+# ---------------------------------------------------------------------------
+
+
+class TestPhantomPriceGuard:
+    """Tests for rejecting markets with near-zero ask prices."""
+
+    def test_rejects_poly_near_zero_prices(self) -> None:
+        """Reject arb when Polymarket asks are below min_ask_price."""
+        poly = _make_market(
+            Venue.POLYMARKET,
+            "poly-1",
+            yes_ask=Decimal("0.01"),
+            yes_bid=Decimal("0"),
+            no_ask=Decimal("0.01"),
+            no_bid=Decimal("0"),
+            volume=Decimal("5000"),
+        )
+        kalshi = _make_market(
+            Venue.KALSHI,
+            "kalshi-1",
+            yes_ask=Decimal("0.60"),
+            no_ask=Decimal("0.40"),
+            volume=Decimal("5000"),
+        )
+        match = _make_match()
+        fees = _standard_fees()
+        thresholds = _permissive_thresholds()
+
+        result = calculate_arb(poly, kalshi, match, fees, thresholds)
+        assert result is None
+
+    def test_rejects_kalshi_near_zero_prices(self) -> None:
+        """Reject arb when Kalshi asks are below min_ask_price."""
+        poly = _make_market(
+            Venue.POLYMARKET,
+            "poly-1",
+            yes_ask=Decimal("0.40"),
+            no_ask=Decimal("0.60"),
+            volume=Decimal("5000"),
+        )
+        kalshi = _make_market(
+            Venue.KALSHI,
+            "kalshi-1",
+            yes_ask=Decimal("0.01"),
+            yes_bid=Decimal("0"),
+            no_ask=Decimal("0.01"),
+            no_bid=Decimal("0"),
+            volume=Decimal("5000"),
+        )
+        match = _make_match()
+        fees = _standard_fees()
+        thresholds = _permissive_thresholds()
+
+        result = calculate_arb(poly, kalshi, match, fees, thresholds)
+        assert result is None
+
+    def test_rejects_one_ask_below_floor(self) -> None:
+        """Reject arb when any ask on a venue is below floor."""
+        poly = _make_market(
+            Venue.POLYMARKET,
+            "poly-1",
+            yes_ask=Decimal("0.40"),
+            no_ask=Decimal("0.01"),
+            no_bid=Decimal("0"),
+            volume=Decimal("5000"),
+        )
+        kalshi = _make_market(
+            Venue.KALSHI,
+            "kalshi-1",
+            yes_ask=Decimal("0.01"),
+            yes_bid=Decimal("0"),
+            no_ask=Decimal("0.40"),
+            volume=Decimal("5000"),
+        )
+        match = _make_match()
+        fees = _standard_fees()
+        thresholds = _permissive_thresholds()
+
+        result = calculate_arb(poly, kalshi, match, fees, thresholds)
+        # A near-zero ask creates phantom spreads, so must be rejected
+        assert result is None
