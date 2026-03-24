@@ -459,21 +459,30 @@ class FlipAutoExecutionPipeline:
                 arb_id=arb_id,
                 requested_contracts=contracts,
             )
-        try:
-            await self._position_repo.insert_position(
-                arb_id=arb_id,
-                market_id=str(opp.get("market_id", arb_id)),
-                token_id=str(opp.get("token_id", "")),
-                side=str(opp.get("side", "yes")),
-                size_contracts=contracts,
-                entry_price=Decimal(str(ep)),
-                entry_order_id="",
-                max_hold_minutes=int(raw_hold) if raw_hold is not None else None,
-                market_title=str(opp.get("title", opp.get("market_title", ""))),
-                market_slug=str(opp.get("market_slug", "")),
-            )
-        except Exception:
-            logger.warning("flip_position_register_failed", arb_id=arb_id)
+        for attempt in range(3):
+            try:
+                await self._position_repo.insert_position(
+                    arb_id=arb_id,
+                    market_id=str(opp.get("market_id", arb_id)),
+                    token_id=str(opp.get("token_id", "")),
+                    side=str(opp.get("side", "yes")),
+                    size_contracts=contracts,
+                    entry_price=Decimal(str(ep)),
+                    entry_order_id="",
+                    max_hold_minutes=int(raw_hold) if raw_hold is not None else None,
+                    market_title=str(opp.get("title", opp.get("market_title", ""))),
+                    market_slug=str(opp.get("market_slug", "")),
+                )
+                break
+            except Exception:
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    logger.error(
+                        "flip_position_register_failed_all_retries",
+                        arb_id=arb_id,
+                        market_id=str(opp.get("market_id", arb_id)),
+                    )
 
     def _update_confidence_guardrail(self, status: str, *, arb_id: str) -> None:
         """Raise min-confidence when recent failure rate breaches configured guardrail."""
