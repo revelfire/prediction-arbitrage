@@ -628,9 +628,7 @@ async def _reconcile_pending_position(
         )
         return True
 
-    if status.status == "filled" or (
-        status.status == "submitted" and status.fill_price is not None
-    ):
+    if status.status == "filled":
         return await _close_pending_position(
             position,
             order=order,
@@ -676,10 +674,6 @@ async def _close_pending_position(
     resolved_fill = fill_price
     if resolved_fill is None:
         resolved_fill = _to_decimal(order.get("fill_price"))
-    if resolved_fill is None:
-        resolved_fill = _to_decimal(order.get("requested_price"))
-    if resolved_fill is None:
-        resolved_fill = _to_decimal(position.get("exit_price"))
     if resolved_fill is None:
         logger.warning(
             "pending_exit_missing_fill_price",

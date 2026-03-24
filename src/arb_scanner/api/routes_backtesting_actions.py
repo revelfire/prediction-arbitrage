@@ -435,7 +435,7 @@ async def _update_import_job(app: Any, job_id: str, **updates: Any) -> ImportRun
         job = app.state.backtest_import_jobs.get(job_id)
         if job is None:
             raise KeyError(job_id)
-        updated = job.model_copy(update=updates)
+        updated: ImportRunJob = job.model_copy(update=updates)
         app.state.backtest_import_jobs[job_id] = updated
         return updated
 
@@ -443,7 +443,7 @@ async def _update_import_job(app: Any, job_id: str, **updates: Any) -> ImportRun
 async def _get_import_job(request: Request, job_id: str) -> ImportRunJob:
     """Lookup an import/backtest job by id."""
     async with request.app.state.backtest_import_job_lock:
-        job = request.app.state.backtest_import_jobs.get(job_id)
+        job: ImportRunJob | None = request.app.state.backtest_import_jobs.get(job_id)
     if job is None:
         raise HTTPException(404, f"Unknown backtest import job: {job_id}")
     return job
