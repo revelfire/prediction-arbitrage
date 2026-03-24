@@ -488,17 +488,17 @@ async def sweep_overtime_db_positions(config: Settings) -> int:
     except Exception:
         logger.warning("db_sweep_query_failed")
         return 0
+    default_max_hold = config.flippening.max_hold_minutes
     count = 0
     for p in positions:
         if str(p.get("status", "open")) not in {"open", "exit_failed"}:
             continue
-        max_hold = p.get("max_hold_minutes")
-        if max_hold is None:
-            continue
+        max_hold = p.get("max_hold_minutes") or default_max_hold
         elapsed_min = (now - p["opened_at"]).total_seconds() / 60.0
         if elapsed_min < max_hold:
             continue
         try:
+            p["max_hold_minutes"] = max_hold
             entry_sig, exit_sig, event = _build_exit_from_position(p, elapsed_min, now)
             await _feed_exit_pipeline(event, entry_sig, exit_sig, config)
             count += 1

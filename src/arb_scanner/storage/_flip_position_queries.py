@@ -74,9 +74,9 @@ SET status = 'abandoned',
     exit_reason = 'hold_time_exceeded',
     closed_at = NOW()
 WHERE status IN ('open', 'exit_failed')
-  AND max_hold_minutes IS NOT NULL
-  AND opened_at + (max_hold_minutes || ' minutes')::INTERVAL < NOW()
-RETURNING id, arb_id, market_id, market_title, max_hold_minutes,
+  AND opened_at + (COALESCE(max_hold_minutes, 45) || ' minutes')::INTERVAL < NOW()
+RETURNING id, arb_id, market_id, market_title,
+          COALESCE(max_hold_minutes, 45) AS max_hold_minutes,
           EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60 AS held_minutes
 """
 

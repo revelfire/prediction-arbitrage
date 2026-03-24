@@ -2188,16 +2188,18 @@ let btPnlChart = null;
 let btSignalChart = null;
 
 async function refreshBacktesting() {
-    const [portfolio, dailyPnl, categories, trades] = await Promise.all([
+    const [portfolio, dailyPnl, categories, trades, optimalParams] = await Promise.all([
         fetchJSON('/api/backtesting/portfolio'),
         fetchJSON('/api/backtesting/daily-pnl'),
         fetchJSON('/api/backtesting/category-performance'),
         fetchJSON('/api/backtesting/trades?limit=100'),
+        fetchJSON('/api/backtesting/optimal-params'),
     ]);
     renderBtPortfolio(portfolio);
     renderBtPnlChart(dailyPnl);
     renderBtCategories(categories);
     renderBtTrades(trades);
+    renderBtOptimalParams(optimalParams);
     await renderBtSignalChart();
 }
 
@@ -2382,6 +2384,133 @@ async function uploadBtCsv(file) {
     } catch (err) {
         if (statusEl) statusEl.textContent = 'Upload failed: ' + err.message;
     }
+}
+
+async function analyzePortfolio() {
+    const statusEl = el('bt-action-status');
+    const btn = el('bt-analyze-btn');
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Analyzing...';
+    try {
+        const resp = await fetch('/api/backtesting/analyze', {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            if (statusEl) statusEl.textContent = 'Error: ' + err;
+            return;
+        }
+        const result = await resp.json();
+        if (statusEl) statusEl.textContent = `Analyzed ${result.trade_count} trades`;
+        await refreshBacktesting();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = 'Analysis failed: ' + err.message;
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function runSignalComparison() {
+    const statusEl = el('bt-action-status');
+    const btn = el('bt-report-btn');
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Comparing signals...';
+    try {
+        const resp = await fetch('/api/backtesting/report', {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            if (statusEl) statusEl.textContent = 'Error: ' + err;
+            return;
+        }
+        if (statusEl) statusEl.textContent = 'Signal comparison complete';
+        await refreshBacktesting();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = 'Comparison failed: ' + err.message;
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+function toggleSweepForm() {
+    const form = el('bt-sweep-form');
+    if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function runParameterSweep() {
+    const statusEl = el('bt-action-status');
+    if (statusEl) statusEl.textContent = 'Running sweep (this may take a minute)...';
+    const body = {
+        category: el('bt-sweep-category')?.value || 'nba',
+        param: el('bt-sweep-param')?.value || 'spike_threshold_pct',
+        min: parseFloat(el('bt-sweep-min')?.value || '0.05'),
+        max: parseFloat(el('bt-sweep-max')?.value || '0.20'),
+        step: parseFloat(el('bt-sweep-step')?.value || '0.01'),
+    };
+    try {
+        const resp = await fetch('/api/backtesting/sweep', {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            if (statusEl) statusEl.textContent = 'Error: ' + err;
+            return;
+        }
+        const result = await resp.json();
+        renderBtSweepResults(result);
+        if (statusEl) statusEl.textContent = 'Sweep complete — best value saved';
+        await refreshBacktesting();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = 'Sweep failed: ' + err.message;
+    }
+}
+
+function renderBtSweepResults(data) {
+    const container = el('bt-sweep-results');
+    const tbody = el('bt-sweep-tbody');
+    if (!container || !tbody) return;
+    container.style.display = 'block';
+    const results = data.results || [];
+    if (!results.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No results</td></tr>';
+        return;
+    }
+    const bestWr = Math.max(...results.map(r => r[1]?.win_rate || 0));
+    tbody.innerHTML = results.map(r => {
+        const val = r[0];
+        const ev = r[1] || {};
+        const isBest = ev.win_rate === bestWr;
+        const style = isBest ? ' style="background: #1a3a1a;"' : '';
+        return `<tr${style}>
+            <td>${val}</td>
+            <td>${((ev.win_rate || 0) * 100).toFixed(1)}%</td>
+            <td>$${(ev.avg_pnl || 0).toFixed(2)}</td>
+            <td>$${(ev.max_drawdown || 0).toFixed(2)}</td>
+            <td>${(ev.profit_factor || 0).toFixed(2)}</td>
+            <td>${ev.total_signals || 0}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderBtOptimalParams(data) {
+    const tbody = el('bt-optimal-tbody');
+    if (!tbody) return;
+    if (!data || !data.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No sweep results yet</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.map(p => `<tr>
+        <td>${p.category || '-'}</td>
+        <td>${p.param_name || '-'}</td>
+        <td>${p.optimal_value}</td>
+        <td>${((p.win_rate_at_optimal || 0) * 100).toFixed(1)}%</td>
+        <td>${p.sweep_date ? new Date(p.sweep_date).toLocaleDateString() : '-'}</td>
+    </tr>`).join('');
 }
 
 document.addEventListener('DOMContentLoaded', () => {

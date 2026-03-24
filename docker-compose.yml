@@ -27,9 +27,9 @@ services:
   # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     build: .
-    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8060", "--flip-watch"]
+    command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8061", "--flip-watch"]
     ports:
-      - "${DASHBOARD_PORT:-8060}:8060"
+      - "${DASHBOARD_PORT:-8061}:8061"
     env_file: .env
     volumes:
       - ./src:/app/src
