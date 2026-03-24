@@ -313,7 +313,9 @@ class ExecutionOrchestrator:
                     ticket_id=arb_id,
                     action="execute",
                     actual_entry_price=(
-                        (total_cost / Decimal(jobs[0][2].size_contracts)).quantize(Decimal("0.0001"))
+                        (total_cost / Decimal(jobs[0][2].size_contracts)).quantize(
+                            Decimal("0.0001")
+                        )
                         if jobs and jobs[0][2].size_contracts > 0
                         else None
                     ),
@@ -768,7 +770,13 @@ def _locked_arb_pnl(
         return None
     if any(req.size_contracts != size_contracts for _venue, _oid, req in jobs):
         return None
-    total_cost = sum((_resolved_order_cost(req, resp) for (_v, _o, req), resp in zip(jobs, responses, strict=True)), _ZERO)
+    total_cost = sum(
+        (
+            _resolved_order_cost(req, resp)
+            for (_v, _o, req), resp in zip(jobs, responses, strict=True)
+        ),
+        _ZERO,
+    )
     return Decimal(size_contracts) - total_cost
 
 

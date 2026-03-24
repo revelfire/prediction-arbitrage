@@ -305,7 +305,9 @@ class ArbAutoExecutionPipeline:
                     opp.get("poly_market_id", opp.get("poly_event_id", opp.get("poly_slug", "")))
                 ),
                 kalshi_ticker=str(
-                    opp.get("kalshi_ticker", opp.get("kalshi_event_id", opp.get("kalshi_market", "")))
+                    opp.get(
+                        "kalshi_ticker", opp.get("kalshi_event_id", opp.get("kalshi_market", ""))
+                    )
                 ),
                 entry_spread=Decimal(
                     str(result.actual_spread if result.actual_spread is not None else run.spread)

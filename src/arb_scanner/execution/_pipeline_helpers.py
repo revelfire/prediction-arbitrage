@@ -100,9 +100,7 @@ async def evaluate_capital_preservation(
     if poly_spend > 0:
         poly_after = infra.capital.poly_balance - poly_spend
         if poly_after < reserve:
-            reasons.append(
-                f"capital_reserve_polymarket: ${poly_after:.2f} below ${reserve:.2f}"
-            )
+            reasons.append(f"capital_reserve_polymarket: ${poly_after:.2f} below ${reserve:.2f}")
     if kalshi_spend > 0:
         kalshi_after = infra.capital.kalshi_balance - kalshi_spend
         if kalshi_after < reserve:
@@ -145,7 +143,9 @@ async def evaluate_capital_preservation(
     if pnl <= -daily_limit:
         reasons.append(f"capital_daily_loss_limit: ${pnl:.2f} <= -${daily_limit:.2f}")
 
-    cooldown_remaining = await _get_cooldown_remaining(infra.auto_repo, cfg.cooldown_after_loss_seconds)
+    cooldown_remaining = await _get_cooldown_remaining(
+        infra.auto_repo, cfg.cooldown_after_loss_seconds
+    )
     if cooldown_remaining > 0:
         reasons.append(f"capital_loss_cooldown: {cooldown_remaining}s remaining")
 

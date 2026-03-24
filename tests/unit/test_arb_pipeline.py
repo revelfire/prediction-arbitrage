@@ -225,8 +225,7 @@ class TestArbPipeline:
         """Repo-backed capital preservation checks block order placement."""
         pipeline, deps = _pipeline()
         deps["auto_repo"].get_risk_positions.return_value = [
-            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("50.00")}
-            for idx in range(5)
+            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("50.00")} for idx in range(5)
         ]
 
         entry = await pipeline.process_opportunity(_opp())
