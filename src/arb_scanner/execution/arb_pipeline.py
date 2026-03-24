@@ -16,12 +16,14 @@ from arb_scanner.execution._pipeline_helpers import (
     RunCtx,
     build_entry,
     dispatch_geoblock,
+    evaluate_capital_preservation,
     get_open_positions,
     is_geoblock,
     persist_and_notify,
     purge_cooldowns,
     record_critic_rejection,
     record_rejection,
+    sweep_expired_arb_positions,
 )
 from arb_scanner.execution.activity_feed import push_activity
 from arb_scanner.execution.arb_critic import ArbTradeCritic
@@ -53,7 +55,10 @@ def _compute_market_exposure(
     """Compute current USD exposure for a specific market."""
     total = Decimal("0")
     for p in positions:
-        if p.get("market_id") == market_id:
+        if str(p.get("market_id", p.get("arb_id", ""))) == market_id:
+            if p.get("entry_cost_usd") not in (None, ""):
+                total += Decimal(str(p.get("entry_cost_usd", 0)))
+                continue
             ep = Decimal(str(p.get("entry_price", 0)))
             contracts = int(p.get("size_contracts", 0))
             total += ep * contracts
@@ -151,6 +156,7 @@ class ArbAutoExecutionPipeline:
         title = opp.get("title", opp.get("market_title", ""))
         _push("considering", run.arb_id, title=title, spread=f"{run.spread:.1%}")
 
+        await sweep_expired_arb_positions(self._infra.auto_repo)
         positions = await get_open_positions(self._infra.auto_repo)
         daily_count = await self._get_daily_trade_count()
         eligible, reasons = evaluate_arb_criteria(
@@ -184,6 +190,15 @@ class ArbAutoExecutionPipeline:
                 self._infra,
                 title=title,
             )
+
+        capital_reasons = await evaluate_capital_preservation(
+            market_id=run.arb_id,
+            venue_spend={"polymarket": size, "kalshi": size},
+            infra=self._infra,
+        )
+        if capital_reasons:
+            _push("capital_blocked", run.arb_id, title=title, reasons=capital_reasons)
+            return await record_rejection(run, capital_reasons, self._infra, title=title)
 
         ctx = self._build_market_context(opp, run.spread, run.confidence)
         verdict = await self._critic.evaluate({"arb_id": run.arb_id}, ctx)
@@ -225,6 +240,8 @@ class ArbAutoExecutionPipeline:
             if callable(consume_probe):
                 consume_probe()
             result = await self._orchestrator.execute(run.arb_id, size)
+            if result.status == "complete":
+                await self._register_position(opp, run, result)
             status_map = {"complete": "executed", "partial": "partial", "failed": "failed"}
             log_status = status_map.get(result.status, "failed")
             if log_status == "executed":
@@ -245,6 +262,7 @@ class ArbAutoExecutionPipeline:
                 verdict=verdict,
                 execution_result_id=result.id,
                 actual_spread=result.actual_spread,
+                actual_pnl=result.actual_pnl,
                 slippage=result.slippage_from_ticket,
                 criteria_snapshot=criteria_snapshot,
                 title=title,
@@ -266,6 +284,38 @@ class ArbAutoExecutionPipeline:
         _push(f"placed_{entry.status}", run.arb_id, title=opp.get("title", ""))
         await persist_and_notify(entry, self._infra)
         return entry
+
+    async def _register_position(
+        self,
+        opp: dict[str, Any],
+        run: RunCtx,
+        result: Any,
+    ) -> None:
+        """Persist a short-lived arb position for risk accounting."""
+        try:
+            raw_hold = opp.get("max_hold_minutes", 45)
+            max_hold_minutes = int(raw_hold) if raw_hold is not None else 45
+        except (TypeError, ValueError):
+            max_hold_minutes = 45
+        try:
+            await self._infra.auto_repo.insert_position(
+                position_id=str(uuid.uuid4()),
+                arb_id=run.arb_id,
+                poly_market_id=str(
+                    opp.get("poly_market_id", opp.get("poly_event_id", opp.get("poly_slug", "")))
+                ),
+                kalshi_ticker=str(
+                    opp.get("kalshi_ticker", opp.get("kalshi_event_id", opp.get("kalshi_market", "")))
+                ),
+                entry_spread=Decimal(
+                    str(result.actual_spread if result.actual_spread is not None else run.spread)
+                ),
+                entry_cost_usd=Decimal(str(result.total_cost_usd or 0)),
+                status="open",
+                max_hold_minutes=max_hold_minutes,
+            )
+        except Exception:
+            logger.warning("arb_position_register_failed", arb_id=run.arb_id)
 
     async def _get_daily_trade_count(self) -> int:
         """Query today's executed trade count from audit log."""

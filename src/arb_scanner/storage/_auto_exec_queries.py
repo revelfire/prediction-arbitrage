@@ -49,8 +49,8 @@ LIMIT $1
 INSERT_POSITION = """
 INSERT INTO auto_execution_positions (
     id, arb_id, poly_market_id, kalshi_ticker,
-    entry_spread, entry_cost_usd, status
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    entry_spread, entry_cost_usd, status, max_hold_minutes
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 """
 
 CLOSE_POSITION = """
@@ -65,6 +65,28 @@ GET_OPEN_POSITIONS = """
 SELECT * FROM auto_execution_positions
 WHERE status = 'open'
 ORDER BY opened_at DESC
+"""
+
+GET_RISK_POSITIONS = """
+SELECT
+    arb_id,
+    COALESCE(NULLIF(poly_market_id, ''), NULLIF(kalshi_ticker, ''), arb_id) AS market_id,
+    entry_cost_usd,
+    NULL::NUMERIC AS entry_price,
+    NULL::INTEGER AS size_contracts,
+    'arb' AS pipeline_type
+FROM auto_execution_positions
+WHERE status = 'open'
+UNION ALL
+SELECT
+    arb_id,
+    market_id,
+    NULL::NUMERIC AS entry_cost_usd,
+    entry_price,
+    size_contracts,
+    'flip' AS pipeline_type
+FROM flippening_auto_positions
+WHERE status IN ('open', 'exit_pending', 'exit_failed')
 """
 
 ABANDON_EXPIRED_POSITIONS = """
@@ -100,4 +122,21 @@ SELECT
 FROM auto_execution_log
 WHERE created_at >= (NOW() - ($1 || ' days')::interval)
   AND status != 'pending'
+"""
+
+GET_TODAY_REALIZED_PNL = """
+SELECT COALESCE(SUM(actual_pnl), 0) AS total_pnl
+FROM auto_execution_log
+WHERE status IN ('executed', 'partial')
+  AND actual_pnl IS NOT NULL
+  AND created_at >= CURRENT_DATE
+"""
+
+GET_LATEST_REALIZED_LOSS = """
+SELECT arb_id, actual_pnl, created_at
+FROM auto_execution_log
+WHERE status IN ('executed', 'partial')
+  AND actual_pnl < 0
+ORDER BY created_at DESC
+LIMIT 1
 """

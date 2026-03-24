@@ -82,6 +82,10 @@ def _pipeline(
 
     auto_repo = MagicMock()
     auto_repo.get_open_positions = AsyncMock(return_value=[])
+    auto_repo.get_risk_positions = AsyncMock(return_value=[])
+    auto_repo.get_today_realized_pnl = AsyncMock(return_value=Decimal("0"))
+    auto_repo.get_latest_realized_loss = AsyncMock(return_value=None)
+    auto_repo.abandon_expired = AsyncMock(return_value=[])
     auto_repo.insert_log = AsyncMock()
 
     exec_repo = MagicMock()
@@ -246,6 +250,22 @@ class TestFlipPipeline:
         healthy_req = healthy_deps["poly"].place_order.await_args.args[0]
         stressed_req = stressed_deps["poly"].place_order.await_args.args[0]
         assert stressed_req.size_usd < healthy_req.size_usd
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_capital_gate_blocks(self) -> None:
+        """Repo-backed daily loss gate stops new entries before order placement."""
+        pipeline, deps = _pipeline()
+        deps["auto_repo"].get_today_realized_pnl.return_value = Decimal("-150")
+
+        entry = await pipeline.process_opportunity(_opp())
+
+        assert entry is not None
+        assert entry.status == "rejected"
+        assert any(
+            "capital_daily_loss_limit" in reason
+            for reason in entry.criteria_snapshot.get("rejection_reasons", [])
+        )
+        assert not deps["poly"].place_order.called
 
     def test_confidence_guardrail_raises_threshold_when_fail_rate_breaches(self) -> None:
         """Recent failed entries can raise runtime min-confidence to guardrail value."""

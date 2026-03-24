@@ -10,7 +10,7 @@ from starlette.responses import Response
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(module="api.auth")
 
-_EXEMPT_PREFIXES = ("/api/health",)
+_EXEMPT_PREFIXES = ("/api/health", "/static/", "/favicon")
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
