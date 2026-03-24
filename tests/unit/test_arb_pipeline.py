@@ -53,8 +53,9 @@ def _exec_result(status: str = "complete") -> ExecutionResult:
     return ExecutionResult(
         id="exec-1",
         arb_id="arb-1",
-        total_cost_usd=Decimal("25.00"),
-        actual_spread=Decimal("0.07"),
+        total_cost_usd=Decimal("24.00"),
+        actual_spread=Decimal("0.08"),
+        actual_pnl=Decimal("1.92"),
         slippage_from_ticket=Decimal("0.01"),
         poly_order_id="po-1",
         kalshi_order_id="ko-1",
@@ -93,7 +94,12 @@ def _pipeline(
 
     auto_repo = MagicMock()
     auto_repo.get_open_positions = AsyncMock(return_value=[])
+    auto_repo.get_risk_positions = AsyncMock(return_value=[])
+    auto_repo.get_today_realized_pnl = AsyncMock(return_value=Decimal("0"))
+    auto_repo.get_latest_realized_loss = AsyncMock(return_value=None)
+    auto_repo.abandon_expired = AsyncMock(return_value=[])
     auto_repo.insert_log = AsyncMock()
+    auto_repo.insert_position = AsyncMock()
 
     pipeline = ArbAutoExecutionPipeline(
         config=_settings(),
@@ -129,7 +135,9 @@ class TestArbPipeline:
         entry = await pipeline.process_opportunity(_opp())
         assert entry is not None
         assert entry.status == "executed"
+        assert entry.actual_pnl == Decimal("1.92")
         assert deps["orchestrator"].execute.called
+        assert deps["auto_repo"].insert_position.called
         assert deps["auto_repo"].insert_log.called
 
     @pytest.mark.asyncio
@@ -211,3 +219,21 @@ class TestArbPipeline:
         assert entry is not None
         assert entry.status == "partial"
         assert deps["breakers"]._failure_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_capital_gate_blocks(self) -> None:
+        """Repo-backed capital preservation checks block order placement."""
+        pipeline, deps = _pipeline()
+        deps["auto_repo"].get_risk_positions.return_value = [
+            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("50.00")} for idx in range(5)
+        ]
+
+        entry = await pipeline.process_opportunity(_opp())
+
+        assert entry is not None
+        assert entry.status == "rejected"
+        assert any(
+            "capital_open_positions_limit" in reason
+            for reason in entry.criteria_snapshot.get("rejection_reasons", [])
+        )
+        assert not deps["orchestrator"].execute.called

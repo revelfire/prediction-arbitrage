@@ -17,11 +17,13 @@ from arb_scanner.execution._pipeline_helpers import (
     build_entry,
     dispatch_geoblock,
     dispatch_trade_notification,
+    evaluate_capital_preservation,
     is_geoblock,
     persist_and_notify,
     purge_cooldowns,
     record_critic_rejection,
     record_rejection,
+    sweep_expired_arb_positions,
 )
 from arb_scanner.execution.activity_feed import push_activity
 from arb_scanner.execution.auto_sizing import compute_auto_size
@@ -225,6 +227,7 @@ class FlipAutoExecutionPipeline:
         title = opp.get("title", opp.get("market_title", ""))
         _push("considering", run.arb_id, title=title, spread=f"{run.spread:.1%}")
 
+        await sweep_expired_arb_positions(self._infra.auto_repo)
         positions = await self._get_flip_positions()
         daily_count = await self._get_daily_trade_count()
         eligible, reasons = evaluate_flip_criteria(
@@ -264,6 +267,15 @@ class FlipAutoExecutionPipeline:
             config=self._ac,
             daily_pnl=self._infra.capital.daily_pnl,
         )
+
+        capital_reasons = await evaluate_capital_preservation(
+            market_id=market_id,
+            venue_spend={"polymarket": size},
+            infra=self._infra,
+        )
+        if capital_reasons:
+            _push("capital_blocked", run.arb_id, title=title, reasons=capital_reasons)
+            return await record_rejection(run, capital_reasons, self._infra, title=title)
 
         ctx = self._build_market_context(opp, run.spread, run.confidence)
         verdict = await self._critic.evaluate({"arb_id": run.arb_id}, ctx)

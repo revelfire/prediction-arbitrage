@@ -140,14 +140,8 @@ class TestAuthEnabled:
         assert resp.status_code == 200
         assert f'name="api-token" content="{self.TOKEN}"' in resp.text
 
-    def test_static_files_rejected_without_token(self) -> None:
-        """Static CSS/JS should require auth when token is set."""
+    def test_static_files_exempt_from_auth(self) -> None:
+        """Static CSS/JS are exempt so the dashboard page can load assets."""
         client = _client(auth_token=self.TOKEN)
         resp = client.get("/static/style.css")
-        assert resp.status_code == 401
-
-    def test_static_files_allowed_with_query_token(self) -> None:
-        """Static files should work with query param token."""
-        client = _client(auth_token=self.TOKEN)
-        resp = client.get(f"/static/style.css?token={self.TOKEN}")
         assert resp.status_code == 200

@@ -157,6 +157,7 @@ class AutoExecRepository:
         entry_spread: Decimal,
         entry_cost_usd: Decimal,
         status: str = "open",
+        max_hold_minutes: int | None = 45,
     ) -> None:
         """Insert an open position record.
 
@@ -168,6 +169,7 @@ class AutoExecRepository:
             entry_spread: Entry spread percentage.
             entry_cost_usd: Total entry cost.
             status: Position status.
+            max_hold_minutes: Approximate holding window for risk accounting.
         """
         await self._pool.execute(
             AQ.INSERT_POSITION,
@@ -178,6 +180,7 @@ class AutoExecRepository:
             entry_spread,
             entry_cost_usd,
             status,
+            max_hold_minutes,
         )
 
     async def close_position(
@@ -200,6 +203,11 @@ class AutoExecRepository:
             List of open position dicts.
         """
         rows = await self._pool.fetch(AQ.GET_OPEN_POSITIONS)
+        return [dict(r) for r in rows]
+
+    async def get_risk_positions(self) -> list[dict[str, Any]]:
+        """Get open arb + flip positions for portfolio risk checks."""
+        rows = await self._pool.fetch(AQ.GET_RISK_POSITIONS)
         return [dict(r) for r in rows]
 
     async def abandon_expired(self) -> list[dict[str, Any]]:
@@ -248,3 +256,15 @@ class AutoExecRepository:
                 "breaker_trips": 0,
             }
         return dict(row)
+
+    async def get_today_realized_pnl(self) -> Decimal:
+        """Return today's realized auto-exec P&L."""
+        row = await self._pool.fetchrow(AQ.GET_TODAY_REALIZED_PNL)
+        if row is None:
+            return Decimal("0")
+        return Decimal(str(row["total_pnl"]))
+
+    async def get_latest_realized_loss(self) -> dict[str, Any] | None:
+        """Return the most recent realized losing trade, if any."""
+        row = await self._pool.fetchrow(AQ.GET_LATEST_REALIZED_LOSS)
+        return dict(row) if row else None

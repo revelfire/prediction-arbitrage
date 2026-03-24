@@ -18,6 +18,7 @@ from arb_scanner.models.config import ExecutionConfig
 from arb_scanner.models.execution import (
     ExecutionResult,
     OrderRequest,
+    OrderResponse,
     OrderSide,
     PreflightCheck,
     PreflightResult,
@@ -204,10 +205,14 @@ class ExecutionOrchestrator:
         if not entry_legs:
             return _failed_result(arb_id, "No executable entry legs in ticket")
         await self._hydrate_poly_tokens(entry_legs)
+        ticket_type = str(ticket.get("ticket_type", "arbitrage")).lower()
+
+        requests = _build_order_requests(entry_legs, size_usd, ticket_type=ticket_type)
+        if not requests:
+            return _failed_result(arb_id, "Size too small for executable hedge")
 
         jobs: list[tuple[str, str, OrderRequest]] = []
-        for leg in entry_legs:
-            req = _build_order_request_from_leg(leg, size_usd)
+        for leg, req in zip(entry_legs, requests, strict=True):
             if req is None:
                 return _failed_result(arb_id, f"Missing venue identifier for leg: {leg}")
             order_id = str(uuid.uuid4())
@@ -219,7 +224,7 @@ class ExecutionOrchestrator:
                 side=req.side,
                 requested_price=req.price,
                 fill_price=None,
-                size_usd=size_usd,
+                size_usd=req.size_usd,
                 size_contracts=req.size_contracts,
                 status="submitting",
                 error_message=None,
@@ -234,7 +239,9 @@ class ExecutionOrchestrator:
         kalshi_oid: str | None = None
         fill_prices: list[Decimal] = []
         successful_venues: list[tuple[str, str]] = []
-        for (venue, order_id, _req), resp in zip(jobs, responses, strict=True):
+        successful_cost = _ZERO
+        quoted_success_cost = _ZERO
+        for (venue, order_id, req), resp in zip(jobs, responses, strict=True):
             await self._exec_repo.update_order_status(
                 order_id,
                 resp.status,
@@ -245,6 +252,8 @@ class ExecutionOrchestrator:
             if resp.status in ("submitted", "filled"):
                 success_count += 1
                 successful_venues.append((venue, order_id))
+                quoted_success_cost += req.price * Decimal(req.size_contracts)
+                successful_cost += _resolved_order_cost(req, resp)
                 if resp.fill_price is not None:
                     fill_prices.append(resp.fill_price)
             if venue == "polymarket":
@@ -267,9 +276,14 @@ class ExecutionOrchestrator:
         else:
             result_status = "failed"
 
-        total_cost = size_usd * Decimal(len(jobs))
-        ticket_cost = Decimal(str(ticket.get("expected_cost", "0")))
-        slippage = total_cost - ticket_cost if ticket_cost > _ZERO else None
+        total_cost = successful_cost
+        slippage = (successful_cost - quoted_success_cost) if success_count > 0 else None
+        actual_spread: Decimal | None = None
+        actual_pnl: Decimal | None = None
+        if result_status == "complete" and ticket_type != "flippening" and len(jobs) >= 2:
+            actual_pnl = _locked_arb_pnl(jobs, responses)
+            if total_cost > _ZERO and actual_pnl is not None:
+                actual_spread = actual_pnl / total_cost
         if fill_prices:
             logger.info(
                 "execution_fill_prices",
@@ -282,7 +296,7 @@ class ExecutionOrchestrator:
             result_id=result_id,
             arb_id=arb_id,
             total_cost_usd=total_cost,
-            actual_spread=None,
+            actual_spread=actual_spread,
             slippage_from_ticket=slippage,
             poly_order_id=poly_oid,
             kalshi_order_id=kalshi_oid,
@@ -292,13 +306,31 @@ class ExecutionOrchestrator:
         if result_status == "complete":
             await self._ticket_repo.update_status(arb_id, "executed")
             market_id = _extract_market_id(ticket)
-            self._capital.record_fill(arb_id, market_id, size_usd)
+            self._capital.record_fill(arb_id, market_id, total_cost, pnl=actual_pnl)
+            if ticket_type != "flippening":
+                await self._ticket_repo.insert_action(
+                    action_id=str(uuid.uuid4()),
+                    ticket_id=arb_id,
+                    action="execute",
+                    actual_entry_price=(
+                        (total_cost / Decimal(jobs[0][2].size_contracts)).quantize(
+                            Decimal("0.0001")
+                        )
+                        if jobs and jobs[0][2].size_contracts > 0
+                        else None
+                    ),
+                    actual_size_usd=total_cost,
+                    actual_pnl=actual_pnl,
+                    slippage=slippage,
+                    notes="auto_exec_arb_locked_spread",
+                )
 
         return ExecutionResult(
             id=result_id,
             arb_id=arb_id,
             total_cost_usd=total_cost,
-            actual_spread=None,
+            actual_spread=actual_spread,
+            actual_pnl=actual_pnl,
             slippage_from_ticket=slippage,
             poly_order_id=poly_oid,
             kalshi_order_id=kalshi_oid,
@@ -531,6 +563,7 @@ def _failed_result(arb_id: str, msg: str) -> ExecutionResult:
         id=str(uuid.uuid4()),
         arb_id=arb_id,
         status="failed",
+        error_message=msg,
     )
 
 
@@ -687,6 +720,64 @@ def _build_order_request_from_leg(leg: dict[str, Any], size_usd: Decimal) -> Ord
             ticker=ticker,
         )
     return None
+
+
+def _build_order_request_with_contracts(
+    leg: dict[str, Any],
+    size_contracts: int,
+) -> OrderRequest | None:
+    """Build an OrderRequest using an explicit contract count."""
+    price = Decimal(str(leg.get("price", "0")))
+    return _build_order_request_from_leg(leg, price * Decimal(size_contracts))
+
+
+def _build_order_requests(
+    entry_legs: list[dict[str, Any]],
+    size_usd: Decimal,
+    *,
+    ticket_type: str,
+) -> list[OrderRequest | None]:
+    """Build executable order requests, matching contracts for arb entries."""
+    if ticket_type == "flippening" or len(entry_legs) <= 1:
+        return [_build_order_request_from_leg(leg, size_usd) for leg in entry_legs]
+
+    contract_counts = [
+        contracts_from_usd(size_usd, Decimal(str(leg.get("price", "0")))) for leg in entry_legs
+    ]
+    matched_contracts = min(contract_counts, default=0)
+    if matched_contracts <= 0:
+        return []
+    return [_build_order_request_with_contracts(leg, matched_contracts) for leg in entry_legs]
+
+
+def _resolved_order_cost(req: OrderRequest, resp: OrderResponse) -> Decimal:
+    """Return the executed or quoted cost for a successful order response."""
+    fill_price = resp.fill_price if resp.fill_price is not None else req.price
+    return Decimal(str(fill_price)) * Decimal(req.size_contracts)
+
+
+def _locked_arb_pnl(
+    jobs: list[tuple[str, str, OrderRequest]],
+    responses: list[OrderResponse],
+) -> Decimal | None:
+    """Compute locked-in arb P&L for a fully matched YES/NO pair."""
+    if not jobs or len(jobs) != len(responses):
+        return None
+    if any(resp.status not in ("submitted", "filled") for resp in responses):
+        return None
+    size_contracts = jobs[0][2].size_contracts
+    if size_contracts <= 0:
+        return None
+    if any(req.size_contracts != size_contracts for _venue, _oid, req in jobs):
+        return None
+    total_cost = sum(
+        (
+            _resolved_order_cost(req, resp)
+            for (_v, _o, req), resp in zip(jobs, responses, strict=True)
+        ),
+        _ZERO,
+    )
+    return Decimal(size_contracts) - total_cost
 
 
 def _suggest_size_for_venues(
