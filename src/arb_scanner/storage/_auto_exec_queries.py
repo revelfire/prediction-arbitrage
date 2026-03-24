@@ -86,7 +86,7 @@ SELECT
     size_contracts,
     'flip' AS pipeline_type
 FROM flippening_auto_positions
-WHERE status IN ('open', 'exit_pending', 'exit_failed')
+WHERE status IN ('open', 'exit_pending', 'exit_failed', 'abandoned')
 """
 
 ABANDON_EXPIRED_POSITIONS = """

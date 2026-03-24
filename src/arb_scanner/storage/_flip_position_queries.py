@@ -16,7 +16,7 @@ _POS_COLS = """id, arb_id, market_id, token_id, side, size_contracts,
 GET_OPEN_POSITION = f"""
 SELECT {_POS_COLS}
 FROM flippening_auto_positions
-WHERE market_id = $1 AND status IN ('open', 'exit_failed')
+WHERE market_id = $1 AND status IN ('open', 'exit_failed', 'abandoned')
 LIMIT 1
 """
 
@@ -28,7 +28,7 @@ SET status = 'closed',
     realized_pnl = $4,
     exit_reason = $5,
     closed_at = NOW()
-WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed')
+WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed', 'abandoned')
 RETURNING arb_id
 """
 
@@ -38,7 +38,7 @@ SET status = 'exit_pending',
     exit_order_id = $2,
     exit_price = $3,
     exit_reason = $4
-WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed')
+WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed', 'abandoned')
 """
 
 MARK_EXIT_FAILED = """
@@ -58,7 +58,7 @@ LIMIT 1
 GET_OPEN_POSITIONS_LIST = f"""
 SELECT {_POS_COLS}
 FROM flippening_auto_positions
-WHERE status IN ('open', 'exit_pending', 'exit_failed')
+WHERE status IN ('open', 'exit_pending', 'exit_failed', 'abandoned')
 ORDER BY opened_at ASC
 """
 
@@ -93,6 +93,6 @@ LEFT JOIN LATERAL (
     WHERE market_id = p.market_id
     ORDER BY detected_at DESC LIMIT 1
 ) e ON true
-WHERE p.status IN ('open', 'exit_pending', 'exit_failed')
+WHERE p.status IN ('open', 'exit_pending', 'exit_failed', 'abandoned')
 ORDER BY p.opened_at ASC
 """
