@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from arb_scanner.flippening.replay_engine import ReplayEngine
-from arb_scanner.models.config import FlippeningConfig
+from arb_scanner.models.config import CategoryConfig, FlippeningConfig
 
 
 def _ts(minutes: int = 0) -> datetime:
@@ -57,6 +57,18 @@ def _tick_row(
     }
 
 
+def _market_context_row(
+    sport: str = "nba",
+    category: str = "nba",
+    category_type: str = "sport",
+) -> dict[str, Any]:
+    return {
+        "sport": sport,
+        "category": category,
+        "category_type": category_type,
+    }
+
+
 def _make_record(data: dict[str, Any]) -> MagicMock:
     """Create a mock asyncpg.Record with dict-like access."""
     record = MagicMock()
@@ -76,12 +88,18 @@ def _make_repo(
     ticks: list[dict[str, Any]] | None = None,
     drifts: list[dict[str, Any]] | None = None,
     market_ids: list[str] | None = None,
+    first_tick: dict[str, Any] | None = None,
+    market_context: dict[str, Any] | None = None,
 ) -> AsyncMock:
     repo = AsyncMock()
     if baseline is not None:
         repo.get_baseline.return_value = _make_record(baseline)
     else:
         repo.get_baseline.return_value = None
+    repo.get_first_tick.return_value = _make_record(first_tick) if first_tick is not None else None
+    repo.get_market_context.return_value = (
+        _make_record(market_context) if market_context is not None else None
+    )
     repo.get_drifts.return_value = [_make_record(d) for d in (drifts or [])]
     repo.get_market_ids.return_value = market_ids or []
 
@@ -114,6 +132,46 @@ class TestReplayMarket:
         engine = ReplayEngine(repo, _make_config())
         result = await engine.replay_market("m1", _ts(), _ts(60))
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_reconstructs_baseline_from_first_tick(self) -> None:
+        repo = _make_repo(
+            baseline=None,
+            first_tick=_tick_row(0, yes_bid="0.64", yes_ask="0.66"),
+            market_context=_market_context_row(),
+        )
+        engine = ReplayEngine(repo, _make_config())
+
+        baseline = await engine._load_baseline("m1", _ts(), _ts(60), "nba")
+
+        assert baseline is not None
+        assert baseline.yes_price == Decimal("0.65")
+        assert baseline.no_price == Decimal("0.44")
+        assert baseline.category == "nba"
+        assert baseline.category_type == "sport"
+        assert baseline.late_join is True
+
+    @pytest.mark.asyncio
+    async def test_reconstructs_baseline_uses_category_hint_without_context(self) -> None:
+        repo = _make_repo(
+            baseline=None,
+            first_tick=_tick_row(0, yes_bid="0.60", yes_ask="0.62"),
+        )
+        engine = ReplayEngine(
+            repo,
+            _make_config(
+                categories={
+                    "fed_meeting": CategoryConfig(category_type="economics"),
+                },
+            ),
+        )
+
+        baseline = await engine._load_baseline("m1", _ts(), _ts(60), "fed_meeting")
+
+        assert baseline is not None
+        assert baseline.category == "fed_meeting"
+        assert baseline.sport == "fed_meeting"
+        assert baseline.category_type == "economics"
 
     @pytest.mark.asyncio
     async def test_zero_ticks_returns_empty(self) -> None:

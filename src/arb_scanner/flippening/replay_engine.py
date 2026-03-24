@@ -9,6 +9,7 @@ from typing import Any
 
 import structlog
 
+from arb_scanner.flippening.baseline_strategy import BaselineCapture
 from arb_scanner.flippening.signal_generator import SignalGenerator
 from arb_scanner.flippening.spike_detector import SpikeDetector
 from arb_scanner.models.config import FlippeningConfig
@@ -54,6 +55,7 @@ class ReplayEngine:
         since: datetime,
         until: datetime,
         overrides: dict[str, Any] | None = None,
+        category_hint: str | None = None,
     ) -> list[ReplaySignal]:
         """Replay a single market's ticks through the pipeline.
 
@@ -70,7 +72,7 @@ class ReplayEngine:
             ValidationError: If overrides produce invalid config.
         """
         config = _apply_overrides(self._base_config, overrides)
-        baseline = await self._load_baseline(market_id)
+        baseline = await self._load_baseline(market_id, since, until, category_hint)
         if baseline is None:
             logger.warning("replay_skip_no_baseline", market_id=market_id)
             return []
@@ -89,6 +91,28 @@ class ReplayEngine:
             baseline,
             drifts,
         )
+
+    async def replay_markets(
+        self,
+        market_ids: list[str],
+        since: datetime,
+        until: datetime,
+        overrides: dict[str, Any] | None = None,
+        category_hint: str | None = None,
+    ) -> list[ReplaySignal]:
+        """Replay an explicit set of markets in the supplied time range."""
+        signals: list[ReplaySignal] = []
+        for market_id in market_ids:
+            signals.extend(
+                await self.replay_market(
+                    market_id,
+                    since,
+                    until,
+                    overrides=overrides,
+                    category_hint=category_hint,
+                ),
+            )
+        return signals
 
     async def replay_category(
         self,
@@ -109,12 +133,13 @@ class ReplayEngine:
             Concatenated list of signals from all markets.
         """
         market_ids = await self._tick_repo.get_market_ids(category, since, until)
-        signals: list[ReplaySignal] = []
-        for mid in market_ids:
-            signals.extend(
-                await self.replay_market(mid, since, until, overrides),
-            )
-        return signals
+        return await self.replay_markets(
+            market_ids,
+            since,
+            until,
+            overrides=overrides,
+            category_hint=category,
+        )
 
     async def replay_sport(
         self,
@@ -126,24 +151,83 @@ class ReplayEngine:
         """Replay all markets for a sport (alias for replay_category)."""
         return await self.replay_category(sport, since, until, overrides)
 
-    async def _load_baseline(self, market_id: str) -> Baseline | None:
+    async def _load_baseline(
+        self,
+        market_id: str,
+        since: datetime,
+        until: datetime,
+        category_hint: str | None = None,
+    ) -> Baseline | None:
         """Load the most recent baseline for a market."""
         row = await self._tick_repo.get_baseline(market_id)
-        if row is None:
+        if row is not None:
+            return Baseline(
+                market_id=row["market_id"],
+                token_id=row["token_id"],
+                yes_price=row["baseline_yes"],
+                no_price=row["baseline_no"],
+                sport=row["sport"],
+                category=row.get("category", row["sport"]),
+                category_type=row.get("category_type", "sport"),
+                baseline_strategy=row.get("baseline_strategy", "first_price"),
+                game_start_time=row["game_start_time"],
+                captured_at=row["captured_at"],
+                late_join=row["late_join"],
+            )
+
+        first_tick = await self._tick_repo.get_first_tick(market_id, since, until)
+        if first_tick is None:
             return None
-        return Baseline(
-            market_id=row["market_id"],
-            token_id=row["token_id"],
-            yes_price=row["baseline_yes"],
-            no_price=row["baseline_no"],
-            sport=row["sport"],
-            category=row.get("category", row["sport"]),
-            category_type=row.get("category_type", "sport"),
-            baseline_strategy=row.get("baseline_strategy", "first_price"),
-            game_start_time=row["game_start_time"],
-            captured_at=row["captured_at"],
-            late_join=row["late_join"],
+
+        context = await self._tick_repo.get_market_context(market_id)
+        sport, category, category_type = self._resolve_market_context(context, category_hint)
+        baseline = BaselineCapture.capture_first_price(
+            market_id=market_id,
+            token_id=first_tick["token_id"],
+            sport=sport,
+            category=category,
+            category_type=category_type,
+            game_start_time=None,
+            update=_record_to_update(first_tick),
+            late_join=True,
         )
+        logger.info(
+            "replay_baseline_reconstructed",
+            market_id=market_id,
+            category=category,
+            category_type=category_type,
+            captured_at=baseline.captured_at,
+        )
+        return baseline
+
+    def _resolve_market_context(
+        self,
+        row: Any,
+        category_hint: str | None,
+    ) -> tuple[str, str, str]:
+        """Resolve category metadata for replay fallback baselines."""
+        if row is not None:
+            sport = str(row.get("sport") or "")
+            category = str(row.get("category") or sport or category_hint or "")
+            category_type = str(
+                row.get("category_type")
+                or self._category_type_for(category or category_hint)
+                or "sport"
+            )
+            base = sport or category or category_hint or "uncategorized"
+            return base, category or base, category_type
+
+        hint = category_hint or "uncategorized"
+        return hint, hint, self._category_type_for(hint)
+
+    def _category_type_for(self, category: str | None) -> str:
+        """Return the configured category_type for a category name."""
+        if not category:
+            return "sport"
+        cat_cfg = self._base_config.categories.get(category)
+        if cat_cfg is not None:
+            return cat_cfg.category_type
+        return "sport"
 
     async def _load_drifts(
         self,

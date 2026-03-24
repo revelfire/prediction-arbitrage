@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from arb_scanner.api.app import create_app
 from arb_scanner.api.deps import get_backtest_repo, get_config, get_flip_repo
+from arb_scanner.api.routes_backtesting_actions import ImportRunJob, _run_import_job
 from arb_scanner.models.config import (
     FeeSchedule,
     FeesConfig,
@@ -171,6 +172,126 @@ class TestImportAndRunEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json()["import_result"]["inserted"] == 1
+
+
+class TestImportAndRunJobEndpoint:
+    """Tests for async import-and-run job endpoints."""
+
+    @patch(
+        "arb_scanner.api.routes_backtesting_actions._enqueue_import_job",
+        new_callable=AsyncMock,
+    )
+    def test_start_import_and_run_job_returns_accepted(
+        self,
+        mock_enqueue_job: AsyncMock,
+        client: TestClient,
+    ) -> None:
+        """Async upload route should return a queued job payload."""
+        mock_enqueue_job.return_value = ImportRunJob(
+            job_id="job-123",
+            status="queued",
+            stage="queued",
+            progress=0.0,
+            message="Queued import/backtest job",
+            file_name="trades.csv",
+            created_at=_NOW,
+        )
+        resp = client.post(
+            "/api/backtesting/import-and-run/jobs",
+            files={
+                "file": (
+                    "trades.csv",
+                    b"marketName,action,usdcAmount,tokenAmount,tokenName,timestamp,hash\n",
+                    "text/csv",
+                )
+            },
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["job_id"] == "job-123"
+        assert data["status"] == "queued"
+        assert data["status_url"].endswith("/api/backtesting/import-and-run/jobs/job-123")
+
+    def test_get_import_and_run_job_returns_snapshot(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Status endpoint returns stored job metadata."""
+        client.app.state.backtest_import_jobs["job-123"] = ImportRunJob(
+            job_id="job-123",
+            status="completed",
+            stage="completed",
+            progress=1.0,
+            message="Done",
+            file_name="trades.csv",
+            created_at=_NOW,
+            completed_at=_NOW,
+            result={"suggestions": []},
+        )
+
+        resp = client.get("/api/backtesting/import-and-run/jobs/job-123")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == "job-123"
+        assert data["status"] == "completed"
+        assert data["result"]["suggestions"] == []
+
+    @pytest.mark.asyncio
+    @patch("arb_scanner.api.routes_backtesting_actions.run_import_workflow", new_callable=AsyncMock)
+    async def test_run_import_job_persists_completed_result(
+        self,
+        mock_run_workflow: AsyncMock,
+        client: TestClient,
+        mock_backtest_repo: AsyncMock,
+        mock_flip_repo: AsyncMock,
+    ) -> None:
+        """Background worker should store the completed workflow result on app state."""
+
+        async def _workflow(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            progress = kwargs["progress"]
+            await progress("building_report", 0.45, "Rebuilding report")
+            return {
+                "import_result": {"inserted": 2, "duplicates": 0, "errors": 0},
+                "portfolio": {"trade_count": 2},
+                "signal_alignment": {},
+                "category_performance": [],
+                "trade_count": 2,
+                "suggestions": [{"config_path": "flippening.categories.nba.max_hold_minutes"}],
+            }
+
+        mock_run_workflow.side_effect = _workflow
+        client.app.state.backtest_import_jobs["job-123"] = ImportRunJob(
+            job_id="job-123",
+            status="queued",
+            stage="queued",
+            progress=0.0,
+            message="Queued import/backtest job",
+            file_name="trades.csv",
+            created_at=_NOW,
+        )
+
+        await _run_import_job(
+            client.app,
+            job_id="job-123",
+            content=b"csv",
+            config=_test_config(),
+            repo=mock_backtest_repo,
+            flip_repo=mock_flip_repo,
+        )
+
+        job = client.app.state.backtest_import_jobs["job-123"]
+        assert job.status == "completed"
+        assert job.stage == "completed"
+        assert job.progress == 1.0
+        assert job.result == {
+            "import_result": {"inserted": 2, "duplicates": 0, "errors": 0},
+            "portfolio": {"trade_count": 2},
+            "signal_alignment": {},
+            "category_performance": [],
+            "trade_count": 2,
+            "suggestions": [{"config_path": "flippening.categories.nba.max_hold_minutes"}],
+        }
 
 
 class TestReportEndpoint:

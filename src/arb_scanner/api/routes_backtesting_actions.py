@@ -8,10 +8,12 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import structlog
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from arb_scanner.api.deps import get_backtest_repo, get_config, get_flip_repo
@@ -27,6 +29,8 @@ _ALLOWED_CONFIG_PREFIXES = (
     "flippening.categories.",
     "auto_execution.",
 )
+_TERMINAL_IMPORT_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_MAX_IMPORT_JOB_HISTORY = 20
 
 
 class SweepRequest(BaseModel):
@@ -53,6 +57,22 @@ class ApplySuggestionsBody(BaseModel):
     restart: bool = True
 
 
+class ImportRunJob(BaseModel):
+    """State snapshot for an asynchronous import-and-run workflow."""
+
+    job_id: str
+    status: str
+    stage: str
+    progress: float
+    message: str
+    file_name: str = ""
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
 @router.post("/import-and-run")
 async def import_and_run_backtesting(
     file: UploadFile,
@@ -72,6 +92,41 @@ async def import_and_run_backtesting(
     except Exception as exc:
         logger.error("import_and_run_failed", error=str(exc))
         raise HTTPException(400, f"Import failed: {exc}") from exc
+
+
+@router.post("/import-and-run/jobs")
+async def start_import_and_run_job(
+    request: Request,
+    file: UploadFile,
+    config: Settings = Depends(get_config),
+    repo: Any = Depends(get_backtest_repo),
+    flip_repo: Any = Depends(get_flip_repo),
+) -> JSONResponse:
+    """Start an asynchronous CSV import/backtest job and return its job metadata."""
+    try:
+        content = await file.read()
+        job = await _enqueue_import_job(
+            request,
+            content=content,
+            file_name=file.filename or "",
+            config=config,
+            repo=repo,
+            flip_repo=flip_repo,
+        )
+        return JSONResponse(status_code=202, content=_job_response_payload(request, job))
+    except Exception as exc:
+        logger.error("import_and_run_job_start_failed", error=str(exc))
+        raise HTTPException(400, f"Import failed: {exc}") from exc
+
+
+@router.get("/import-and-run/jobs/{job_id}", name="get_import_and_run_job")
+async def get_import_and_run_job(
+    job_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """Fetch the current state of an asynchronous import/backtest job."""
+    job = await _get_import_job(request, job_id)
+    return _job_response_payload(request, job)
 
 
 @router.post("/analyze")
@@ -254,6 +309,167 @@ def _set_nested_value(raw: dict[str, Any], path_parts: list[str], value: Any) ->
             node[part] = current
         node = current
     node[path_parts[-1]] = value
+
+
+async def _enqueue_import_job(
+    request: Request,
+    *,
+    content: bytes,
+    file_name: str,
+    config: Settings,
+    repo: Any,
+    flip_repo: Any,
+) -> ImportRunJob:
+    """Create and schedule an asynchronous import/backtest job."""
+    app = request.app
+    job = ImportRunJob(
+        job_id=uuid4().hex,
+        status="queued",
+        stage="queued",
+        progress=0.0,
+        message="Queued import/backtest job",
+        file_name=file_name,
+        created_at=datetime.now(tz=UTC),
+    )
+    async with app.state.backtest_import_job_lock:
+        app.state.backtest_import_jobs[job.job_id] = job
+        _trim_backtest_jobs(app)
+
+    task = asyncio.create_task(
+        _run_import_job(
+            app,
+            job_id=job.job_id,
+            content=content,
+            config=config,
+            repo=repo,
+            flip_repo=flip_repo,
+        )
+    )
+    async with app.state.backtest_import_job_lock:
+        app.state.backtest_import_tasks[job.job_id] = task
+    return job
+
+
+async def _run_import_job(
+    app: Any,
+    *,
+    job_id: str,
+    content: bytes,
+    config: Settings,
+    repo: Any,
+    flip_repo: Any,
+) -> None:
+    """Execute the asynchronous import/backtest job and persist its status."""
+    await _update_import_job(
+        app,
+        job_id,
+        status="running",
+        stage="starting",
+        progress=0.01,
+        message="Starting import/backtest workflow",
+        started_at=datetime.now(tz=UTC),
+        error=None,
+    )
+
+    async def progress(stage: str, pct: float, message: str) -> None:
+        await _update_import_job(
+            app,
+            job_id,
+            status="running",
+            stage=stage,
+            progress=pct,
+            message=message,
+        )
+
+    try:
+        result = await run_import_workflow(
+            content,
+            config=config,
+            repo=repo,
+            flip_repo=flip_repo,
+            progress=progress,
+        )
+        await _update_import_job(
+            app,
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=1.0,
+            message="Import/backtest workflow completed",
+            completed_at=datetime.now(tz=UTC),
+            result=result,
+            error=None,
+        )
+    except asyncio.CancelledError:
+        await _update_import_job(
+            app,
+            job_id,
+            status="cancelled",
+            stage="cancelled",
+            progress=1.0,
+            message="Import/backtest job cancelled",
+            completed_at=datetime.now(tz=UTC),
+        )
+        raise
+    except Exception as exc:
+        logger.exception("import_and_run_job_failed", job_id=job_id)
+        await _update_import_job(
+            app,
+            job_id,
+            status="failed",
+            stage="failed",
+            progress=1.0,
+            message="Import/backtest workflow failed",
+            completed_at=datetime.now(tz=UTC),
+            error=str(exc),
+        )
+    finally:
+        async with app.state.backtest_import_job_lock:
+            app.state.backtest_import_tasks.pop(job_id, None)
+            _trim_backtest_jobs(app)
+
+
+async def _update_import_job(app: Any, job_id: str, **updates: Any) -> ImportRunJob:
+    """Update a stored import job snapshot."""
+    async with app.state.backtest_import_job_lock:
+        job = app.state.backtest_import_jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        updated = job.model_copy(update=updates)
+        app.state.backtest_import_jobs[job_id] = updated
+        return updated
+
+
+async def _get_import_job(request: Request, job_id: str) -> ImportRunJob:
+    """Lookup an import/backtest job by id."""
+    async with request.app.state.backtest_import_job_lock:
+        job = request.app.state.backtest_import_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Unknown backtest import job: {job_id}")
+    return job
+
+
+def _job_response_payload(request: Request, job: ImportRunJob) -> dict[str, Any]:
+    """Serialize a job snapshot for API responses."""
+    payload = job.model_dump(mode="json")
+    payload["status_url"] = str(request.url_for("get_import_and_run_job", job_id=job.job_id))
+    return payload
+
+
+def _trim_backtest_jobs(app: Any) -> None:
+    """Bound retained import job history to a small terminal-state window."""
+    jobs: dict[str, ImportRunJob] = app.state.backtest_import_jobs
+    if len(jobs) <= _MAX_IMPORT_JOB_HISTORY:
+        return
+
+    finished = sorted(
+        (job for job in jobs.values() if job.status in _TERMINAL_IMPORT_JOB_STATUSES),
+        key=lambda job: job.created_at,
+    )
+    while len(jobs) > _MAX_IMPORT_JOB_HISTORY and finished:
+        stale = finished.pop(0)
+        jobs.pop(stale.job_id, None)
+        app.state.backtest_import_tasks.pop(stale.job_id, None)
 
 
 async def _restart_process(request: Request) -> None:

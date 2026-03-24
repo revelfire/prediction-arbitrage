@@ -68,6 +68,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("ticket_expiry_stopped")
+    import_tasks = list(getattr(app.state, "backtest_import_tasks", {}).values())
+    for task in import_tasks:
+        task.cancel()
+    if import_tasks:
+        await asyncio.gather(*import_tasks, return_exceptions=True)
+        logger.info("backtest_import_jobs_stopped", count=len(import_tasks))
     if flip_task is not None:
         flip_task.cancel()
         try:
@@ -309,6 +315,7 @@ def create_app(
         Configured FastAPI instance.
     """
     from arb_scanner.utils.logging import setup_logging
+    import asyncio
 
     setup_logging(
         level=config.logging.level,
@@ -324,6 +331,9 @@ def create_app(
     app.state.config_path = getattr(config, "_config_path", None)
     app.state.no_db = no_db
     app.state.flip_watch = flip_watch
+    app.state.backtest_import_jobs = {}
+    app.state.backtest_import_tasks = {}
+    app.state.backtest_import_job_lock = asyncio.Lock()
 
     # Bearer token auth (must be added before static files mount)
     from arb_scanner.api.auth import BearerTokenMiddleware

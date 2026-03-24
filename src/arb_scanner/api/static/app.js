@@ -2187,6 +2187,9 @@ async function refreshBalances() {
 let btPnlChart = null;
 let btSignalChart = null;
 let btSuggestions = [];
+let btImportJobId = null;
+let btImportPollTimer = null;
+const BT_IMPORT_JOB_STORAGE_KEY = 'arbScannerBacktestImportJobId';
 
 async function refreshBacktesting() {
     const [portfolio, dailyPnl, categories, trades, optimalParams] = await Promise.all([
@@ -2366,11 +2369,14 @@ function renderBtTrades(data) {
 
 async function uploadBtCsv(file) {
     const statusEl = el('bt-import-status');
-    if (statusEl) statusEl.textContent = 'Uploading and running backtests...';
+    setBtImportBusy(true);
+    btSuggestions = [];
+    renderBtSuggestions(btSuggestions);
+    if (statusEl) statusEl.textContent = 'Uploading CSV and starting background backtest job...';
     try {
         const form = new FormData();
         form.append('file', file);
-        const resp = await fetch('/api/backtesting/import-and-run', {
+        const resp = await fetch('/api/backtesting/import-and-run/jobs', {
             method: 'POST',
             headers: authHeaders(),
             body: form,
@@ -2378,19 +2384,121 @@ async function uploadBtCsv(file) {
         if (!resp.ok) {
             const err = await resp.text();
             if (statusEl) statusEl.textContent = 'Error: ' + err;
+            setBtImportBusy(false);
             return;
         }
-        const result = await resp.json();
-        btSuggestions = result.suggestions || [];
-        renderBtSuggestions(btSuggestions);
-        if (statusEl) {
-            const imported = result.import_result || {};
-            statusEl.textContent = `Imported ${imported.inserted || 0} trades (${imported.duplicates || 0} duplicates), generated ${btSuggestions.length} suggestions`;
-        }
-        await refreshBacktesting();
+        const job = await resp.json();
+        btImportJobId = job.job_id;
+        persistBtImportJobId(job.job_id);
+        renderBtImportJobStatus(job);
+        scheduleBtImportPoll(job.job_id, 1000);
     } catch (err) {
+        setBtImportBusy(false);
         if (statusEl) statusEl.textContent = 'Upload failed: ' + err.message;
     }
+}
+
+function setBtImportBusy(isBusy) {
+    const uploadBtn = el('bt-upload-btn');
+    const input = el('bt-csv-input');
+    if (uploadBtn) uploadBtn.disabled = isBusy;
+    if (input) input.disabled = isBusy;
+}
+
+function clearBtImportPoll() {
+    if (btImportPollTimer) {
+        clearTimeout(btImportPollTimer);
+        btImportPollTimer = null;
+    }
+}
+
+function persistBtImportJobId(jobId) {
+    if (jobId) {
+        localStorage.setItem(BT_IMPORT_JOB_STORAGE_KEY, jobId);
+    } else {
+        localStorage.removeItem(BT_IMPORT_JOB_STORAGE_KEY);
+    }
+}
+
+function renderBtImportJobStatus(job) {
+    const statusEl = el('bt-import-status');
+    if (!statusEl || !job) return;
+    const pct = typeof job.progress === 'number' ? Math.round(job.progress * 100) : null;
+    const base = job.message || job.stage || job.status || 'Running';
+    const pctSuffix = pct != null && !['completed', 'failed', 'cancelled'].includes(job.status)
+        ? ` (${pct}%)`
+        : '';
+    statusEl.textContent = `${base}${pctSuffix}`;
+}
+
+function scheduleBtImportPoll(jobId, delayMs = 2000) {
+    clearBtImportPoll();
+    btImportPollTimer = setTimeout(() => {
+        pollBtImportJob(jobId);
+    }, delayMs);
+}
+
+async function pollBtImportJob(jobId) {
+    try {
+        const resp = await fetch(`/api/backtesting/import-and-run/jobs/${encodeURIComponent(jobId)}`, {
+            headers: authHeaders(),
+        });
+        if (!resp.ok) {
+            const err = await resp.text();
+            const statusEl = el('bt-import-status');
+            if (statusEl) statusEl.textContent = 'Job status fetch failed: ' + err;
+            setBtImportBusy(false);
+            persistBtImportJobId(null);
+            return;
+        }
+        const job = await resp.json();
+        btImportJobId = job.job_id;
+        renderBtImportJobStatus(job);
+
+        if (job.status === 'completed') {
+            clearBtImportPoll();
+            setBtImportBusy(false);
+            persistBtImportJobId(null);
+            const result = job.result || {};
+            btSuggestions = result.suggestions || [];
+            renderBtSuggestions(btSuggestions);
+            const statusEl = el('bt-import-status');
+            if (statusEl) {
+                const imported = result.import_result || {};
+                statusEl.textContent = `Imported ${imported.inserted || 0} trades (${imported.duplicates || 0} duplicates), generated ${btSuggestions.length} suggestions`;
+            }
+            await refreshBacktesting();
+            return;
+        }
+
+        if (job.status === 'failed' || job.status === 'cancelled') {
+            clearBtImportPoll();
+            setBtImportBusy(false);
+            persistBtImportJobId(null);
+            const statusEl = el('bt-import-status');
+            if (statusEl) {
+                const detail = job.error || job.message || job.status;
+                statusEl.textContent = `Backtest job ${job.status}: ${detail}`;
+            }
+            return;
+        }
+
+        scheduleBtImportPoll(jobId);
+    } catch (err) {
+        const statusEl = el('bt-import-status');
+        if (statusEl) statusEl.textContent = 'Job polling failed: ' + err.message;
+        scheduleBtImportPoll(jobId, 5000);
+    }
+}
+
+function resumeBtImportJob() {
+    const jobId = localStorage.getItem(BT_IMPORT_JOB_STORAGE_KEY);
+    if (!jobId) return;
+    btImportJobId = jobId;
+    setBtImportBusy(true);
+    const statusEl = el('bt-import-status');
+    if (statusEl) statusEl.textContent = 'Resuming backtest job status...';
+    scheduleBtImportPoll(jobId, 250);
 }
 
 async function analyzePortfolio() {
@@ -2661,7 +2769,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const csvInput = el('bt-csv-input');
     if (csvInput) csvInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files[0]) uploadBtCsv(e.target.files[0]);
+        e.target.value = '';
     });
+    resumeBtImportJob();
 
     // Initial load
     switchTab('opportunities');
