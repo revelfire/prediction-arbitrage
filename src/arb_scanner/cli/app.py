@@ -436,7 +436,7 @@ async def _run_ticket_prune(
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the dashboard server."),
-    port: int = typer.Option(8060, "--port", help="Port for the dashboard server."),
+    port: int = typer.Option(8061, "--port", help="Port for the dashboard server."),
     no_db: bool = typer.Option(False, "--no-db", help="Start without database (UI preview only)."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev mode)."),
     flip_watch: bool = typer.Option(

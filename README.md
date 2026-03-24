@@ -1,4 +1,8 @@
-  011 — CI/CD Pipeline (highest operational priority)
+ ssh -L 8060:localhost:8060 arb-scanner
+ To kill it later: kill $(lsof -ti:8060)
+
+
+011 — CI/CD Pipeline (highest operational priority)
   No GitHub Actions workflow exists. The 5 quality gates (ruff, format, mypy, pytest, coverage) run only locally. A basic CI would run them on every push/PR, with nightly
   live API tests gated by secrets. Docker image build on main merge. This is the biggest gap between "works on my machine" and "production-ready."
 

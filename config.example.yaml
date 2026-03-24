@@ -65,7 +65,7 @@ trend_alerts:
 dashboard:
   enabled: true
   host: "0.0.0.0"
-  port: 8060
+  port: 8061
   # auth_token: "${DASHBOARD_AUTH_TOKEN}"  # Set to require bearer token for dashboard access
 
 flippening:

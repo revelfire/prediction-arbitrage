@@ -149,7 +149,7 @@ class DashboardConfig(BaseModel):
 
     enabled: bool = True
     host: str = "0.0.0.0"
-    port: int = 8060
+    port: int = 8061
     auth_token: str | None = None
 
 

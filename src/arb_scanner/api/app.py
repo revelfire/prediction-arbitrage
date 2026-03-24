@@ -353,6 +353,9 @@ def create_app(
     from arb_scanner.api.routes_scan import router as scan_router
     from arb_scanner.api.routes_tickets import router as tickets_router
     from arb_scanner.api.routes_backtesting import router as backtesting_router
+    from arb_scanner.api.routes_backtesting_actions import (
+        router as backtesting_actions_router,
+    )
     from arb_scanner.api.routes_ws_telemetry import router as ws_telemetry_router
 
     app.include_router(opportunities_router)
@@ -367,6 +370,7 @@ def create_app(
     app.include_router(execution_router)
     app.include_router(auto_execution_router)
     app.include_router(backtesting_router)
+    app.include_router(backtesting_actions_router)
 
     return app
 

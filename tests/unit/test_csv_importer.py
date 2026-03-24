@@ -61,6 +61,19 @@ class TestDepositWithdraw:
         assert trades[0].token_name == "USDC"
 
 
+class TestRedeemAction:
+    def test_redeem_parsed(self) -> None:
+        csv_data = (
+            '"marketName","action","usdcAmount","tokenAmount",'
+            '"tokenName","timestamp","hash"\n'
+            '"BTC above $80k?","Redeem","50.0","50","Yes","1772704987",'
+            '"0xredeem1"\n'
+        )
+        trades = parse_csv_bytes(csv_data.encode())
+        assert len(trades) == 1
+        assert trades[0].action == TradeAction.Redeem
+
+
 class TestMalformedRows:
     def test_missing_column(self) -> None:
         bad_csv = '"marketName","action"\n"Test","Buy"\n'

@@ -16,6 +16,7 @@ class TradeAction(str, Enum):
     Sell = "Sell"
     Deposit = "Deposit"
     Withdraw = "Withdraw"
+    Redeem = "Redeem"
 
 
 class PositionStatus(str, Enum):

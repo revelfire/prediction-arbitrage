@@ -870,6 +870,83 @@
                 <button class="btn btn-primary" onclick="document.getElementById('bt-csv-input').click()">Upload Polymarket CSV</button>
                 <span id="bt-import-status" style="margin-left: 1rem; color: #a0a0b0;"></span>
             </div>
+
+            <!-- Action Buttons -->
+            <div class="section-title">Actions</div>
+            <div style="display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0;">
+                <button id="bt-analyze-btn" class="btn btn-primary" onclick="analyzePortfolio()">Analyze Portfolio</button>
+                <button id="bt-report-btn" class="btn btn-primary" onclick="runSignalComparison()">Run Signal Comparison</button>
+                <button id="bt-sweep-toggle-btn" class="btn btn-primary" onclick="toggleSweepForm()">Run Parameter Sweep</button>
+                <span id="bt-action-status" style="margin-left: 1rem; color: #a0a0b0; align-self: center;"></span>
+            </div>
+
+            <!-- Sweep Form (hidden by default) -->
+            <div id="bt-sweep-form" style="display: none; padding: 1rem; border: 1px solid #4a4a6a; border-radius: 8px; margin-bottom: 1rem;">
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: end;">
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <span style="font-size: 0.8rem; color: #a0a0b0;">Category</span>
+                        <input id="bt-sweep-category" type="text" placeholder="e.g. nba" style="padding: 0.4rem; background: #1e1e2e; color: #e0e0e0; border: 1px solid #4a4a6a; border-radius: 4px; width: 100px;">
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <span style="font-size: 0.8rem; color: #a0a0b0;">Parameter</span>
+                        <select id="bt-sweep-param" style="padding: 0.4rem; background: #1e1e2e; color: #e0e0e0; border: 1px solid #4a4a6a; border-radius: 4px;">
+                            <option value="spike_threshold_pct">spike_threshold_pct</option>
+                            <option value="reversion_target_pct">reversion_target_pct</option>
+                            <option value="stop_loss_pct">stop_loss_pct</option>
+                            <option value="min_confidence">min_confidence</option>
+                            <option value="max_hold_minutes">max_hold_minutes</option>
+                        </select>
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <span style="font-size: 0.8rem; color: #a0a0b0;">Min</span>
+                        <input id="bt-sweep-min" type="number" step="0.01" value="0.05" style="padding: 0.4rem; background: #1e1e2e; color: #e0e0e0; border: 1px solid #4a4a6a; border-radius: 4px; width: 80px;">
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <span style="font-size: 0.8rem; color: #a0a0b0;">Max</span>
+                        <input id="bt-sweep-max" type="number" step="0.01" value="0.20" style="padding: 0.4rem; background: #1e1e2e; color: #e0e0e0; border: 1px solid #4a4a6a; border-radius: 4px; width: 80px;">
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <span style="font-size: 0.8rem; color: #a0a0b0;">Step</span>
+                        <input id="bt-sweep-step" type="number" step="0.01" value="0.01" style="padding: 0.4rem; background: #1e1e2e; color: #e0e0e0; border: 1px solid #4a4a6a; border-radius: 4px; width: 80px;">
+                    </label>
+                    <button class="btn btn-primary" onclick="runParameterSweep()">Start Sweep</button>
+                </div>
+            </div>
+
+            <!-- Sweep Results (populated after sweep) -->
+            <div id="bt-sweep-results" style="display: none;">
+                <div class="section-title">Sweep Results</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Value</th>
+                            <th>Win Rate</th>
+                            <th>Avg P&L</th>
+                            <th>Max Drawdown</th>
+                            <th>Profit Factor</th>
+                            <th>Signals</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bt-sweep-tbody"></tbody>
+                </table>
+            </div>
+
+            <!-- Optimal Parameters -->
+            <div class="section-title">Optimal Parameters</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Parameter</th>
+                        <th>Optimal Value</th>
+                        <th>Win Rate</th>
+                        <th>Sweep Date</th>
+                    </tr>
+                </thead>
+                <tbody id="bt-optimal-tbody">
+                    <tr><td colspan="5" class="empty-state">No sweep results yet</td></tr>
+                </tbody>
+            </table>
         </div>
 
     </div>
