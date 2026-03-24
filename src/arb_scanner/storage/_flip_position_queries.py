@@ -29,6 +29,7 @@ SET status = 'closed',
     exit_reason = $5,
     closed_at = NOW()
 WHERE market_id = $1 AND status IN ('open', 'exit_pending', 'exit_failed')
+RETURNING arb_id
 """
 
 MARK_EXIT_PENDING = """

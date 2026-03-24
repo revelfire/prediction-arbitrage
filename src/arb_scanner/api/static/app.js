@@ -2186,6 +2186,7 @@ async function refreshBalances() {
 // --- Backtesting Tab ---
 let btPnlChart = null;
 let btSignalChart = null;
+let btSuggestions = [];
 
 async function refreshBacktesting() {
     const [portfolio, dailyPnl, categories, trades, optimalParams] = await Promise.all([
@@ -2200,6 +2201,7 @@ async function refreshBacktesting() {
     renderBtCategories(categories);
     renderBtTrades(trades);
     renderBtOptimalParams(optimalParams);
+    renderBtSuggestions(btSuggestions);
     await renderBtSignalChart();
 }
 
@@ -2364,11 +2366,11 @@ function renderBtTrades(data) {
 
 async function uploadBtCsv(file) {
     const statusEl = el('bt-import-status');
-    if (statusEl) statusEl.textContent = 'Uploading...';
+    if (statusEl) statusEl.textContent = 'Uploading and running backtests...';
     try {
         const form = new FormData();
         form.append('file', file);
-        const resp = await fetch('/api/backtesting/import', {
+        const resp = await fetch('/api/backtesting/import-and-run', {
             method: 'POST',
             headers: authHeaders(),
             body: form,
@@ -2379,7 +2381,12 @@ async function uploadBtCsv(file) {
             return;
         }
         const result = await resp.json();
-        if (statusEl) statusEl.textContent = `Imported ${result.inserted} trades (${result.duplicates} duplicates)`;
+        btSuggestions = result.suggestions || [];
+        renderBtSuggestions(btSuggestions);
+        if (statusEl) {
+            const imported = result.import_result || {};
+            statusEl.textContent = `Imported ${imported.inserted || 0} trades (${imported.duplicates || 0} duplicates), generated ${btSuggestions.length} suggestions`;
+        }
         await refreshBacktesting();
     } catch (err) {
         if (statusEl) statusEl.textContent = 'Upload failed: ' + err.message;
@@ -2511,6 +2518,80 @@ function renderBtOptimalParams(data) {
         <td>${((p.win_rate_at_optimal || 0) * 100).toFixed(1)}%</td>
         <td>${p.sweep_date ? new Date(p.sweep_date).toLocaleDateString() : '-'}</td>
     </tr>`).join('');
+}
+
+function renderBtSuggestions(data) {
+    const section = el('bt-suggestions-section');
+    const tbody = el('bt-suggestions-tbody');
+    const statusEl = el('bt-suggestion-status');
+    const applyAllBtn = el('bt-apply-all-btn');
+    if (!section || !tbody) return;
+    if (!data || data.length === 0) {
+        section.style.display = 'none';
+        if (statusEl) statusEl.textContent = '';
+        return;
+    }
+
+    section.style.display = 'block';
+    if (applyAllBtn) applyAllBtn.disabled = false;
+    tbody.innerHTML = data.map((s, idx) => {
+        const scope = s.scope === 'auto_execution'
+            ? 'Auto Exec'
+            : `Category: ${s.category || '-'}`;
+        const impact = `Win ${(s.win_rate_delta || 0) >= 0 ? '+' : ''}${((s.win_rate_delta || 0) * 100).toFixed(1)} pts, P&L ${(s.avg_pnl_delta || 0) >= 0 ? '+' : ''}${(s.avg_pnl_delta || 0).toFixed(4)}`;
+        const reason = s.reason || '';
+        const shortReason = reason.length > 140 ? reason.substring(0, 140) + '...' : reason;
+        return `<tr>
+            <td>${scope}</td>
+            <td title="${s.config_path || ''}">${s.param_name || s.config_path || '-'}</td>
+            <td>${formatBtSuggestionValue(s.current_value)}</td>
+            <td>${formatBtSuggestionValue(s.suggested_value)}</td>
+            <td>${impact}</td>
+            <td title="${reason.replace(/"/g, '&quot;')}">${shortReason}</td>
+            <td><button class="btn btn-primary btn-sm" onclick="applyBtSuggestion(${idx})">Apply & Restart</button></td>
+        </tr>`;
+    }).join('');
+}
+
+function formatBtSuggestionValue(value) {
+    if (value == null) return '-';
+    if (typeof value === 'number') {
+        if (Number.isInteger(value)) return String(value);
+        return value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+    }
+    return String(value);
+}
+
+async function applyBtSuggestion(index) {
+    const suggestion = btSuggestions[index];
+    if (!suggestion) return;
+    await submitBtSuggestions([suggestion]);
+}
+
+async function applyAllBtSuggestions() {
+    if (!btSuggestions.length) return;
+    await submitBtSuggestions(btSuggestions);
+}
+
+async function submitBtSuggestions(suggestions) {
+    const statusEl = el('bt-suggestion-status');
+    const applyAllBtn = el('bt-apply-all-btn');
+    if (applyAllBtn) applyAllBtn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Writing config and restarting dashboard...';
+    const body = {
+        suggestions: suggestions.map(s => ({
+            config_path: s.config_path,
+            suggested_value: s.suggested_value,
+        })),
+        restart: true,
+    };
+    const result = await postJSONBody('/api/backtesting/config/apply', body);
+    if (!result) {
+        if (statusEl) statusEl.textContent = 'Failed to apply suggestions';
+        if (applyAllBtn) applyAllBtn.disabled = false;
+        return;
+    }
+    if (statusEl) statusEl.textContent = `Applied ${result.applied?.length || 0} change(s). Restarting...`;
 }
 
 document.addEventListener('DOMContentLoaded', () => {

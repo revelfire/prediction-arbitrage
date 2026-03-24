@@ -871,6 +871,30 @@
                 <span id="bt-import-status" style="margin-left: 1rem; color: #a0a0b0;"></span>
             </div>
 
+            <div id="bt-suggestions-section" style="display: none;">
+                <div class="section-title">Automated Suggestions</div>
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap; padding: 0 0 1rem 0;">
+                    <button id="bt-apply-all-btn" class="btn btn-primary" onclick="applyAllBtSuggestions()">Apply All & Restart</button>
+                    <span id="bt-suggestion-status" style="color: #a0a0b0; align-self: center;"></span>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Scope</th>
+                            <th>Setting</th>
+                            <th>Current</th>
+                            <th>Suggested</th>
+                            <th>Impact</th>
+                            <th>Reason</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bt-suggestions-tbody">
+                        <tr><td colspan="7" class="empty-state">No automated suggestions yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
             <!-- Action Buttons -->
             <div class="section-title">Actions</div>
             <div style="display: flex; gap: 1rem; flex-wrap: wrap; padding: 1rem 0;">

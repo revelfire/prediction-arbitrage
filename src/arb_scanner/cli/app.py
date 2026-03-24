@@ -133,8 +133,8 @@ async def _maybe_init_arb_pipeline(config: Any) -> Any:
 
     Returns the Database instance (for cleanup) or None if skipped.
     """
-    ac = config.auto_execution
-    if not ac.enabled or ac.mode == "off":
+    root_ac = config.auto_execution
+    if not root_ac.enabled or root_ac.mode == "off":
         logger.info("arb_pipeline_skipped", reason="auto_execution_disabled")
         return None
     try:
@@ -147,9 +147,10 @@ async def _maybe_init_arb_pipeline(config: Any) -> Any:
         from arb_scanner.storage.auto_exec_repository import AutoExecRepository
         from arb_scanner.storage.db import Database
 
-        db = Database(config.database.url)
+        db = Database(config.storage.database_url)
         await db.connect()
         pool = db.pool
+        ac = config.auto_execution.effective_config("arb")
         auto_repo = AutoExecRepository(pool)
         poly = PolymarketExecutor(config.execution.polymarket)
         kalshi = KalshiExecutor(config.execution.kalshi)

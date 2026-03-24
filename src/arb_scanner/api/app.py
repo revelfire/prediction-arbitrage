@@ -135,7 +135,8 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
     from arb_scanner.storage.auto_exec_repository import AutoExecRepository
     from arb_scanner.storage.execution_repository import ExecutionRepository
 
-    ac = config.auto_execution
+    arb_ac = config.auto_execution.effective_config("arb")
+    flip_ac = config.auto_execution.effective_config("flip")
     auto_repo = AutoExecRepository(app.state.db.pool)
     position_repo = FlipPositionRepo(app.state.db.pool)
     exec_repo = ExecutionRepository(app.state.db.pool)
@@ -146,14 +147,14 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
     kalshi = getattr(app.state, "kalshi_executor", None)
 
     # Independent circuit breakers per pipeline
-    arb_breakers = CircuitBreakerManager(ac)
-    flip_breakers = CircuitBreakerManager(ac)
+    arb_breakers = CircuitBreakerManager(arb_ac)
+    flip_breakers = CircuitBreakerManager(flip_ac)
 
     # Arb pipeline: two-leg execution via orchestrator
-    arb_critic = ArbTradeCritic(ac.critic, config.claude)
+    arb_critic = ArbTradeCritic(arb_ac.critic, config.claude)
     arb_pipeline = ArbAutoExecutionPipeline(
         config=config,
-        auto_config=ac,
+        auto_config=arb_ac,
         orchestrator=orch,
         critic=arb_critic,
         breakers=arb_breakers,
@@ -164,16 +165,16 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
     )
 
     # Flip pipeline: single-leg execution via PolymarketExecutor
-    flip_critic = FlipTradeCritic(ac.critic, config.claude)
+    flip_critic = FlipTradeCritic(flip_ac.critic, config.claude)
     exit_executor = FlipExitExecutor(
         poly=poly,
         exec_repo=exec_repo,
         position_repo=position_repo,
-        stop_loss_aggression_pct=ac.stop_loss_aggression_pct,
+        stop_loss_aggression_pct=flip_ac.stop_loss_aggression_pct,
     )
     flip_pipeline = FlipAutoExecutionPipeline(
         config=config,
-        auto_config=ac,
+        auto_config=flip_ac,
         critic=flip_critic,
         breakers=flip_breakers,
         capital=capital,
@@ -320,6 +321,7 @@ def create_app(
         lifespan=_lifespan,
     )
     app.state.config = config
+    app.state.config_path = getattr(config, "_config_path", None)
     app.state.no_db = no_db
     app.state.flip_watch = flip_watch
 

@@ -45,44 +45,66 @@ EXIT_COLOR_MAP: dict[ExitReason, int] = {
 def build_entry_slack_payload(
     event: FlippeningEvent,
     entry: EntrySignal,
+    *,
+    dashboard_url: str = "",
+    auth_token: str = "",
 ) -> dict[str, Any]:
     """Build Slack Block Kit payload for a flippening entry alert.
 
     Args:
         event: Detected flippening event.
         entry: Generated entry signal.
+        dashboard_url: Dashboard base URL for action links.
+        auth_token: Auth token for API links.
 
     Returns:
         Slack webhook JSON payload.
     """
+    from arb_scanner.notifications.action_links import (
+        dashboard_position_url,
+        exit_action_url,
+    )
+
     title = f"{ENTRY_EMOJI} Flippening Detected"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": title},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
+                {"type": "mrkdwn", "text": f"*Baseline:* {float(event.baseline_yes):.2f}"},
+                {"type": "mrkdwn", "text": f"*Current:* {float(event.spike_price):.2f}"},
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Spike:* {float(event.spike_magnitude_pct):.1%} ({event.spike_direction.value})",
+                },
+                {"type": "mrkdwn", "text": f"*Confidence:* {float(event.confidence):.0%}"},
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Side:* {entry.side.upper()} @ {float(entry.entry_price):.2f}",
+                },
+                {"type": "mrkdwn", "text": f"*Target:* {float(entry.target_exit_price):.2f}"},
+                {"type": "mrkdwn", "text": f"*Size:* ${float(entry.suggested_size_usd):.0f}"},
+            ],
+        },
+    ]
+    pos_url = dashboard_position_url(dashboard_url, event.id, auth_token)
+    ex_url = exit_action_url(dashboard_url, event.id, auth_token)
+    link_parts: list[str] = []
+    if pos_url:
+        link_parts.append(f"<{pos_url}|View Position>")
+    if ex_url:
+        link_parts.append(f"<{ex_url}|Exit Now>")
+    if link_parts:
+        blocks.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": " | ".join(link_parts)}]},
+        )
     return {
         "text": f"Flippening: {label(event)} spike on {event.market_id}",
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": title},
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
-                    {"type": "mrkdwn", "text": f"*Baseline:* {float(event.baseline_yes):.2f}"},
-                    {"type": "mrkdwn", "text": f"*Current:* {float(event.spike_price):.2f}"},
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Spike:* {float(event.spike_magnitude_pct):.1%} ({event.spike_direction.value})",
-                    },
-                    {"type": "mrkdwn", "text": f"*Confidence:* {float(event.confidence):.0%}"},
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Side:* {entry.side.upper()} @ {float(entry.entry_price):.2f}",
-                    },
-                    {"type": "mrkdwn", "text": f"*Target:* {float(entry.target_exit_price):.2f}"},
-                    {"type": "mrkdwn", "text": f"*Size:* ${float(entry.suggested_size_usd):.0f}"},
-                ],
-            },
-        ],
+        "blocks": blocks,
     }
 
 
@@ -148,6 +170,9 @@ def build_exit_slack_payload(
     event: FlippeningEvent,
     entry: EntrySignal,
     exit_sig: ExitSignal,
+    *,
+    dashboard_url: str = "",
+    auth_token: str = "",
 ) -> dict[str, Any]:
     """Build Slack Block Kit payload for a flippening exit alert.
 
@@ -155,36 +180,49 @@ def build_exit_slack_payload(
         event: Original flippening event.
         entry: Entry signal that was active.
         exit_sig: Exit signal with P&L.
+        dashboard_url: Dashboard base URL for action links.
+        auth_token: Auth token for API links.
 
     Returns:
         Slack webhook JSON payload.
     """
+    from arb_scanner.notifications.action_links import dashboard_position_url
+
     emoji = EXIT_EMOJI_MAP.get(exit_sig.exit_reason, ":question:")
     reason = exit_sig.exit_reason.value.replace("_", " ").title()
     header = f"{emoji} Flippening Exit — {reason}"
     pnl_str = f"${float(exit_sig.realized_pnl * entry.suggested_size_usd):.2f}"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": header},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
+                {"type": "mrkdwn", "text": f"*Reason:* {reason}"},
+                {"type": "mrkdwn", "text": f"*Entry:* {float(entry.entry_price):.2f}"},
+                {"type": "mrkdwn", "text": f"*Exit:* {float(exit_sig.exit_price):.2f}"},
+                {
+                    "type": "mrkdwn",
+                    "text": f"*P&L:* {pnl_str} ({float(exit_sig.realized_pnl_pct):.1%})",
+                },
+                {"type": "mrkdwn", "text": f"*Hold:* {float(exit_sig.hold_minutes):.0f} min"},
+            ],
+        },
+    ]
+    pos_url = dashboard_position_url(dashboard_url, event.id, auth_token)
+    if pos_url:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"<{pos_url}|View Position>"}],
+            },
+        )
     return {
         "text": f"Flippening exit: {reason} on {event.market_id}",
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": header},
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Category:* {label(event)}"},
-                    {"type": "mrkdwn", "text": f"*Reason:* {reason}"},
-                    {"type": "mrkdwn", "text": f"*Entry:* {float(entry.entry_price):.2f}"},
-                    {"type": "mrkdwn", "text": f"*Exit:* {float(exit_sig.exit_price):.2f}"},
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*P&L:* {pnl_str} ({float(exit_sig.realized_pnl_pct):.1%})",
-                    },
-                    {"type": "mrkdwn", "text": f"*Hold:* {float(exit_sig.hold_minutes):.0f} min"},
-                ],
-            },
-        ],
+        "blocks": blocks,
     }
 
 

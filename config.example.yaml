@@ -50,6 +50,7 @@ notifications:
   discord_webhook: "${DISCORD_WEBHOOK_URL}"
   flippening_slack_webhook: "${FLIPPENING_SLACK_WEBHOOK_URL}"
   auto_exec_slack_webhook: "${AUTO_EXEC_SLACK_WEBHOOK_URL}"
+  dashboard_url: "${DASHBOARD_URL}"  # e.g. https://arb.spillwave.com — enables action links in Slack
   enabled: true
   min_spread_to_notify_pct: 0.02
 

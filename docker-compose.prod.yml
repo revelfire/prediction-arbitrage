@@ -69,6 +69,25 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Caddy reverse proxy — auto-HTTPS via Let's Encrypt
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dashboard
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # One-shot scan (run manually with: docker compose run --rm scan)
   scan:
     image: ghcr.io/revelfire/prediction-arbitrage:latest
@@ -83,3 +102,7 @@ services:
         condition: service_completed_successfully
     profiles:
       - tools
+
+volumes:
+  caddy_data:
+  caddy_config:
