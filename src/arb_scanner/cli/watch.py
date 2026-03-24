@@ -227,7 +227,7 @@ def _build_arb_opp_dict(opp: ArbOpportunity) -> dict[str, object]:
     return {
         "arb_id": f"{opp.poly_market.event_id}_{opp.kalshi_market.event_id}",
         "spread_pct": float(opp.net_spread_pct),
-        "confidence": float(getattr(opp, "confidence", 0)),
+        "confidence": float(opp.match.match_confidence),
         "category": getattr(opp, "category", ""),
         "title": opp.poly_market.title,
         "ticket_type": "arbitrage",
