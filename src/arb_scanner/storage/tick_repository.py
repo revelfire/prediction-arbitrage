@@ -156,6 +156,38 @@ class TickRepository:
         """
         return await self._pool.fetchrow(Q.SELECT_BASELINE, market_id)
 
+    async def get_first_tick(
+        self,
+        market_id: str,
+        since: datetime,
+        until: datetime,
+    ) -> asyncpg.Record | None:
+        """Fetch the first stored tick for a market inside a replay window.
+
+        Args:
+            market_id: Market identifier.
+            since: Start of replay window.
+            until: End of replay window.
+
+        Returns:
+            Earliest tick record in range, or None if missing.
+        """
+        return await self._pool.fetchrow(Q.SELECT_FIRST_TICK, market_id, since, until)
+
+    async def get_market_context(
+        self,
+        market_id: str,
+    ) -> asyncpg.Record | None:
+        """Fetch the latest stored category context for a market.
+
+        Args:
+            market_id: Market identifier.
+
+        Returns:
+            Event context record with category fields, or None if missing.
+        """
+        return await self._pool.fetchrow(Q.SELECT_MARKET_CONTEXT, market_id)
+
     async def prune_ticks(self, before: datetime) -> int:
         """Delete ticks older than the given timestamp.
 

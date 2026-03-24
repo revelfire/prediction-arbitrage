@@ -141,8 +141,8 @@ class TestExitStatusHandling:
         pos_repo.close_position.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_submitted_with_fill_price_closes_position(self) -> None:
-        """Submitted + fill_price closes position using fill price."""
+    async def test_submitted_with_fill_price_goes_pending(self) -> None:
+        """Submitted + fill_price must NOT close — order is on the CLOB, not filled."""
         poly = AsyncMock()
         poly.place_order.return_value = SimpleNamespace(
             status="submitted",
@@ -158,7 +158,8 @@ class TestExitStatusHandling:
         result = await executor.execute_exit(_exit_sig(), _entry_sig(), _event())
 
         assert result is not None
-        pos_repo.close_position.assert_called_once()
+        pos_repo.mark_exit_pending.assert_called_once()
+        pos_repo.close_position.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_partially_filled_stays_pending(self) -> None:

@@ -31,10 +31,29 @@ ORDER BY drifted_at
 SELECT_DISTINCT_MARKETS = """
 SELECT DISTINCT t.market_id
 FROM flippening_price_ticks t
-JOIN flippening_baselines b ON b.market_id = t.market_id
-WHERE (b.sport = $1 OR b.category = $1)
+LEFT JOIN LATERAL (
+    SELECT sport, category
+    FROM flippening_baselines
+    WHERE market_id = t.market_id
+    ORDER BY captured_at DESC
+    LIMIT 1
+) b ON TRUE
+LEFT JOIN LATERAL (
+    SELECT sport, category
+    FROM flippening_events
+    WHERE market_id = t.market_id
+    ORDER BY detected_at DESC
+    LIMIT 1
+) e ON TRUE
+WHERE (
+        b.sport = $1
+        OR b.category = $1
+        OR e.sport = $1
+        OR e.category = $1
+    )
   AND t.timestamp >= $2
   AND t.timestamp <= $3
+ORDER BY t.market_id
 """
 
 SELECT_BASELINE = """
@@ -44,6 +63,23 @@ SELECT market_id, token_id, baseline_yes, baseline_no, sport,
 FROM flippening_baselines
 WHERE market_id = $1
 ORDER BY captured_at DESC
+LIMIT 1
+"""
+
+SELECT_FIRST_TICK = """
+SELECT market_id, token_id, yes_bid, yes_ask, no_bid, no_ask,
+       timestamp, synthetic_spread, book_depth_bids, book_depth_asks
+FROM flippening_price_ticks
+WHERE market_id = $1 AND timestamp >= $2 AND timestamp <= $3
+ORDER BY timestamp
+LIMIT 1
+"""
+
+SELECT_MARKET_CONTEXT = """
+SELECT sport, category, category_type
+FROM flippening_events
+WHERE market_id = $1
+ORDER BY detected_at DESC
 LIMIT 1
 """
 

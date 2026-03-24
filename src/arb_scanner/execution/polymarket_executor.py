@@ -167,19 +167,20 @@ class PolymarketExecutor:
                 order_args,
             )
             order_id = str(resp.get("orderID", resp.get("id", "")))
-            raw_fill = resp.get("averagePrice") or resp.get("price")
-            fill_price = Decimal(str(raw_fill)) if raw_fill else None
+            fill_price = _extract_fill_price_from_post(resp)
+            status = _map_poly_order_status(resp.get("status"))
             logger.info(
                 "poly_order_placed",
                 order_id=order_id,
                 side=side_str,
                 price=str(req.price),
                 fill_price=str(fill_price) if fill_price else None,
+                status=status,
                 size=req.size_contracts,
             )
             return OrderResponse(
                 venue_order_id=order_id,
-                status="submitted",
+                status=status,
                 fill_price=fill_price,
             )
         except Exception as exc:
@@ -473,6 +474,15 @@ def _map_poly_order_status(raw_status: object) -> OrderStatus:
     return "submitted"
 
 
+def _extract_fill_price_from_post(raw: dict[str, Any]) -> Decimal | None:
+    """Extract fill price from a create_and_post_order response.
+
+    Only trusts actual fill-price fields, never the requested limit
+    ``price``.  Returns None for unfilled or freshly-submitted orders.
+    """
+    return _extract_fill_price(raw)
+
+
 def _extract_fill_price(raw: dict[str, Any]) -> Decimal | None:
     """Extract fill price from a Polymarket order payload.
 
@@ -489,7 +499,7 @@ def _extract_fill_price(raw: dict[str, Any]) -> Decimal | None:
         "fill_price",
     ):
         value = raw.get(key)
-        if value in (None, ""):
+        if value in (None, "", "0", 0):
             continue
         try:
             return Decimal(str(value))

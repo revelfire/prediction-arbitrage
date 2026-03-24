@@ -117,9 +117,10 @@ class FlipExitExecutor:
             return None
 
         effective_fill = Decimal(str(resp.fill_price)) if resp.fill_price is not None else None
-        # Treat status=filled as terminal. For status=submitted, allow immediate
-        # completion only when venue already reports a fill price.
-        if resp.status == "filled" or (resp.status == "submitted" and effective_fill is not None):
+        # Only treat status=filled as terminal.  "submitted" orders are
+        # on the CLOB but not yet matched — they must go through the
+        # exit_pending → reconcile path to confirm actual fill.
+        if resp.status == "filled" and effective_fill is not None:
             final_exit_price = effective_fill or req.price
             pnl = compute_realized_pnl(
                 Decimal(str(position["entry_price"])),
