@@ -66,6 +66,7 @@ def load_config(path: str | None = None) -> Settings:
 
     settings = Settings.model_validate(interpolated)
     _apply_auto_exec_env_overrides(settings)
+    object.__setattr__(settings, "_config_path", str(resolved))
     logger.info("config_loaded", path=str(resolved))
     return settings
 
@@ -92,6 +93,7 @@ def _settings_from_env() -> Settings:
         ),
     )
     _apply_auto_exec_env_overrides(settings)
+    object.__setattr__(settings, "_config_path", None)
     return settings
 
 

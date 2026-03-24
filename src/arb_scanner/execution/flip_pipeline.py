@@ -16,6 +16,7 @@ from arb_scanner.execution._pipeline_helpers import (
     RunCtx,
     build_entry,
     dispatch_geoblock,
+    dispatch_trade_notification,
     is_geoblock,
     persist_and_notify,
     purge_cooldowns,
@@ -354,6 +355,16 @@ class FlipAutoExecutionPipeline:
         _push(f"placed_{entry.status}", run.arb_id, title=opp.get("title", ""))
         self._update_confidence_guardrail(entry.status, arb_id=run.arb_id)
         await persist_and_notify(entry, self._infra)
+        if entry.status == "executed":
+            await dispatch_trade_notification(
+                action="buy",
+                market_title=title,
+                side=str(opp.get("side", "yes")),
+                size_contracts=contracts,
+                price=Decimal(str(opp.get("entry_price", 0.5))),
+                arb_id=run.arb_id,
+                infra=self._infra,
+            )
         return entry
 
     def _map_response(self, resp: Any) -> tuple[str, bool]:

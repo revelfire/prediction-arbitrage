@@ -35,5 +35,40 @@ async def _feed_exit_pipeline(
         if pipeline is None or pipeline.mode != "auto":
             return
         await pipeline.process_exit(exit_sig, entry, event)
+        await _notify_sell(event, entry, exit_sig, config)
     except Exception:
         logger.warning("flip_pipeline_exit_feed_failed", market_id=event.market_id)
+
+
+async def _notify_sell(
+    event: FlippeningEvent,
+    entry: EntrySignal,
+    exit_sig: ExitSignal,
+    config: Settings,
+) -> None:
+    """Send SELL notification after exit pipeline fires.
+
+    Args:
+        event: Flippening event.
+        entry: Original entry signal.
+        exit_sig: Exit signal with reason/price.
+        config: Application settings.
+    """
+    try:
+        from arb_scanner.notifications.trade_webhook import dispatch_trade_alert
+
+        notif = config.notifications
+        contracts = int(entry.suggested_size_usd / entry.entry_price) if entry.entry_price else 0
+        await dispatch_trade_alert(
+            action="sell",
+            market_title=event.market_title or event.market_id[:20],
+            side=entry.side,
+            size_contracts=contracts,
+            price=exit_sig.exit_price,
+            arb_id=event.id,
+            slack_url=notif.effective_auto_exec_slack,
+            dashboard_url=notif.dashboard_url,
+            auth_token=config.dashboard.auth_token or "",
+        )
+    except Exception:
+        logger.warning("sell_notification_failed", market_id=event.market_id)

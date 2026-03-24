@@ -163,7 +163,7 @@ async def _run_portfolio(
 
     async with Database(config.storage.database_url) as db:
         repo = BacktestingRepository(db.pool)
-        trade_rows = await repo.get_trades()
+        trade_rows = await repo.get_trades(limit=None)
         trades = [ImportedTrade(**{k: v for k, v in r.items() if k != "id"}) for r in trade_rows]
         positions = reconstruct_positions(trades)
 
@@ -228,7 +228,7 @@ async def _run_backtest_report(
         repo = BacktestingRepository(db.pool)
         flip_repo = FlippeningRepository(db.pool)
 
-        trade_rows = await repo.get_trades(since=since, until=until)
+        trade_rows = await repo.get_trades(since=since, until=until, limit=None)
         trades = [ImportedTrade(**{k: v for k, v in r.items() if k != "id"}) for r in trade_rows]
         positions = reconstruct_positions(trades)
         if category_filter:
@@ -242,8 +242,10 @@ async def _run_backtest_report(
         summary = calculate_portfolio(positions)
 
         signals = await flip_repo.get_history(
-            limit=500,
+            limit=None,
             category=category_filter,
+            since=since,
+            until=until,
         )
         buy_sells = [t for t in trades if t.action in (TradeAction.Buy, TradeAction.Sell)]
         comparisons = compare_trades_to_signals(buy_sells, signals)

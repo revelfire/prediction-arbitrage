@@ -85,14 +85,38 @@ Manual backup: `ssh arb-scanner '/opt/arb-scanner/backup.sh'`
 
 UFW allows only SSH (port 22) inbound. All other ports are blocked. The dashboard is accessible only via SSH tunnel.
 
-## Future: DNS + HTTPS
+## HTTPS via Caddy
 
-To add `arb-scanner.spillwave.com`:
+Public HTTPS access at `arb.spillwave.com` via Caddy reverse proxy (auto-HTTPS with Let's Encrypt).
 
-1. Add DNS A record pointing to `204.168.136.76`
-2. Install Caddy on the server (auto-HTTPS)
-3. `ufw allow 443/tcp`
-4. Caddy reverse proxies to `localhost:8060`
+### Setup
+
+```bash
+# 1. DNS: A record arb.spillwave.com -> 204.168.136.76 (via Cloudflare)
+
+# 2. Open firewall for HTTP/HTTPS
+ssh arb-scanner 'ufw allow 80/tcp && ufw allow 443/tcp'
+
+# 3. Copy Caddyfile
+scp infra/hetzner/Caddyfile arb-scanner:/opt/arb-scanner/
+
+# 4. Set auth_token in config.yaml (required — protects all non-health routes)
+# dashboard:
+#   auth_token: "your-secret-token"
+# notifications:
+#   dashboard_url: "https://arb.spillwave.com"
+
+# 5. Redeploy (Caddy is included in docker-compose.prod.yml)
+ssh arb-scanner 'cd /opt/arb-scanner && docker compose -f docker-compose.prod.yml up -d'
+```
+
+### Verify
+
+```bash
+curl -sf https://arb.spillwave.com/api/health       # 200 (no auth needed)
+curl -sf https://arb.spillwave.com/api/opportunities  # 401 (auth required)
+curl -sf 'https://arb.spillwave.com/api/opportunities?token=YOUR_TOKEN'  # 200
+```
 
 ## Service Management
 

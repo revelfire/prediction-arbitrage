@@ -200,6 +200,49 @@ async def _dispatch_notification(entry: AutoExecLogEntry, infra: PipelineInfra) 
         infra.log.exception("notification_failed")
 
 
+async def dispatch_trade_notification(
+    *,
+    action: str,
+    market_title: str,
+    side: str,
+    size_contracts: int,
+    price: Decimal,
+    arb_id: str,
+    pnl: Decimal | None = None,
+    infra: PipelineInfra,
+) -> None:
+    """Dispatch a BUY/SELL/CLOSED trade notification to Slack.
+
+    Args:
+        action: 'buy', 'sell', or 'closed'.
+        market_title: Human-readable market name.
+        side: 'yes' or 'no'.
+        size_contracts: Number of contracts.
+        price: Execution price.
+        arb_id: Execution ticket ID.
+        pnl: Realized P&L (for closed trades).
+        infra: Pipeline infrastructure with config.
+    """
+    try:
+        from arb_scanner.notifications.trade_webhook import dispatch_trade_alert
+
+        notif = infra.config.notifications
+        await dispatch_trade_alert(
+            action=action,
+            market_title=market_title,
+            side=side,
+            size_contracts=size_contracts,
+            price=price,
+            arb_id=arb_id,
+            pnl=pnl,
+            slack_url=notif.effective_auto_exec_slack,
+            dashboard_url=notif.dashboard_url,
+            auth_token=infra.config.dashboard.auth_token or "",
+        )
+    except Exception:
+        infra.log.exception("trade_notification_failed", action=action)
+
+
 async def _dispatch_breaker(reasons: list[str], infra: PipelineInfra) -> None:
     """Log circuit breaker trips (webhook silenced to reduce noise)."""
     for reason in reasons:
