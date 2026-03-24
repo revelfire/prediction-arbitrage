@@ -1043,13 +1043,21 @@ def _normalize_order_status(value: object) -> OrderStatus:
 
 
 def _to_int(value: object) -> int | None:
-    """Safely parse an int from an arbitrary value."""
+    """Safely parse an int from an arbitrary value.
+
+    Handles Decimal/float inputs like Decimal("21.000000") which
+    cannot be parsed via int(str(...)) directly.
+    """
     if value is None:
         return None
     try:
-        return int(str(value))
-    except (ValueError, TypeError):
-        return None
+        result: int = int(value)  # type: ignore[call-overload]
+        return result
+    except (ValueError, TypeError, OverflowError):
+        try:
+            return int(float(str(value)))
+        except (ValueError, TypeError, OverflowError):
+            return None
 
 
 def _build_exit_from_position(
