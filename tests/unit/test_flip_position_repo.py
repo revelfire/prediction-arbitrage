@@ -131,7 +131,7 @@ class TestClosePosition:
             realized_pnl=Decimal("18.00"),
             exit_reason="reversion",
         )
-        mock_pool.execute.assert_awaited_once_with(
+        mock_pool.fetchrow.assert_awaited_once_with(
             Q.CLOSE_POSITION,
             "m1",
             "order-99",
@@ -139,6 +139,22 @@ class TestClosePosition:
             Decimal("18.00"),
             "reversion",
         )
+        mock_pool.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_updates_auto_exec_log_when_arb_id_present(
+        self, repo: FlipPositionRepo, mock_pool: AsyncMock
+    ) -> None:
+        """Closed flip positions propagate realized P&L into auto-exec stats."""
+        mock_pool.fetchrow.return_value = {"arb_id": "arb-1"}
+        await repo.close_position(
+            "m1",
+            exit_order_id="order-99",
+            exit_price=Decimal("0.55"),
+            realized_pnl=Decimal("18.00"),
+            exit_reason="reversion",
+        )
+        mock_pool.execute.assert_awaited_once()
 
 
 class TestMarkExitFailed:

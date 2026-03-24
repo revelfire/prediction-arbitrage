@@ -79,8 +79,10 @@ JOIN flippening_signals ex
     ON ex.event_id = e.id AND ex.signal_type = 'exit'
 WHERE ($2::TEXT IS NULL OR e.sport = $2 OR e.category = $2)
   AND ($3::TEXT IS NULL OR e.category_type = $3)
+  AND ($4::TIMESTAMPTZ IS NULL OR ex.created_at >= $4)
+  AND ($5::TIMESTAMPTZ IS NULL OR ex.created_at < $5)
 ORDER BY ex.created_at DESC
-LIMIT $1
+LIMIT COALESCE($1, 1000000)
 """
 
 GET_STATS = """

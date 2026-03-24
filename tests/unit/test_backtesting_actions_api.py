@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -140,6 +141,38 @@ class TestAnalyzeEndpoint:
         assert resp.json()["trade_count"] == 0
 
 
+class TestImportAndRunEndpoint:
+    """Tests for POST /api/backtesting/import-and-run."""
+
+    @patch("arb_scanner.api.routes_backtesting_actions.run_import_workflow", new_callable=AsyncMock)
+    def test_import_and_run_returns_workflow_payload(
+        self,
+        mock_run_workflow: AsyncMock,
+        client: TestClient,
+    ) -> None:
+        """Import-and-run delegates to the automation workflow helper."""
+        mock_run_workflow.return_value = {
+            "import_result": {"inserted": 1, "duplicates": 0, "errors": 0},
+            "portfolio": {"trade_count": 1},
+            "signal_alignment": {},
+            "category_performance": [],
+            "trade_count": 1,
+            "suggestions": [],
+        }
+        resp = client.post(
+            "/api/backtesting/import-and-run",
+            files={
+                "file": (
+                    "trades.csv",
+                    b"marketName,action,usdcAmount,tokenAmount,tokenName,timestamp,hash\n",
+                    "text/csv",
+                )
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["import_result"]["inserted"] == 1
+
+
 class TestReportEndpoint:
     """Tests for POST /api/backtesting/report."""
 
@@ -209,3 +242,66 @@ class TestSweepEndpoint:
         """Sweep without request body returns validation error."""
         resp = client.post("/api/backtesting/sweep")
         assert resp.status_code == 422
+
+
+class TestApplyConfigSuggestions:
+    """Tests for POST /api/backtesting/config/apply."""
+
+    def test_apply_persists_yaml(
+        self,
+        mock_backtest_repo: AsyncMock,
+        mock_flip_repo: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        """Applies a suggestion to config.yaml without restarting in tests."""
+        config = _test_config()
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("flippening:\n  categories: {}\n", encoding="utf-8")
+        object.__setattr__(config, "_config_path", str(config_path))
+
+        with (
+            patch("arb_scanner.storage.db.Database.connect", new_callable=AsyncMock),
+            patch("arb_scanner.storage.db.Database.disconnect", new_callable=AsyncMock),
+        ):
+            app = create_app(config)
+            app.state.config_path = str(config_path)
+            app.dependency_overrides[get_backtest_repo] = lambda: mock_backtest_repo
+            app.dependency_overrides[get_flip_repo] = lambda: mock_flip_repo
+            app.dependency_overrides[get_config] = lambda: config
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/api/backtesting/config/apply",
+                    json={
+                        "suggestions": [
+                            {
+                                "config_path": "flippening.categories.nba.min_confidence",
+                                "suggested_value": 0.72,
+                            }
+                        ],
+                        "restart": False,
+                    },
+                )
+
+        assert resp.status_code == 200
+        updated = config_path.read_text(encoding="utf-8")
+        assert "nba:" in updated
+        assert "min_confidence: 0.72" in updated
+
+    def test_apply_rejects_unsupported_paths(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Rejects writes outside approved backtesting config surfaces."""
+        resp = client.post(
+            "/api/backtesting/config/apply",
+            json={
+                "suggestions": [
+                    {
+                        "config_path": "dashboard.port",
+                        "suggested_value": 9000,
+                    }
+                ],
+                "restart": False,
+            },
+        )
+        assert resp.status_code == 400

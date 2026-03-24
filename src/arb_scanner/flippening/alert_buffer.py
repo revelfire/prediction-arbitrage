@@ -145,7 +145,9 @@ class AlertBuffer:
             notif = config.notifications
             entry_alerts = [a for a in selected if a.exit_signal is None]
             exit_alerts = [a for a in selected if a.exit_signal is not None]
-            slack = _build_batch_slack(entry_alerts, exit_alerts, total)
+            dash_url = notif.dashboard_url
+            token = config.dashboard.auth_token or ""
+            slack = _build_batch_slack(entry_alerts, exit_alerts, total, dash_url, token)
             discord = _build_batch_discord(entry_alerts, exit_alerts)
             await dispatch_flip_alert(
                 slack if notif.effective_flippening_slack else None,
@@ -165,6 +167,8 @@ def _build_batch_slack(
     entries: list[_BufferedAlert],
     exits: list[_BufferedAlert],
     total: int,
+    dashboard_url: str = "",
+    auth_token: str = "",
 ) -> dict[str, Any]:
     """Build a single Slack payload for a batch of alerts.
 
@@ -172,10 +176,17 @@ def _build_batch_slack(
         entries: Entry alerts to include.
         exits: Exit alerts to include.
         total: Total alert count for the header.
+        dashboard_url: Dashboard base URL for action links.
+        auth_token: Auth token for action links.
 
     Returns:
         Slack webhook JSON payload.
     """
+    from arb_scanner.notifications.action_links import (
+        dashboard_position_url,
+        exit_action_url,
+    )
+
     lines: list[str] = [
         f":chart_with_upwards_trend: Flippening Digest ({total} signals)",
     ]
@@ -185,13 +196,23 @@ def _build_batch_slack(
         for a in entries:
             e, s = a.event, a.entry
             open_tag = ":green_circle: *[OPEN POSITION]* " if a.has_open_position else ""
-            lines.append(
+            line = (
                 f"  {open_tag}*{label(e)}* {e.market_title}"
                 f" — Spike {float(e.spike_magnitude_pct):.0%}"
                 f" | Conf {float(e.confidence):.0%}"
                 f" | Target ${float(s.target_exit_price):.2f}"
-                f" | Size ${float(s.suggested_size_usd):.0f}",
+                f" | Size ${float(s.suggested_size_usd):.0f}"
             )
+            pos_url = dashboard_position_url(dashboard_url, e.id, auth_token)
+            ex_url = exit_action_url(dashboard_url, e.id, auth_token)
+            link_parts: list[str] = []
+            if pos_url:
+                link_parts.append(f"<{pos_url}|View>")
+            if ex_url:
+                link_parts.append(f"<{ex_url}|Exit>")
+            if link_parts:
+                line += f"  [{' | '.join(link_parts)}]"
+            lines.append(line)
     if exits:
         lines.append("───")
         lines.append(":moneybag: *Exits*")
@@ -201,12 +222,16 @@ def _build_batch_slack(
             emoji = EXIT_EMOJI_MAP.get(x.exit_reason, ":question:")
             reason = x.exit_reason.value.replace("_", " ").title()
             pnl_usd = float(x.realized_pnl * s.suggested_size_usd)
-            lines.append(
+            line = (
                 f"  {emoji} *{label(e)}* {e.market_title}"
                 f" — {reason}"
                 f" | P&L ${pnl_usd:+.2f} ({float(x.realized_pnl_pct):+.0%})"
-                f" | {float(x.hold_minutes):.0f} min",
+                f" | {float(x.hold_minutes):.0f} min"
             )
+            pos_url = dashboard_position_url(dashboard_url, e.id, auth_token)
+            if pos_url:
+                line += f"  [<{pos_url}|View>]"
+            lines.append(line)
     return {"text": "\n".join(lines)}
 
 

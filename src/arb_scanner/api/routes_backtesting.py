@@ -8,7 +8,12 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
-from arb_scanner.api.deps import get_backtest_repo
+from arb_scanner.api.deps import get_backtest_repo, get_flip_repo
+from arb_scanner.backtesting.automation import (
+    build_signal_alignment,
+    deserialize_trade_rows,
+    trade_window,
+)
 from arb_scanner.backtesting.csv_importer import parse_csv_bytes
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(
@@ -144,6 +149,7 @@ async def get_daily_pnl(
 @router.get("/signal-comparison")
 async def get_signal_comparison(
     repo: Any = Depends(get_backtest_repo),
+    flip_repo: Any = Depends(get_flip_repo),
 ) -> dict[str, Any]:
     """Fetch signal alignment breakdown from category performance.
 
@@ -154,24 +160,22 @@ async def get_signal_comparison(
         Dict with alignment counts and P&L.
     """
     try:
-        cats = await repo.get_category_performance()
-        aligned_count = 0
-        contrary_count = 0
-        no_signal_count = 0
-        for c in cats:
-            tc = c.get("trade_count", 0)
-            rate = c.get("signal_alignment_rate", 0) or 0
-            aligned_count += int(tc * float(rate))
-            contrary_count += int(tc * (1 - float(rate)) * 0.5)
-            no_signal_count += tc - aligned_count - contrary_count
-        if not cats:
-            positions = await repo.get_positions()
-            no_signal_count = len(positions)
-        return {
-            "aligned": {"count": max(aligned_count, 0), "total_pnl": 0},
-            "contrary": {"count": max(contrary_count, 0), "total_pnl": 0},
-            "no_signal": {"count": max(no_signal_count, 0), "total_pnl": 0},
-        }
+        trade_rows = await repo.get_trades(limit=None)
+        trades = deserialize_trade_rows(trade_rows)
+        if not trades:
+            return {
+                "aligned": {"count": 0, "total_pnl": 0, "avg_pnl": 0},
+                "contrary": {"count": 0, "total_pnl": 0, "avg_pnl": 0},
+                "no_signal": {"count": 0, "total_pnl": 0, "avg_pnl": 0},
+            }
+        since, until = trade_window(trades)
+        signals = await flip_repo.get_history(
+            limit=None,
+            since=since,
+            until=until,
+        )
+        alignment, _comparisons = build_signal_alignment(trades, signals)
+        return alignment
     except Exception as exc:
         logger.error("signal_comparison_failed", error=str(exc))
         raise HTTPException(503, "Database unavailable") from exc

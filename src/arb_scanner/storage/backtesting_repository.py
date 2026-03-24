@@ -79,7 +79,7 @@ class BacktestingRepository:
         action: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
-        limit: int = 500,
+        limit: int | None = 500,
     ) -> list[dict[str, Any]]:
         """Fetch imported trades with optional filters.
 
@@ -115,8 +115,10 @@ class BacktestingRepository:
             idx += 1
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        query = BQ.GET_TRADES_BASE + where + f" ORDER BY timestamp DESC LIMIT ${idx}"
-        params.append(limit)
+        query = BQ.GET_TRADES_BASE + where + " ORDER BY timestamp DESC"
+        if limit is not None:
+            query += f" LIMIT ${idx}"
+            params.append(limit)
 
         rows = await self._pool.fetch(query, *params)
         return [dict(r) for r in rows]

@@ -134,14 +134,16 @@ class FlippeningRepository:
 
     async def get_history(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         sport: str | None = None,
         category: str | None = None,
         category_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch completed flippenings with entry/exit pairs."""
         cat_filter = category or sport
-        rows = await self._pool.fetch(Q.GET_HISTORY, limit, cat_filter, category_type)
+        rows = await self._pool.fetch(Q.GET_HISTORY, limit, cat_filter, category_type, since, until)
         return [dict(row) for row in rows]
 
     async def get_stats(

@@ -123,7 +123,7 @@ class FlipPositionRepo:
             realized_pnl: Realized profit/loss per contract.
             exit_reason: Human-readable exit reason string.
         """
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             Q.CLOSE_POSITION,
             market_id,
             exit_order_id,
@@ -131,6 +131,24 @@ class FlipPositionRepo:
             realized_pnl,
             exit_reason,
         )
+        arb_id = str(row["arb_id"]) if row is not None and row["arb_id"] else ""
+        if arb_id:
+            await self._pool.execute(
+                """
+                UPDATE auto_execution_log
+                SET actual_pnl = $2
+                WHERE id = (
+                    SELECT id
+                    FROM auto_execution_log
+                    WHERE arb_id = $1
+                      AND status IN ('executed', 'partial')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                arb_id,
+                realized_pnl,
+            )
         logger.info(
             "flip_position_closed",
             market_id=market_id,

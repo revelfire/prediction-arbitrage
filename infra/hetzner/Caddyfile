@@ -1,0 +1,3 @@
+arb.spillwave.com {
+	reverse_proxy localhost:8060
+}

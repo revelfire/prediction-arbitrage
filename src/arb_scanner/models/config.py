@@ -98,6 +98,7 @@ class NotificationConfig(BaseModel):
     discord_webhook: str = ""
     flippening_slack_webhook: str = ""
     auto_exec_slack_webhook: str = ""
+    dashboard_url: str = ""
     enabled: bool = True
     min_spread_to_notify_pct: Decimal = Decimal("0.02")
 
