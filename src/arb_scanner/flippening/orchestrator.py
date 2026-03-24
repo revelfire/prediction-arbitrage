@@ -437,11 +437,13 @@ async def _check_orphaned_positions(config: Settings) -> None:
         for p in orphans:
             max_hold = p.get("max_hold_minutes")
             hold_tag = f" | max {max_hold}m" if max_hold else ""
+            title = p.get("market_title") or p["market_id"][:20]
+            slug = p.get("market_slug", "")
+            name_part = f"<https://polymarket.com/event/{slug}|{title}>" if slug else title
             lines.append(
-                f"  • `{p['market_id']}` | {p['side'].upper()}"
-                f" | {p['size_contracts']} contracts"
-                f" @ ${float(p['entry_price']):.3f}{hold_tag}"
-                f" | arb_id: `{p['arb_id'][:12]}...`"
+                f"  • *{name_part}* | {p['side'].upper()}"
+                f" | {int(float(str(p['size_contracts'])))} ct"
+                f" @ ${float(p['entry_price']):.2f}{hold_tag}"
             )
         lines.append("_Overtime positions will be auto-closed by the periodic sweep._")
         msg = "\n".join(lines)

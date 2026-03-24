@@ -40,6 +40,7 @@ class ExecutionResult(BaseModel):
     arb_id: str
     total_cost_usd: Decimal | None = None
     actual_spread: Decimal | None = None
+    actual_pnl: Decimal | None = None
     slippage_from_ticket: Decimal | None = None
     poly_order_id: str | None = None
     kalshi_order_id: str | None = None

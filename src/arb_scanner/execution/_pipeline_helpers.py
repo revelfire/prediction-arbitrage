@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -60,6 +61,97 @@ async def get_open_positions(auto_repo: Any) -> list[dict[str, Any]]:
         return []
 
 
+async def get_risk_positions(auto_repo: Any) -> list[dict[str, Any]]:
+    """Get cross-pipeline open positions for exposure checks."""
+    getter = getattr(auto_repo, "get_risk_positions", None)
+    if getter is None:
+        return await get_open_positions(auto_repo)
+    try:
+        result: list[dict[str, Any]] = await getter()
+        return result
+    except Exception:
+        return []
+
+
+async def sweep_expired_arb_positions(auto_repo: Any) -> None:
+    """Best-effort cleanup of expired arb placeholder positions."""
+    sweeper = getattr(auto_repo, "abandon_expired", None)
+    if sweeper is None:
+        return
+    try:
+        await sweeper()
+    except Exception:
+        return
+
+
+async def evaluate_capital_preservation(
+    *,
+    market_id: str,
+    venue_spend: dict[str, Decimal],
+    infra: PipelineInfra,
+) -> list[str]:
+    """Evaluate repo-backed capital preservation limits for auto execution."""
+    cfg = infra.config.execution
+    reasons: list[str] = []
+
+    reserve = Decimal(str(cfg.min_reserve_usd))
+    poly_spend = venue_spend.get("polymarket", Decimal("0"))
+    kalshi_spend = venue_spend.get("kalshi", Decimal("0"))
+    if poly_spend > 0:
+        poly_after = infra.capital.poly_balance - poly_spend
+        if poly_after < reserve:
+            reasons.append(f"capital_reserve_polymarket: ${poly_after:.2f} below ${reserve:.2f}")
+    if kalshi_spend > 0:
+        kalshi_after = infra.capital.kalshi_balance - kalshi_spend
+        if kalshi_after < reserve:
+            reasons.append(f"capital_reserve_kalshi: ${kalshi_after:.2f} below ${reserve:.2f}")
+
+    total_balance = infra.capital.total_balance
+    if total_balance <= Decimal("0"):
+        reasons.append("capital_total_balance_unavailable")
+        return reasons
+
+    positions = await get_risk_positions(infra.auto_repo)
+    current_exposure = sum((_position_exposure(p) for p in positions), Decimal("0"))
+    proposed_exposure = sum(venue_spend.values(), Decimal("0"))
+    exposure_cap = total_balance * Decimal(str(cfg.max_exposure_pct))
+    if (current_exposure + proposed_exposure) > exposure_cap:
+        reasons.append(
+            f"capital_exposure_limit: ${(current_exposure + proposed_exposure):.2f} "
+            f"over ${exposure_cap:.2f}"
+        )
+
+    open_count = len(positions)
+    if open_count >= int(cfg.max_open_positions):
+        reasons.append(
+            f"capital_open_positions_limit: {open_count}/{int(cfg.max_open_positions)} open"
+        )
+
+    concentration_cap = total_balance * Decimal(str(cfg.max_per_market_pct))
+    market_exposure = sum(
+        (_position_exposure(p) for p in positions if _position_market_key(p) == market_id),
+        Decimal("0"),
+    )
+    if (market_exposure + proposed_exposure) > concentration_cap:
+        reasons.append(
+            f"capital_market_concentration: ${(market_exposure + proposed_exposure):.2f} "
+            f"over ${concentration_cap:.2f}"
+        )
+
+    pnl = await _get_today_realized_pnl(infra.auto_repo, fallback=infra.capital.daily_pnl)
+    daily_limit = Decimal(str(cfg.daily_loss_limit_usd))
+    if pnl <= -daily_limit:
+        reasons.append(f"capital_daily_loss_limit: ${pnl:.2f} <= -${daily_limit:.2f}")
+
+    cooldown_remaining = await _get_cooldown_remaining(
+        infra.auto_repo, cfg.cooldown_after_loss_seconds
+    )
+    if cooldown_remaining > 0:
+        reasons.append(f"capital_loss_cooldown: {cooldown_remaining}s remaining")
+
+    return reasons
+
+
 def build_entry(
     run: RunCtx,
     status: str,
@@ -68,6 +160,7 @@ def build_entry(
     verdict: CriticVerdict | None = None,
     execution_result_id: str | None = None,
     actual_spread: Decimal | None = None,
+    actual_pnl: Decimal | None = None,
     slippage: Decimal | None = None,
     criteria_snapshot: dict[str, Any] | None = None,
     title: str = "",
@@ -86,6 +179,7 @@ def build_entry(
         critic_verdict=verdict,
         execution_result_id=execution_result_id,
         actual_spread=actual_spread,
+        actual_pnl=actual_pnl,
         slippage=slippage,
         criteria_snapshot=snap,
         duration_ms=duration,
@@ -248,3 +342,56 @@ async def _dispatch_breaker(reasons: list[str], infra: PipelineInfra) -> None:
     for reason in reasons:
         if reason.startswith("circuit_breaker_"):
             infra.log.warning("breaker_tripped", reason=reason)
+
+
+def _position_market_key(position: dict[str, Any]) -> str:
+    """Return the normalized market key for a stored open position."""
+    for key in ("market_id", "arb_id", "poly_market_id", "kalshi_ticker"):
+        value = position.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _position_exposure(position: dict[str, Any]) -> Decimal:
+    """Return the stored USD exposure for a position row."""
+    entry_cost = position.get("entry_cost_usd")
+    if entry_cost not in (None, ""):
+        return Decimal(str(entry_cost))
+    entry_price = Decimal(str(position.get("entry_price", 0) or 0))
+    size_contracts = Decimal(str(position.get("size_contracts", 0) or 0))
+    return entry_price * size_contracts
+
+
+async def _get_today_realized_pnl(auto_repo: Any, *, fallback: Decimal) -> Decimal:
+    """Fetch today's realized P&L with a capital-manager fallback."""
+    getter = getattr(auto_repo, "get_today_realized_pnl", None)
+    if getter is None:
+        return fallback
+    try:
+        result: Decimal = await getter()
+        return result
+    except Exception:
+        return fallback
+
+
+async def _get_cooldown_remaining(auto_repo: Any, cooldown_seconds: int) -> int:
+    """Fetch remaining loss cooldown based on the latest realized loss."""
+    getter = getattr(auto_repo, "get_latest_realized_loss", None)
+    if getter is None:
+        return 0
+    try:
+        loss = await getter()
+    except Exception:
+        return 0
+    if not loss:
+        return 0
+    created_at = loss.get("created_at")
+    if not isinstance(created_at, datetime):
+        return 0
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    elapsed = (datetime.now(tz=UTC) - created_at).total_seconds()
+    if elapsed >= cooldown_seconds:
+        return 0
+    return max(int(cooldown_seconds - elapsed), 0)

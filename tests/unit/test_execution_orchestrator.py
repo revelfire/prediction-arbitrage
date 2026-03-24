@@ -245,8 +245,15 @@ class TestExecute:
         orch = _make_orch()
         result = await orch.execute("t1", Decimal("10"))
         assert result.status == "complete"
+        assert result.total_cost_usd == Decimal("17.46")
+        assert result.actual_pnl == Decimal("0.54")
         assert result.poly_order_id is not None
         assert result.kalshi_order_id is not None
+        poly_req = orch._poly.place_order.await_args_list[0].args[0]
+        kalshi_req = orch._kalshi.place_order.await_args_list[0].args[0]
+        assert poly_req.size_contracts == 18
+        assert kalshi_req.size_contracts == 18
+        orch._ticket_repo.insert_action.assert_awaited_once()
 
     @pytest.mark.asyncio()
     async def test_partial_execution(self) -> None:
@@ -288,7 +295,7 @@ class TestExecute:
         orch = _make_orch(ticket=_flip_ticket())
         result = await orch.execute("flip-1", Decimal("10"))
         assert result.status == "complete"
-        assert result.total_cost_usd == Decimal("10")
+        assert result.total_cost_usd == Decimal("11.00")
         orch._poly.place_order.assert_awaited_once()
         orch._kalshi.place_order.assert_not_awaited()
         assert orch._exec_repo.insert_order.await_count == 1
