@@ -356,7 +356,9 @@ def _build_category_suggestion(
     viable = [
         (row[0], row[1])
         for row in sweep_results
-        if isinstance(row, list) and len(row) == 2 and row[1].get("total_signals", 0) >= _MIN_SIGNALS_FOR_SUGGESTION
+        if isinstance(row, list)
+        and len(row) == 2
+        and row[1].get("total_signals", 0) >= _MIN_SIGNALS_FOR_SUGGESTION
     ]
     if not viable:
         return None
@@ -374,7 +376,9 @@ def _build_category_suggestion(
     if cast_value == current_value:
         return None
 
-    win_rate_delta = float(best_eval.get("win_rate", 0.0)) - float(current_eval.get("win_rate", 0.0))
+    win_rate_delta = float(best_eval.get("win_rate", 0.0)) - float(
+        current_eval.get("win_rate", 0.0)
+    )
     avg_pnl_delta = float(best_eval.get("avg_pnl", 0.0)) - float(current_eval.get("avg_pnl", 0.0))
     drawdown_improvement = float(current_eval.get("max_drawdown", 0.0)) - float(
         best_eval.get("max_drawdown", 0.0)

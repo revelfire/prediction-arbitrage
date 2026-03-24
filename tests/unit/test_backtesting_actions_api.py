@@ -161,7 +161,13 @@ class TestImportAndRunEndpoint:
         }
         resp = client.post(
             "/api/backtesting/import-and-run",
-            files={"file": ("trades.csv", b"marketName,action,usdcAmount,tokenAmount,tokenName,timestamp,hash\n", "text/csv")},
+            files={
+                "file": (
+                    "trades.csv",
+                    b"marketName,action,usdcAmount,tokenAmount,tokenName,timestamp,hash\n",
+                    "text/csv",
+                )
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["import_result"]["inserted"] == 1
