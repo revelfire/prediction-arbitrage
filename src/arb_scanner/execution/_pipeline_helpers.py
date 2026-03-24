@@ -369,7 +369,8 @@ async def _get_today_realized_pnl(auto_repo: Any, *, fallback: Decimal) -> Decim
     if getter is None:
         return fallback
     try:
-        return await getter()
+        result: Decimal = await getter()
+        return result
     except Exception:
         return fallback
 
