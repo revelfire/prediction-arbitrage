@@ -585,7 +585,7 @@ async def _reconcile_pending_position(
         return False
 
     now = datetime.now(UTC)
-    status = await _resolve_pending_order_status(order, poly)
+    status = await _resolve_pending_order_status(order, poly, market_id=market_id)
     if status is None:
         if _is_pending_order_stale(order, now, int(retry_policy["stale_seconds"])):
             _metric_inc(watchdog_metrics, "stale_detected")
@@ -674,6 +674,13 @@ async def _close_pending_position(
     resolved_fill = fill_price
     if resolved_fill is None:
         resolved_fill = _to_decimal(order.get("fill_price"))
+    if resolved_fill is None:
+        # Order is confirmed filled but venue didn't report a fill price.
+        # Fall back to requested_price / position exit_price so we don't
+        # leave the position stuck in exit_pending forever.
+        resolved_fill = _to_decimal(order.get("requested_price"))
+    if resolved_fill is None:
+        resolved_fill = _to_decimal(position.get("exit_price"))
     if resolved_fill is None:
         logger.warning(
             "pending_exit_missing_fill_price",
@@ -986,7 +993,12 @@ def _watchdog_activity(event_type: str, market_id: str, **fields: object) -> Non
         return
 
 
-async def _resolve_pending_order_status(order: dict[str, Any], poly: Any) -> OrderResponse | None:
+async def _resolve_pending_order_status(
+    order: dict[str, Any],
+    poly: Any,
+    *,
+    market_id: str = "",
+) -> OrderResponse | None:
     """Return best-known normalized status for a pending exit order."""
     local_status = _normalize_order_status(order.get("status"))
     local_fill = _to_decimal(order.get("fill_price"))
@@ -998,12 +1010,59 @@ async def _resolve_pending_order_status(order: dict[str, Any], poly: Any) -> Ord
             status=local_status,
             fill_price=local_fill,
             error_message=order.get("error_message"),
+            raw_status=str(order.get("status", "") or "") or None,
+            diagnostics={"source": "local_db"},
         )
 
     if not local_venue_order_id:
         return None
     result: OrderResponse | None = await poly.get_order_status(local_venue_order_id)
+    _instrument_pending_order_status(
+        market_id=market_id,
+        order=order,
+        response=result,
+    )
     return result
+
+
+def _instrument_pending_order_status(
+    *,
+    market_id: str,
+    order: dict[str, Any],
+    response: OrderResponse | None,
+) -> None:
+    """Emit structured diagnostics for a live Polymarket pending-exit poll."""
+    if response is None:
+        return
+    exit_order_id = str(order.get("id", "") or "")
+    venue_order_id = str(order.get("venue_order_id", "") or response.venue_order_id or "")
+    local_status = _normalize_order_status(order.get("status"))
+    diagnostics = response.diagnostics or {}
+    logger.info(
+        "pending_exit_status_observed",
+        market_id=market_id,
+        exit_order_id=exit_order_id,
+        venue_order_id=venue_order_id,
+        local_status=local_status,
+        normalized_status=response.status,
+        raw_status=response.raw_status,
+        fill_price=str(response.fill_price) if response.fill_price is not None else None,
+        error_message=response.error_message,
+        diagnostics=diagnostics,
+    )
+    _watchdog_activity(
+        "pending_exit_status",
+        market_id,
+        exit_order_id=exit_order_id,
+        venue_order_id=venue_order_id,
+        local_status=local_status,
+        status=response.status,
+        raw_status=response.raw_status or "",
+        fill_price=float(response.fill_price) if response.fill_price is not None else None,
+        error_message=response.error_message or "",
+        size_matched=diagnostics.get("size_matched"),
+        remaining_size=diagnostics.get("remaining_size"),
+    )
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -1127,6 +1186,7 @@ async def reconcile_open_positions_with_exchange(config: Settings) -> int:
     for p in positions:
         token_id = str(p.get("token_id", ""))
         market_id = str(p.get("market_id", ""))
+        status = str(p.get("status", "") or "")
         if not token_id or not market_id:
             continue
         balance = await poly.get_token_balance(token_id)
@@ -1134,6 +1194,17 @@ async def reconcile_open_positions_with_exchange(config: Settings) -> int:
             # Could not check — skip (network error, etc.)
             continue
         if balance > 0:
+            continue
+        if status == "exit_pending":
+            # Available token balance can drop to zero while a live sell
+            # order is resting on the book. That is not proof the exit
+            # actually filled, so leave exit_pending positions to the
+            # pending-order reconciler instead of closing them here.
+            logger.info(
+                "reconcile_skip_exit_pending_locked_tokens",
+                market_id=market_id,
+                token_id=token_id[:16],
+            )
             continue
         # Token balance is 0 → position no longer held on exchange
         entry_price = _to_decimal(p.get("entry_price")) or Decimal("0")

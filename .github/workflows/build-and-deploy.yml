@@ -77,20 +77,28 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           envs: GHCR_TOKEN
           script: |
+            set -euo pipefail
             cd /opt/arb-scanner
             echo "$GHCR_TOKEN" | docker login ghcr.io -u revelfire --password-stdin
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
+            echo "--- Pulling latest images ---"
+            docker compose -f docker-compose.prod.yml pull 2>&1
+            echo "--- Image after pull ---"
+            docker images ghcr.io/revelfire/prediction-arbitrage --format '{{.ID}} {{.Tag}} {{.CreatedAt}}' | head -3
+            echo "--- Recreating containers ---"
+            docker compose -f docker-compose.prod.yml up -d --force-recreate --remove-orphans 2>&1
+            echo "--- Waiting for health check ---"
             sleep 10
             for i in 1 2 3; do
               if curl -sf http://localhost:8060/api/health > /dev/null 2>&1; then
                 echo "Health check passed"
+                docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
                 exit 0
               fi
               echo "Health check attempt $i failed, retrying..."
               sleep 5
             done
             echo "Health check failed after 3 attempts"
+            docker compose -f docker-compose.prod.yml logs --tail=20 dashboard
             exit 1
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

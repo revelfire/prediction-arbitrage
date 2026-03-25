@@ -412,17 +412,23 @@ class FlipAutoExecutionPipeline:
         exit_sig: ExitSignal,
         entry_sig: EntrySignal,
         event: FlippeningEvent,
-    ) -> None:
-        """Place a sell order for an open flippening position."""
+    ) -> bool:
+        """Place a sell order for an open flippening position.
+
+        Returns:
+            True if an exit order was submitted, False otherwise.
+        """
         if self._mode != "auto" or self._killed or self._exit_executor is None:
-            return
+            return False
         try:
-            await self._exit_executor.execute_exit(exit_sig, entry_sig, event)
+            result = await self._exit_executor.execute_exit(exit_sig, entry_sig, event)
+            return result is not None
         except Exception as exc:
             self._infra.breakers.record_failure()
             logger.error("flip_exit_failed", market_id=event.market_id)
             if is_geoblock(str(exc)):
                 await dispatch_geoblock(event.market_id, self._infra)
+            return False
 
     async def _get_flip_positions(self) -> list[dict[str, Any]]:
         """Get open flip positions from the flippening position table."""
