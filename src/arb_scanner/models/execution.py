@@ -97,6 +97,8 @@ class OrderResponse(BaseModel):
     status: OrderStatus = "submitting"
     fill_price: Decimal | None = None
     error_message: str | None = None
+    raw_status: str | None = None
+    diagnostics: dict[str, object] | None = None
 
 
 class LiquidityResult(BaseModel):

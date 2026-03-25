@@ -45,6 +45,8 @@ def _make_client(
     exec_repo: Any = None,
     ticket_repo: Any = None,
     capital_manager: Any = None,
+    flip_position_repo: Any = None,
+    flip_exit_executor: Any = None,
 ) -> TestClient:
     """Build a test client with mocked dependencies."""
     config = _test_config()
@@ -60,6 +62,10 @@ def _make_client(
         app.state.execution_repo = exec_repo
     if capital_manager is not None:
         app.state.capital_manager = capital_manager
+    if flip_position_repo is not None:
+        app.state.flip_position_repo = flip_position_repo
+    if flip_exit_executor is not None:
+        app.state.flip_exit_executor = flip_exit_executor
 
     mock_ticket_repo = ticket_repo or AsyncMock()
     app.dependency_overrides[get_config] = lambda: config
@@ -216,6 +222,58 @@ class TestGetOrders:
         resp = client.get("/api/execution/orders/t1")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
+
+
+class TestManualFlipExit:
+    """Tests for POST /api/execution/flip-exit/{arb_id}."""
+
+    def test_allows_retry_for_exit_failed_position(self) -> None:
+        """Manual close can re-attempt a failed automated exit."""
+        position_repo = AsyncMock()
+        position_repo.get_position_by_arb_id = AsyncMock(
+            return_value={
+                "arb_id": "arb-1",
+                "market_id": "m1",
+                "side": "yes",
+                "entry_price": Decimal("0.42"),
+                "status": "exit_failed",
+            }
+        )
+        exit_executor = AsyncMock()
+        exit_executor.execute_exit = AsyncMock(return_value="order-1")
+
+        client = _make_client(
+            flip_position_repo=position_repo,
+            flip_exit_executor=exit_executor,
+        )
+        resp = client.post("/api/execution/flip-exit/arb-1")
+
+        assert resp.status_code == 200
+        assert resp.json()["order_id"] == "order-1"
+
+    def test_rejects_when_exit_already_pending(self) -> None:
+        """Manual close should not place a duplicate sell when exit is already pending."""
+        position_repo = AsyncMock()
+        position_repo.get_position_by_arb_id = AsyncMock(
+            return_value={
+                "arb_id": "arb-2",
+                "market_id": "m2",
+                "side": "yes",
+                "entry_price": Decimal("0.42"),
+                "status": "exit_pending",
+            }
+        )
+        exit_executor = AsyncMock()
+
+        client = _make_client(
+            flip_position_repo=position_repo,
+            flip_exit_executor=exit_executor,
+        )
+        resp = client.post("/api/execution/flip-exit/arb-2")
+
+        assert resp.status_code == 409
+        assert "already pending" in resp.text
+        exit_executor.execute_exit.assert_not_awaited()
 
 
 class TestCancelOrder:

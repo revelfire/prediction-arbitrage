@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -145,6 +145,51 @@ async def test_reconcile_keeps_pending_when_still_submitted() -> None:
     exec_repo.update_order_status.assert_awaited_once()
     pos_repo.mark_exit_failed.assert_not_awaited()
     pos_repo.close_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio()
+async def test_reconcile_emits_live_status_instrumentation() -> None:
+    config, _pos_repo, _exec_repo, _poly = _make_config(
+        positions=[
+            {
+                "market_id": "m3",
+                "exit_order_id": "o3",
+                "entry_price": Decimal("0.50"),
+                "size_contracts": 30,
+            },
+        ],
+        order={
+            "id": "o3",
+            "status": "submitted",
+            "venue_order_id": "v3",
+            "fill_price": None,
+        },
+        venue_status=OrderResponse(
+            venue_order_id="v3",
+            status="submitted",
+            fill_price=None,
+            raw_status="LIVE",
+            diagnostics={"size_matched": "0", "remaining_size": "30"},
+        ),
+    )
+
+    with patch("arb_scanner.flippening._orch_processing._watchdog_activity") as activity:
+        resolved = await reconcile_pending_db_positions(config)
+
+    assert resolved == 0
+    activity.assert_any_call(
+        "pending_exit_status",
+        "m3",
+        exit_order_id="o3",
+        venue_order_id="v3",
+        local_status="submitted",
+        status="submitted",
+        raw_status="LIVE",
+        fill_price=None,
+        error_message="",
+        size_matched="0",
+        remaining_size="30",
+    )
 
 
 @pytest.mark.asyncio()

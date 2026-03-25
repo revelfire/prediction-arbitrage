@@ -34,8 +34,9 @@ async def _feed_exit_pipeline(
         pipeline: FlipAutoExecutionPipeline | None = getattr(config, "_flip_pipeline", None)
         if pipeline is None or pipeline.mode != "auto":
             return
-        await pipeline.process_exit(exit_sig, entry, event)
-        await _notify_sell(event, entry, exit_sig, config)
+        submitted = await pipeline.process_exit(exit_sig, entry, event)
+        if submitted:
+            await _notify_sell(event, entry, exit_sig, config)
     except Exception:
         logger.warning("flip_pipeline_exit_feed_failed", market_id=event.market_id)
 

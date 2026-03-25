@@ -344,8 +344,13 @@ async def flip_exit(
         raise HTTPException(503, "Exit execution not available")
 
     position = await position_repo.get_position_by_arb_id(arb_id)
-    if position is None or position.get("status") != "open":
-        raise HTTPException(404, "No open position for this ticket")
+    if position is None:
+        raise HTTPException(404, "No closable position for this ticket")
+    status = str(position.get("status", "") or "")
+    if status == "exit_pending":
+        raise HTTPException(409, "Exit already pending for this position")
+    if status not in {"open", "exit_failed", "abandoned"}:
+        raise HTTPException(404, "No closable position for this ticket")
 
     event, entry_sig, exit_sig = _build_manual_exit_signals(arb_id, position)
     try:

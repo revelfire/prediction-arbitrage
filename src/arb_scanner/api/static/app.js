@@ -1422,6 +1422,7 @@ const _AE_EVENT_META = {
     placed_partial:  { icon: '⚠️', label: 'Partial Fill',    cls: 'ae-warn' },
     placed_failed:   { icon: '✗',  label: 'Order Failed',    cls: 'ae-bad' },
     placed_executed: { icon: '💰', label: 'Executed',        cls: 'ae-ok' },
+    pending_exit_status: { icon: '📡', label: 'Exit Status', cls: 'ae-info' },
 };
 
 function _aeDetail(ev) {
@@ -1440,6 +1441,11 @@ function _aeDetail(ev) {
     if (t === 'slippage_failed') return `poly ${ev.poly_slip ?? ''} / kalshi ${ev.kalshi_slip ?? ''}`;
     if (t === 'placing')        return ev.size_usd != null ? `$${parseFloat(ev.size_usd).toFixed(2)}` : '';
     if (t.startsWith('placed_')) return ev.cost_usd != null ? `cost $${parseFloat(ev.cost_usd).toFixed(2)}` : '';
+    if (t === 'pending_exit_status') {
+        const raw = ev.raw_status ? ` (${ev.raw_status})` : '';
+        const fill = ev.fill_price != null ? ` fill ${parseFloat(ev.fill_price).toFixed(4)}` : '';
+        return `${ev.local_status || '?'} → ${ev.status || '?'}${raw}${fill}`;
+    }
     return '';
 }
 
@@ -1682,6 +1688,7 @@ async function refreshOpenPositions() {
         const arbId = p.arb_id || '';
         _positionCache[arbId] = p;
         const posType = p.pipeline_type || (p.market_id ? 'flip' : 'arb');
+        const posStatus = String(p.status || '').toLowerCase();
         const venue = posType === 'flip' ? 'Polymarket' : (p.kalshi_ticker ? 'Kalshi' : 'Polymarket');
         const title = p.market_title || '';
         const rawId = p.market_id || p.poly_market_id || p.kalshi_ticker || arbId || '';
@@ -1699,9 +1706,14 @@ async function refreshOpenPositions() {
         const typeBadge = posType === 'flip'
             ? '<span class="badge badge-approved">Flip</span>'
             : '<span class="badge badge-pending">Arb</span>';
-        const closeBtn = posType === 'flip'
-            ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closePosition('${arbId}')">Close</button>`
-            : '<span style="color:var(--text-secondary);font-size:11px">atomic</span>';
+        let closeBtn = '<span style="color:var(--text-secondary);font-size:11px">atomic</span>';
+        if (posType === 'flip') {
+            if (posStatus === 'exit_pending') {
+                closeBtn = '<span class="badge badge-pending">Pending</span>';
+            } else {
+                closeBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closePosition('${arbId}')">Close</button>`;
+            }
+        }
         return `<tr style="cursor:pointer" onclick="openPositionDetail('${arbId}')">
             <td title="${title || rawId}">${cellText}</td>
             <td>${typeBadge}</td>
@@ -1740,6 +1752,7 @@ function openPositionDetail(arbId) {
         : titleDisplay;
 
     const side = p.side || '-';
+    const status = String(p.status || '').toLowerCase();
     const size = p.size_contracts ? `${p.size_contracts} contracts` : '-';
     const entry = p.entry_price ? formatUSD(p.entry_price) : '-';
     const maxHold = p.max_hold_minutes ? `${parseInt(p.max_hold_minutes)}m` : '-';
@@ -1748,15 +1761,21 @@ function openPositionDetail(arbId) {
     const tokenId = p.token_id || '-';
     const shortToken = tokenId.length > 16 ? tokenId.substring(0, 8) + '...' + tokenId.slice(-6) : tokenId;
 
-    const closeBtnHtml = posType === 'flip'
-        ? `<button class="btn btn-danger btn-sm" onclick="closePosition('${arbId}'); closePositionModal();">Close Position</button>`
-        : '';
+    let closeBtnHtml = '';
+    if (posType === 'flip') {
+        if (status === 'exit_pending') {
+            closeBtnHtml = '<span class="badge badge-pending">Exit Pending</span>';
+        } else {
+            closeBtnHtml = `<button class="btn btn-danger btn-sm" onclick="closePosition('${arbId}'); closePositionModal();">Close Position</button>`;
+        }
+    }
 
     body.innerHTML = `
         <div class="detail-section">
             <div style="margin-bottom:12px;font-size:11px;color:var(--text-secondary)">${venue} · ${posType.toUpperCase()}</div>
             <div style="margin-bottom:16px;font-size:15px;line-height:1.4;word-break:break-word">${marketLink}</div>
             <div class="detail-grid">
+                <div class="detail-row"><span class="detail-label">Status</span><span class="detail-value">${status ? status.replace('_', ' ') : '-'}</span></div>
                 <div class="detail-row"><span class="detail-label">Side</span><span class="detail-value">${side.toUpperCase()}</span></div>
                 <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">${size}</span></div>
                 <div class="detail-row"><span class="detail-label">Entry Price</span><span class="detail-value">${entry}</span></div>
