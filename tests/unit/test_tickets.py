@@ -26,6 +26,11 @@ def _make_market(
     no_ask: Decimal,
 ) -> Market:
     """Build a Market with configurable ask prices."""
+    raw_data: dict[str, object]
+    if venue == Venue.POLYMARKET:
+        raw_data = {"clobTokenIds": '["poly-yes-token", "poly-no-token"]'}
+    else:
+        raw_data = {"ticker": f"{event_id}-TICKER"}
     return Market(
         venue=venue,
         event_id=event_id,
@@ -40,6 +45,7 @@ def _make_market(
         fees_pct=Decimal("0.02"),
         fee_model="on_winnings",
         last_updated=_NOW,
+        raw_data=raw_data,
     )
 
 
@@ -165,6 +171,22 @@ class TestTicketLegConstruction:
         assert ticket.leg_2["venue"] == "polymarket"
         assert ticket.leg_2["side"] == "NO"
         assert ticket.leg_2["price"] == Decimal("0.35")
+
+    def test_poly_yes_leg_uses_yes_token_id(self) -> None:
+        """Polymarket YES legs should use the YES outcome token id."""
+        opp = _make_opportunity(buy_venue=Venue.POLYMARKET, sell_venue=Venue.KALSHI)
+        ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
+        assert ticket is not None
+
+        assert ticket.leg_1["token_id"] == "poly-yes-token"
+
+    def test_poly_no_leg_uses_no_token_id(self) -> None:
+        """Polymarket NO legs should use the NO outcome token id."""
+        opp = _make_opportunity(buy_venue=Venue.KALSHI, sell_venue=Venue.POLYMARKET)
+        ticket = generate_ticket(opp, min_expected_profit_usd=Decimal("0"))
+        assert ticket is not None
+
+        assert ticket.leg_2["token_id"] == "poly-no-token"
 
 
 # ---------------------------------------------------------------------------
