@@ -90,6 +90,11 @@ def _pipeline(
 
     exec_repo = MagicMock()
 
+    ticket_repo = MagicMock()
+    ticket_repo.get_ticket = AsyncMock(return_value={"arb_id": "flip-1", "status": "pending"})
+    ticket_repo.update_status = AsyncMock()
+    ticket_repo.insert_action = AsyncMock()
+
     exit_executor = MagicMock()
     exit_executor.execute_exit = AsyncMock(return_value="exit-1")
 
@@ -103,6 +108,7 @@ def _pipeline(
         position_repo=position_repo,
         auto_repo=auto_repo,
         exec_repo=exec_repo,
+        ticket_repo=ticket_repo,
         exit_executor=exit_executor,
     )
 
@@ -113,6 +119,7 @@ def _pipeline(
         "poly": poly,
         "position_repo": position_repo,
         "auto_repo": auto_repo,
+        "ticket_repo": ticket_repo,
         "exit_executor": exit_executor,
     }
     return pipeline, deps
@@ -131,6 +138,25 @@ class TestFlipPipeline:
         assert deps["poly"].place_order.called
         assert deps["position_repo"].insert_position.called
         assert deps["auto_repo"].insert_log.called
+
+    @pytest.mark.asyncio
+    async def test_executed_entry_updates_ticket_status_and_action(self) -> None:
+        """Successful auto-entry should sync ticket status and execution action."""
+        pipeline, deps = _pipeline()
+
+        entry = await pipeline.process_opportunity(_opp())
+
+        assert entry is not None
+        assert entry.status == "executed"
+        deps["ticket_repo"].update_status.assert_awaited_once_with("flip-1", "executed")
+        deps["ticket_repo"].insert_action.assert_awaited_once()
+        kwargs = deps["ticket_repo"].insert_action.await_args.kwargs
+        req = deps["poly"].place_order.await_args.args[0]
+        assert kwargs["ticket_id"] == "flip-1"
+        assert kwargs["action"] == "execute"
+        assert kwargs["actual_entry_price"] is None
+        assert kwargs["actual_size_usd"] == req.size_usd
+        assert kwargs["notes"] == "auto_exec_flip_entry"
 
     @pytest.mark.asyncio
     async def test_rejects_when_evaluator_fails(self) -> None:
@@ -263,6 +289,24 @@ class TestFlipPipeline:
         assert entry.status == "rejected"
         assert any(
             "capital_daily_loss_limit" in reason
+            for reason in entry.criteria_snapshot.get("rejection_reasons", [])
+        )
+        assert not deps["poly"].place_order.called
+
+    @pytest.mark.asyncio
+    async def test_capital_gate_uses_auto_exec_open_position_limit(self) -> None:
+        """Capital preservation should honor the auto-exec open-position cap."""
+        pipeline, deps = _pipeline(auto_config=_auto_config(max_open_positions=4))
+        deps["auto_repo"].get_risk_positions.return_value = [
+            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("25.00")} for idx in range(4)
+        ]
+
+        entry = await pipeline.process_opportunity(_opp())
+
+        assert entry is not None
+        assert entry.status == "rejected"
+        assert any(
+            reason == "capital_open_positions_limit: 4/4 open"
             for reason in entry.criteria_snapshot.get("rejection_reasons", [])
         )
         assert not deps["poly"].place_order.called

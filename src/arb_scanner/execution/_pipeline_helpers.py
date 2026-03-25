@@ -89,6 +89,7 @@ async def evaluate_capital_preservation(
     market_id: str,
     venue_spend: dict[str, Decimal],
     infra: PipelineInfra,
+    max_open_positions: int | None = None,
 ) -> list[str]:
     """Evaluate repo-backed capital preservation limits for auto execution."""
     cfg = infra.config.execution
@@ -121,11 +122,10 @@ async def evaluate_capital_preservation(
             f"over ${exposure_cap:.2f}"
         )
 
+    open_positions_cap = int(max_open_positions or cfg.max_open_positions)
     open_count = len(positions)
-    if open_count >= int(cfg.max_open_positions):
-        reasons.append(
-            f"capital_open_positions_limit: {open_count}/{int(cfg.max_open_positions)} open"
-        )
+    if open_count >= open_positions_cap:
+        reasons.append(f"capital_open_positions_limit: {open_count}/{open_positions_cap} open")
 
     concentration_cap = total_balance * Decimal(str(cfg.max_per_market_pct))
     market_exposure = sum(
