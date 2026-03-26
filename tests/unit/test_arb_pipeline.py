@@ -222,10 +222,10 @@ class TestArbPipeline:
 
     @pytest.mark.asyncio
     async def test_rejects_when_capital_gate_blocks(self) -> None:
-        """Repo-backed capital preservation checks block order placement."""
-        pipeline, deps = _pipeline()
+        """Capital gate should respect the auto-exec open-position limit."""
+        pipeline, deps = _pipeline(auto_config=_auto_config(max_open_positions=4))
         deps["auto_repo"].get_risk_positions.return_value = [
-            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("50.00")} for idx in range(5)
+            {"arb_id": f"open-{idx}", "entry_cost_usd": Decimal("50.00")} for idx in range(4)
         ]
 
         entry = await pipeline.process_opportunity(_opp())
@@ -233,7 +233,7 @@ class TestArbPipeline:
         assert entry is not None
         assert entry.status == "rejected"
         assert any(
-            "capital_open_positions_limit" in reason
+            reason == "capital_open_positions_limit: 4/4 open"
             for reason in entry.criteria_snapshot.get("rejection_reasons", [])
         )
         assert not deps["orchestrator"].execute.called

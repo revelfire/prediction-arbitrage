@@ -88,6 +88,7 @@ def _create_infra(
     from arb_scanner.execution.polymarket_executor import PolymarketExecutor
     from arb_scanner.storage.auto_exec_repository import AutoExecRepository
     from arb_scanner.storage.execution_repository import ExecutionRepository
+    from arb_scanner.storage.ticket_repository import TicketRepository
 
     poly = PolymarketExecutor(config.execution.polymarket)
     position_repo = FlipPositionRepo(pool)
@@ -100,6 +101,7 @@ def _create_infra(
         "position_repo": position_repo,
         "auto_repo": AutoExecRepository(pool),
         "exec_repo": exec_repo,
+        "ticket_repo": TicketRepository(pool),
         "exit_executor": FlipExitExecutor(
             poly=poly,
             exec_repo=exec_repo,
@@ -137,6 +139,7 @@ def _assemble_pipeline(
         position_repo=infra["position_repo"],
         auto_repo=infra["auto_repo"],
         exec_repo=infra["exec_repo"],
+        ticket_repo=infra["ticket_repo"],
         exit_executor=infra["exit_executor"],
     )
     logger.info("flip_pipeline_standalone_init")

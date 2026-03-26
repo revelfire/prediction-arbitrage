@@ -86,18 +86,22 @@ def _get_prices(
     return opp.kalshi_market.yes_ask, opp.poly_market.no_ask
 
 
-def _extract_poly_token_id(market: Market) -> str:
-    """Extract a Polymarket CLOB token id from raw market data."""
+def _extract_poly_token_id(market: Market, *, side: str = "YES") -> str:
+    """Extract the side-appropriate Polymarket CLOB token id."""
     clob_ids = market.raw_data.get("clobTokenIds")
+    token_ids: list[str] = []
     if isinstance(clob_ids, str) and clob_ids:
         try:
             parsed = json.loads(clob_ids)
             if isinstance(parsed, list) and parsed:
-                return str(parsed[0])
+                token_ids = [str(token_id) for token_id in parsed if str(token_id)]
         except (json.JSONDecodeError, TypeError):
             pass
-    if isinstance(clob_ids, list) and clob_ids:
-        return str(clob_ids[0])
+    elif isinstance(clob_ids, list) and clob_ids:
+        token_ids = [str(token_id) for token_id in clob_ids if str(token_id)]
+    if token_ids:
+        index = 0 if side.upper() == "YES" else 1
+        return token_ids[index] if index < len(token_ids) else token_ids[0]
     cid = market.raw_data.get("conditionId")
     if isinstance(cid, str) and cid:
         return cid
@@ -147,7 +151,11 @@ def generate_ticket(
         yes_price,
         effective_size,
         _market_url(buy_market),
-        token_id=_extract_poly_token_id(buy_market) if opp.buy_venue == Venue.POLYMARKET else "",
+        token_id=(
+            _extract_poly_token_id(buy_market, side="YES")
+            if opp.buy_venue == Venue.POLYMARKET
+            else ""
+        ),
         ticker=_extract_kalshi_ticker(buy_market) if opp.buy_venue == Venue.KALSHI else "",
     )
     leg_2 = _build_leg(
@@ -157,7 +165,11 @@ def generate_ticket(
         no_price,
         effective_size,
         _market_url(sell_market),
-        token_id=_extract_poly_token_id(sell_market) if opp.sell_venue == Venue.POLYMARKET else "",
+        token_id=(
+            _extract_poly_token_id(sell_market, side="NO")
+            if opp.sell_venue == Venue.POLYMARKET
+            else ""
+        ),
         ticker=_extract_kalshi_ticker(sell_market) if opp.sell_venue == Venue.KALSHI else "",
     )
     ticket = ExecutionTicket(

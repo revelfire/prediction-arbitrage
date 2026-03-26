@@ -195,6 +195,7 @@ class ArbAutoExecutionPipeline:
             market_id=run.arb_id,
             venue_spend={"polymarket": size, "kalshi": size},
             infra=self._infra,
+            max_open_positions=int(self._ac.max_open_positions),
         )
         if capital_reasons:
             _push("capital_blocked", run.arb_id, title=title, reasons=capital_reasons)

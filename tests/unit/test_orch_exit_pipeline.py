@@ -142,8 +142,8 @@ class TestClosePendingPosition:
         pos_repo.close_position.assert_not_awaited()
 
     @pytest.mark.asyncio()
-    async def test_refuses_close_without_confirmed_fill(self) -> None:
-        """When fill_price is None and order has no fill, refuse to close."""
+    async def test_falls_back_to_exit_price_for_filled_orders(self) -> None:
+        """Filled order with no fill_price falls through to position exit_price."""
         pos = _exit_pending_position(exit_price=Decimal("0.45"))
         order: dict[str, Any] = {}
         pos_repo = AsyncMock()
@@ -156,8 +156,10 @@ class TestClosePendingPosition:
             exit_order_id="order-1",
         )
 
-        assert result is False
-        pos_repo.close_position.assert_not_awaited()
+        assert result is True
+        pos_repo.close_position.assert_awaited_once()
+        call_kwargs = pos_repo.close_position.call_args.kwargs
+        assert float(call_kwargs["exit_price"]) == pytest.approx(0.45, abs=0.01)
 
 
 class TestReconcilePendingWithDecimalContracts:

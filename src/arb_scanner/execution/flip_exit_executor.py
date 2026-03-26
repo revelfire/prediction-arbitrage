@@ -108,6 +108,27 @@ class FlipExitExecutor:
             raise
 
         if resp.status not in ("filled", "submitted", "partially_filled"):
+            err = resp.error_message or ""
+            if "not enough balance" in err.lower() or "allowance" in err.lower():
+                # Tokens no longer held — close the position as reconciled.
+                pnl = compute_realized_pnl(
+                    Decimal(str(position["entry_price"])),
+                    req.price,
+                    position["size_contracts"],
+                )
+                await self._position_repo.close_position(
+                    event.market_id,
+                    exit_order_id=order_id,
+                    exit_price=req.price,
+                    realized_pnl=pnl,
+                    exit_reason="no_balance_reconciled",
+                )
+                logger.warning(
+                    "flip_exit_no_balance_closed",
+                    market_id=event.market_id,
+                    error=err[:100],
+                )
+                return None
             await self._position_repo.mark_exit_failed(event.market_id)
             logger.warning(
                 "flip_exit_response_failed",

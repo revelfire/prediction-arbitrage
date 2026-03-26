@@ -124,6 +124,7 @@ class FlipAutoExecutionPipeline:
         position_repo: FlipPositionRepo,
         auto_repo: Any,
         exec_repo: Any,
+        ticket_repo: Any | None = None,
         exit_executor: FlipExitExecutor | None = None,
     ) -> None:
         """Initialize the flip auto-execution pipeline."""
@@ -132,6 +133,7 @@ class FlipAutoExecutionPipeline:
         self._poly = poly
         self._position_repo = position_repo
         self._exec_repo = exec_repo
+        self._ticket_repo = ticket_repo
         self._exit_executor = exit_executor
         self._mode: AutoExecMode = auto_config.mode  # type: ignore[assignment]
         self._locks: dict[str, asyncio.Lock] = {}
@@ -272,6 +274,7 @@ class FlipAutoExecutionPipeline:
             market_id=market_id,
             venue_spend={"polymarket": size},
             infra=self._infra,
+            max_open_positions=int(self._ac.max_open_positions),
         )
         if capital_reasons:
             _push("capital_blocked", run.arb_id, title=title, reasons=capital_reasons)
@@ -367,6 +370,17 @@ class FlipAutoExecutionPipeline:
         _push(f"placed_{entry.status}", run.arb_id, title=opp.get("title", ""))
         self._update_confidence_guardrail(entry.status, arb_id=run.arb_id)
         await persist_and_notify(entry, self._infra)
+        if entry.status in ("executed", "partial"):
+            await self._sync_ticket_execution(
+                arb_id=run.arb_id,
+                fill_price=resp.fill_price if "resp" in locals() else None,
+                size_usd=size,
+                note=(
+                    "auto_exec_flip_entry_partial"
+                    if entry.status == "partial"
+                    else "auto_exec_flip_entry"
+                ),
+            )
         if entry.status == "executed":
             await dispatch_trade_notification(
                 action="buy",
@@ -378,6 +392,35 @@ class FlipAutoExecutionPipeline:
                 infra=self._infra,
             )
         return entry
+
+    async def _sync_ticket_execution(
+        self,
+        *,
+        arb_id: str,
+        fill_price: Decimal | None,
+        size_usd: Decimal,
+        note: str,
+    ) -> None:
+        """Mark the flip ticket executed and append an execution action."""
+        if self._ticket_repo is None:
+            return
+        try:
+            ticket = await self._ticket_repo.get_ticket(arb_id)
+            if ticket is None:
+                return
+            await self._ticket_repo.update_status(arb_id, "executed")
+            await self._ticket_repo.insert_action(
+                action_id=str(uuid.uuid4()),
+                ticket_id=arb_id,
+                action="execute",
+                actual_entry_price=(
+                    fill_price.quantize(Decimal("0.0001")) if fill_price is not None else None
+                ),
+                actual_size_usd=size_usd,
+                notes=note,
+            )
+        except Exception:
+            logger.warning("flip_ticket_sync_failed", arb_id=arb_id)
 
     def _map_response(self, resp: Any) -> tuple[str, bool]:
         """Map venue response to (log_status, should_register)."""
@@ -412,17 +455,23 @@ class FlipAutoExecutionPipeline:
         exit_sig: ExitSignal,
         entry_sig: EntrySignal,
         event: FlippeningEvent,
-    ) -> None:
-        """Place a sell order for an open flippening position."""
+    ) -> bool:
+        """Place a sell order for an open flippening position.
+
+        Returns:
+            True if an exit order was submitted, False otherwise.
+        """
         if self._mode != "auto" or self._killed or self._exit_executor is None:
-            return
+            return False
         try:
-            await self._exit_executor.execute_exit(exit_sig, entry_sig, event)
+            result = await self._exit_executor.execute_exit(exit_sig, entry_sig, event)
+            return result is not None
         except Exception as exc:
             self._infra.breakers.record_failure()
             logger.error("flip_exit_failed", market_id=event.market_id)
             if is_geoblock(str(exc)):
                 await dispatch_geoblock(event.market_id, self._infra)
+            return False
 
     async def _get_flip_positions(self) -> list[dict[str, Any]]:
         """Get open flip positions from the flippening position table."""

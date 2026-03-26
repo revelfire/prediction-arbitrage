@@ -256,15 +256,20 @@ class PolymarketExecutor:
                 venue_order_id=venue_order_id,
                 status="submitted",
                 error_message="invalid_order_response",
+                raw_status=type(raw).__name__,
+                diagnostics={"response_type": type(raw).__name__},
             )
 
-        status = _map_poly_order_status(raw.get("status"))
+        raw_status = str(raw.get("status", "") or "") or None
+        status = _map_poly_order_status(raw_status)
         fill_price = _extract_fill_price(raw)
         return OrderResponse(
             venue_order_id=str(raw.get("id", venue_order_id)),
             status=status,
             fill_price=fill_price,
             error_message=str(raw.get("error", "")) or None,
+            raw_status=raw_status,
+            diagnostics=_extract_status_diagnostics(raw),
         )
 
     async def get_balance(self) -> Decimal:
@@ -506,3 +511,34 @@ def _extract_fill_price(raw: dict[str, Any]) -> Decimal | None:
         except (InvalidOperation, ValueError, TypeError):
             continue
     return None
+
+
+def _extract_status_diagnostics(raw: dict[str, Any]) -> dict[str, object]:
+    """Extract a compact debug snapshot from a Polymarket order payload."""
+    diagnostics: dict[str, object] = {}
+    key_map = {
+        "status": "status",
+        "id": "id",
+        "sizeMatched": "size_matched",
+        "size_matched": "size_matched",
+        "matchedSize": "size_matched",
+        "remainingSize": "remaining_size",
+        "remaining_size": "remaining_size",
+        "unmatchedSize": "remaining_size",
+        "size": "size",
+        "originalSize": "size",
+        "createdAt": "created_at",
+        "updatedAt": "updated_at",
+        "error": "error",
+    }
+    for raw_key, out_key in key_map.items():
+        if raw_key not in raw or out_key in diagnostics:
+            continue
+        value = raw.get(raw_key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            diagnostics[out_key] = value
+        else:
+            diagnostics[out_key] = str(value)
+    return diagnostics

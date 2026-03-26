@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -13,6 +14,7 @@ from arb_scanner.cli.orchestrator import run_scan
 from arb_scanner.models.analytics import TrendAlert
 from arb_scanner.models.arbitrage import ArbOpportunity
 from arb_scanner.models.config import NotificationConfig, Settings
+from arb_scanner.models.market import Market, Venue
 from arb_scanner.notifications.trend_detector import TrendDetector
 from arb_scanner.notifications.webhook import dispatch_webhook_batch
 
@@ -223,9 +225,15 @@ def _build_arb_opp_dict(opp: ArbOpportunity) -> dict[str, object]:
     Returns:
         Dict with leg data for slippage checks and execution.
     """
-    poly_token = _extract_poly_token(opp)
+    buy_market, sell_market = (
+        (opp.poly_market, opp.kalshi_market)
+        if opp.buy_venue == Venue.POLYMARKET
+        else (opp.kalshi_market, opp.poly_market)
+    )
+    buy_side = "yes"
+    sell_side = "no"
     return {
-        "arb_id": f"{opp.poly_market.event_id}_{opp.kalshi_market.event_id}",
+        "arb_id": opp.id,
         "spread_pct": float(opp.net_spread_pct),
         "confidence": float(opp.match.match_confidence),
         "category": getattr(opp, "category", ""),
@@ -233,41 +241,92 @@ def _build_arb_opp_dict(opp: ArbOpportunity) -> dict[str, object]:
         "ticket_type": "arbitrage",
         "poly_market_id": opp.poly_market.event_id,
         "kalshi_market_id": opp.kalshi_market.event_id,
-        "leg_1": {
-            "venue": "polymarket",
-            "token_id": poly_token,
-            "price": float(opp.poly_market.yes_ask),
-        },
-        "leg_2": {
-            "venue": "kalshi",
-            "market_id": opp.kalshi_market.event_id,
-            "price": float(opp.kalshi_market.yes_ask),
-        },
+        "poly_yes_price": float(opp.poly_market.yes_ask),
+        "kalshi_yes_price": float(opp.kalshi_market.yes_ask),
+        # The watch loop only has quote snapshots, not live L2 depth. Use a
+        # contracts proxy from venue volume and quote price so the arb critic
+        # does not mistake missing fields for zero-liquidity markets.
+        "poly_depth": _estimate_contract_depth(opp.poly_market, side="yes"),
+        "kalshi_depth": _estimate_contract_depth(opp.kalshi_market, side="yes"),
+        "price_age_seconds": _price_age_seconds(opp),
+        "leg_1": _build_entry_leg(buy_market, side=buy_side),
+        "leg_2": _build_entry_leg(sell_market, side=sell_side),
     }
 
 
-def _extract_poly_token(opp: ArbOpportunity) -> str:
-    """Extract Polymarket CLOB token ID from raw market data.
+def _build_entry_leg(market: Market, *, side: str) -> dict[str, object]:
+    """Build a direction-aware entry leg for arb auto-execution.
 
     Args:
-        opp: Arbitrage opportunity with poly_market.
+        market: Venue market model.
+        side: "yes" or "no".
 
     Returns:
-        First token ID string, or empty string if unavailable.
+        Normalized leg dict for slippage and execution prechecks.
     """
+    price = market.yes_ask if side == "yes" else market.no_ask
+    leg: dict[str, object] = {
+        "venue": market.venue.value,
+        "action": "buy",
+        "side": side,
+        "price": float(price),
+        "market_id": market.event_id,
+    }
+    if market.venue == Venue.POLYMARKET:
+        leg["token_id"] = _extract_poly_token(market, side=side)
+    else:
+        leg["ticker"] = _extract_kalshi_ticker(market)
+    return leg
+
+
+def _extract_poly_token(market: Market, *, side: str) -> str:
+    """Extract the side-appropriate Polymarket CLOB token id."""
     import json as _json
 
-    raw_ids = opp.poly_market.raw_data.get("clobTokenIds", "")
+    raw_ids = market.raw_data.get("clobTokenIds", "")
+    token_ids: list[str] = []
     if isinstance(raw_ids, list) and raw_ids:
-        return str(raw_ids[0])
-    if isinstance(raw_ids, str) and raw_ids:
+        token_ids = [str(token_id) for token_id in raw_ids if str(token_id)]
+    elif isinstance(raw_ids, str) and raw_ids:
         try:
             parsed = _json.loads(raw_ids)
             if isinstance(parsed, list) and parsed:
-                return str(parsed[0])
+                token_ids = [str(token_id) for token_id in parsed if str(token_id)]
         except (ValueError, _json.JSONDecodeError):
             pass
-    return ""
+    if not token_ids:
+        return ""
+    index = 0 if side == "yes" else 1
+    return token_ids[index] if index < len(token_ids) else token_ids[0]
+
+
+def _extract_kalshi_ticker(market: Market) -> str:
+    """Extract the executable Kalshi ticker for a market."""
+    ticker = market.raw_data.get("ticker")
+    if isinstance(ticker, str) and ticker:
+        return ticker
+    return market.event_id
+
+
+def _estimate_contract_depth(market: Market, *, side: str) -> int:
+    """Approximate contracts of available depth from 24h volume and price."""
+    price = market.yes_ask if side == "yes" else market.no_ask
+    if price <= 0:
+        return 0
+    try:
+        return max(int(market.volume_24h / price), 0)
+    except (ArithmeticError, ValueError):
+        return 0
+
+
+def _price_age_seconds(opp: ArbOpportunity) -> int:
+    """Return the age in seconds of the stalest venue quote for an opp."""
+    now = datetime.now(tz=UTC)
+    ages = []
+    for market in (opp.poly_market, opp.kalshi_market):
+        delta = now - market.last_updated
+        ages.append(max(int(delta.total_seconds()), 0))
+    return max(ages, default=0)
 
 
 async def _interruptible_sleep(seconds: int, stop_event: asyncio.Event) -> None:

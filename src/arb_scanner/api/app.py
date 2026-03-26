@@ -140,12 +140,14 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
     from arb_scanner.execution.flip_position_repo import FlipPositionRepo
     from arb_scanner.storage.auto_exec_repository import AutoExecRepository
     from arb_scanner.storage.execution_repository import ExecutionRepository
+    from arb_scanner.storage.ticket_repository import TicketRepository
 
     arb_ac = config.auto_execution.effective_config("arb")
     flip_ac = config.auto_execution.effective_config("flip")
     auto_repo = AutoExecRepository(app.state.db.pool)
     position_repo = FlipPositionRepo(app.state.db.pool)
     exec_repo = ExecutionRepository(app.state.db.pool)
+    ticket_repo = TicketRepository(app.state.db.pool)
 
     orch = getattr(app.state, "execution_orchestrator", None)
     capital = getattr(app.state, "capital_manager", None)
@@ -188,6 +190,7 @@ def _init_auto_execution(app: FastAPI, config: Settings) -> None:
         position_repo=position_repo,
         auto_repo=auto_repo,
         exec_repo=exec_repo,
+        ticket_repo=ticket_repo,
         exit_executor=exit_executor,
     )
 

@@ -84,6 +84,28 @@ async def test_keeps_position_with_nonzero_balance() -> None:
 
 
 @pytest.mark.asyncio()
+async def test_skips_exit_pending_position_with_zero_available_balance() -> None:
+    """exit_pending positions may have tokens locked on-book; do not close them."""
+    config, pos_repo, _poly = _make_config(
+        positions=[
+            {
+                "market_id": "m2",
+                "token_id": "tok-2",
+                "entry_price": Decimal("0.60"),
+                "size_contracts": 50,
+                "status": "exit_pending",
+            },
+        ],
+        token_balances={"tok-2": 0},
+    )
+
+    closed = await reconcile_open_positions_with_exchange(config)
+
+    assert closed == 0
+    pos_repo.close_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio()
 async def test_skips_position_on_balance_error() -> None:
     """Position is skipped when token balance query fails (-1)."""
     config, pos_repo, _poly = _make_config(

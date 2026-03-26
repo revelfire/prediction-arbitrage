@@ -30,9 +30,10 @@ services:
   # Web dashboard + REST API + embedded flip-watch engine
   dashboard:
     image: ghcr.io/revelfire/prediction-arbitrage:latest
+    container_name: arb-scanner-dashboard
     command: ["uv", "run", "arb-scanner", "serve", "--host", "0.0.0.0", "--port", "8060", "--flip-watch"]
-    ports:
-      - "127.0.0.1:8060:8060"
+    expose:
+      - "8060"
     env_file: .env
     volumes:
       - ./config.yaml:/app/config.yaml:ro
@@ -43,6 +44,9 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    networks:
+      - default
+      - proxy
     logging:
       driver: json-file
       options:
@@ -69,24 +73,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Caddy reverse proxy — auto-HTTPS via Let's Encrypt
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - dashboard
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # NOTE: Caddy reverse proxy moved to /opt/caddy-proxy/ (shared front-door).
+  # arb.spillwave.com routing is handled there. Dashboard joins the "proxy" network.
 
   # One-shot scan (run manually with: docker compose run --rm scan)
   scan:
@@ -103,6 +91,6 @@ services:
     profiles:
       - tools
 
-volumes:
-  caddy_data:
-  caddy_config:
+networks:
+  proxy:
+    external: true
