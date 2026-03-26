@@ -191,13 +191,19 @@ async def _fetch_live_markets(
 
             events: list[dict[str, str]] = events_result
             # Phase 2: Demand-rank events by Poly relevance
-            # Cap events (not markets) to limit API calls; each event
-            # yields ~3-10 markets, so 100 events ≈ 500 markets.
-            max_events = min(config.venues.kalshi.max_markets or 200, 200)
+            # Cap events (not markets) separately from venue market caps so
+            # higher ingest windows do not explode Kalshi API fanout.
+            max_events = config.venues.kalshi.max_relevant_events or min(
+                config.venues.kalshi.max_markets or 100,
+                100,
+            )
             top_tickers = await rank_events(poly, events, max_events)
 
             # Phase 3: Fetch markets for top events
-            kalshi = await kalshi_client.fetch_markets_for_events(top_tickers)
+            kalshi = await kalshi_client.fetch_markets_for_events(
+                top_tickers,
+                max_markets=config.venues.kalshi.max_markets,
+            )
     except Exception as exc:
         errors.append(f"fetch failed: {exc}")
         logger.error("fetch_error", error=str(exc), exc_info=True)

@@ -40,6 +40,8 @@ class KalshiVenueConfig(BaseModel):
     rate_limit_per_sec: int = 5
     min_volume_24h: Decimal = Decimal("0")
     max_markets: int = 0
+    max_relevant_events: int = 100
+    rate_limit_cooldown_seconds: float = 5.0
     exclude_ticker_prefixes: list[str] = ["KXMVESPORTSMULTIGAME"]
 
 

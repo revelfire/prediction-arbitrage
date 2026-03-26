@@ -9,9 +9,11 @@ venues:
   kalshi:
     base_url: "https://api.elections.kalshi.com/trade-api/v2"
     enabled: true
-    rate_limit_per_sec: 3  # Kalshi Basic tier: 20 reads/sec, conservative to avoid blacklist
+    rate_limit_per_sec: 5  # Keep a steady pace; event fanout is capped separately below
     min_volume_24h: 100
     max_markets: 1000
+    max_relevant_events: 100
+    rate_limit_cooldown_seconds: 5.0
     exclude_ticker_prefixes:  # Skip multi-game parlays that can't match single-event Poly markets
       - "KXMVESPORTSMULTIGAME"
 
@@ -104,6 +106,22 @@ flippening:
       discovery_slugs: ["ncaa-", "march-madness-"]
       discovery_tags: ["ncaa", "march-madness"]
       discovery_keywords: ["march madness", "ncaa tournament"]
+    cbb:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 6
+      spike_threshold_pct: 0.15
+      discovery_slugs: ["cbb-"]
+      discovery_tags: ["ncaa-cbb", "cbb", "college-basketball"]
+      discovery_keywords: ["college basketball", "men's college basketball"]
+    wcbb:
+      category_type: sport
+      baseline_strategy: first_price
+      event_window_hours: 6
+      spike_threshold_pct: 0.15
+      discovery_slugs: ["wcbb-"]
+      discovery_tags: ["ncaa-wcbb", "wcbb", "womens-college-basketball"]
+      discovery_keywords: ["women's college basketball", "women's ncaa basketball"]
     ucl:
       category_type: sport
       baseline_strategy: first_price

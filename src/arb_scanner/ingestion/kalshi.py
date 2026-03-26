@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from operator import attrgetter
 
+import httpx
 import structlog
 
 from arb_scanner.ingestion._kalshi_parse import parse_market, process_orderbook
@@ -18,6 +21,24 @@ _PAGE_LIMIT = 200
 _MAX_PAGES = 100  # Safety cap: never paginate beyond 20K markets
 _MAX_EVENT_PAGES = 30  # Events are much fewer than markets
 _MAX_EVENT_MARKET_PAGES = 5  # Per-event market pagination cap
+_EVENT_MARKET_BUFFER_MULTIPLIER = 2
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """Extract a Retry-After hint from an HTTP exception, if present."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    retry_after = headers.get("Retry-After")
+    if retry_after is None:
+        return None
+    try:
+        return float(retry_after)
+    except (TypeError, ValueError):
+        return None
 
 
 class KalshiClient(BaseVenueClient):
@@ -38,6 +59,7 @@ class KalshiClient(BaseVenueClient):
             base_url=self._cfg.base_url,
             rate_limit_per_sec=self._cfg.rate_limit_per_sec,
         )
+        self._rate_limit_cooldown_until = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -69,19 +91,31 @@ class KalshiClient(BaseVenueClient):
     async def fetch_markets_for_events(
         self,
         event_tickers: list[str],
+        max_markets: int | None = None,
     ) -> list[Market]:
         """Fetch markets for specific events, applying volume filter.
 
         Args:
             event_tickers: Event tickers to fetch markets for.
+            max_markets: Soft collection cap before demand-filtering.
 
         Returns:
             Normalised :class:`Market` list sorted by volume descending.
         """
         min_vol = self._cfg.min_volume_24h
+        effective_max_markets = max_markets if max_markets is not None else self._cfg.max_markets
+        collect_target = (
+            effective_max_markets * _EVENT_MARKET_BUFFER_MULTIPLIER if effective_max_markets else 0
+        )
         markets: list[Market] = []
+        events_processed = 0
+        stopped_early = False
         for ticker in event_tickers:
+            if collect_target and len(markets) >= collect_target:
+                stopped_early = True
+                break
             raw_list = await self._fetch_event_markets(ticker)
+            events_processed += 1
             for raw in raw_list:
                 market = parse_market(raw)
                 if market is None:
@@ -89,11 +123,19 @@ class KalshiClient(BaseVenueClient):
                 if min_vol and market.volume_24h < min_vol:
                     continue
                 markets.append(market)
+                if collect_target and len(markets) >= collect_target:
+                    stopped_early = True
+                    break
+            if stopped_early:
+                break
         markets.sort(key=attrgetter("volume_24h"), reverse=True)
         logger.info(
             "kalshi_event_markets_fetched",
-            events=len(event_tickers),
+            events_requested=len(event_tickers),
+            events_processed=events_processed,
             markets=len(markets),
+            collect_target=collect_target,
+            stopped_early=stopped_early,
         )
         return markets
 
@@ -158,10 +200,7 @@ class KalshiClient(BaseVenueClient):
             Dict with ``yes_bids``, ``no_bids``, ``yes_best_bid``,
             ``no_best_bid``, ``yes_ask``, and ``no_ask``.
         """
-        async with self.rate_limiter.acquire():
-            resp = await self.client.get(f"/markets/{ticker}/orderbook")
-            resp.raise_for_status()
-            data: dict[str, object] = resp.json()
+        data = await self._get_json(f"/markets/{ticker}/orderbook")
         return process_orderbook(data)
 
     # ------------------------------------------------------------------
@@ -184,10 +223,7 @@ class KalshiClient(BaseVenueClient):
         params: dict[str, str | int] = {"status": "open", "limit": _PAGE_LIMIT}
         if cursor:
             params["cursor"] = cursor
-        async with self.rate_limiter.acquire():
-            resp = await self.client.get("/events", params=params)
-            resp.raise_for_status()
-            body: dict[str, object] = resp.json()
+        body = await self._get_json("/events", params=params)
         raw_events = body.get("events")
         page: list[dict[str, object]] = raw_events if isinstance(raw_events, list) else []
         next_cursor_raw = body.get("cursor")
@@ -210,10 +246,7 @@ class KalshiClient(BaseVenueClient):
         params: dict[str, str | int] = {"status": "open", "limit": _PAGE_LIMIT}
         if cursor:
             params["cursor"] = cursor
-        async with self.rate_limiter.acquire():
-            resp = await self.client.get("/markets", params=params)
-            resp.raise_for_status()
-            body: dict[str, object] = resp.json()
+        body = await self._get_json("/markets", params=params)
         raw_markets = body.get("markets")
         page: list[dict[str, object]] = raw_markets if isinstance(raw_markets, list) else []
         next_cursor_raw = body.get("cursor")
@@ -243,10 +276,7 @@ class KalshiClient(BaseVenueClient):
             }
             if cursor:
                 params["cursor"] = cursor
-            async with self.rate_limiter.acquire():
-                resp = await self.client.get("/markets", params=params)
-                resp.raise_for_status()
-                body: dict[str, object] = resp.json()
+            body = await self._get_json("/markets", params=params)
             raw = body.get("markets")
             page: list[dict[str, object]] = raw if isinstance(raw, list) else []
             all_markets.extend(page)
@@ -255,3 +285,46 @@ class KalshiClient(BaseVenueClient):
             if not cursor:
                 break
         return all_markets
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, str | int] | None = None,
+    ) -> dict[str, object]:
+        """Issue a JSON request while honoring shared Kalshi 429 cooldowns."""
+        await self._wait_for_rate_limit_cooldown()
+        async with self.rate_limiter.acquire():
+            resp = await self.client.get(path, params=params)
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            self._apply_rate_limit_cooldown(exc)
+            raise
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    async def _wait_for_rate_limit_cooldown(self) -> None:
+        """Sleep until a shared Kalshi 429 cooldown has elapsed."""
+        remaining = self._rate_limit_cooldown_until - time.monotonic()
+        if remaining <= 0:
+            return
+        logger.info("kalshi_rate_limit_cooldown", delay=remaining)
+        await asyncio.sleep(remaining)
+
+    def _apply_rate_limit_cooldown(self, exc: httpx.HTTPStatusError) -> None:
+        """Extend a shared cooldown window after a Kalshi 429 response."""
+        if exc.response.status_code != httpx.codes.TOO_MANY_REQUESTS:
+            return
+        delay = _retry_after_seconds(exc) or self._cfg.rate_limit_cooldown_seconds
+        if delay <= 0:
+            return
+        cooldown_until = time.monotonic() + delay
+        if cooldown_until <= self._rate_limit_cooldown_until:
+            return
+        self._rate_limit_cooldown_until = cooldown_until
+        logger.warning(
+            "kalshi_rate_limit_backoff",
+            status_code=exc.response.status_code,
+            delay=delay,
+        )
