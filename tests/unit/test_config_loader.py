@@ -41,6 +41,8 @@ venues:
     base_url: "https://api.elections.kalshi.com/trade-api/v2"
     enabled: true
     rate_limit_per_sec: 20
+    max_relevant_events: 80
+    rate_limit_cooldown_seconds: 4.5
 
 claude:
   model: "claude-sonnet-4-20250514"
@@ -109,6 +111,8 @@ class TestLoadConfigSuccess:
         settings = load_config(str(cfg_path))
         assert settings.claude.api_key == "test-key"
         assert settings.venues.kalshi.rate_limit_per_sec == 20
+        assert settings.venues.kalshi.max_relevant_events == 80
+        assert settings.venues.kalshi.rate_limit_cooldown_seconds == 4.5
         assert settings.fees.kalshi.fee_cap is not None
 
     def test_defaults_applied(self, tmp_path: Path) -> None:

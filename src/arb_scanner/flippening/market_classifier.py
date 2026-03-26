@@ -276,14 +276,39 @@ def _detect_category(
 
 def _extract_game_start(raw_data: dict[str, object]) -> datetime | None:
     """Return parsed game start datetime, or None."""
-    for field in ("startDate", "game_start_time", "startDateIso"):
-        value = raw_data.get(field)
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+    for field in ("gameStartTime", "game_start_time", "startTime"):
+        parsed = _parse_market_datetime(raw_data.get(field))
+        if parsed is not None:
+            return parsed
+
+    events = raw_data.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
                 continue
+            for field in ("startTime", "gameStartTime", "startDate", "startDateIso"):
+                parsed = _parse_market_datetime(event.get(field))
+                if parsed is not None:
+                    return parsed
+
+    for field in ("startDate", "startDateIso"):
+        parsed = _parse_market_datetime(raw_data.get(field))
+        if parsed is not None:
+            return parsed
     return None
+
+
+def _parse_market_datetime(value: object) -> datetime | None:
+    """Parse market datetimes, normalizing naive values to UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _extract_token_id(raw_data: dict[str, object]) -> str:

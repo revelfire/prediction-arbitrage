@@ -64,6 +64,7 @@ def _cats(**overrides: CategoryConfig) -> dict[str, CategoryConfig]:
     base = {
         "nba": CategoryConfig(category_type="sport", discovery_slugs=["nba-"]),
         "nhl": CategoryConfig(category_type="sport", discovery_slugs=["nhl-"]),
+        "cbb": CategoryConfig(category_type="sport", discovery_slugs=["cbb-"]),
     }
     base.update(overrides)
     return base
@@ -102,6 +103,11 @@ class TestDetectCategory:
         cats = {"btc": CategoryConfig(category_type="crypto", discovery_slugs=["bitcoin-", "btc-"])}
         raw: dict[str, object] = {"groupSlug": "btc-price-100k"}
         assert _detect_category(raw, cats) == ("btc", "slug")
+
+    def test_cbb_slug_match(self) -> None:
+        cats = _cats()
+        raw: dict[str, object] = {"groupSlug": "cbb-stjohn-duke-2026-03-27-total-141pt5"}
+        assert _detect_category(raw, cats) == ("cbb", "slug")
 
     def test_custom_discovery_tags(self) -> None:
         cats = {
@@ -269,6 +275,35 @@ class TestExtractHelpers:
         result = _extract_game_start({"startDate": "2026-03-01T20:00:00Z"})
         assert result is not None
         assert result.year == 2026
+        assert result.tzinfo is not None
+
+    def test_extract_game_start_prefers_game_start_time(self) -> None:
+        result = _extract_game_start(
+            {
+                "startDate": "2026-03-25T15:04:27.521592Z",
+                "gameStartTime": "2026-03-26 23:30:00+00",
+            }
+        )
+        assert result is not None
+        assert result == datetime(2026, 3, 26, 23, 30, tzinfo=UTC)
+
+    def test_extract_game_start_from_nested_event(self) -> None:
+        result = _extract_game_start(
+            {
+                "events": [
+                    {
+                        "startTime": "2026-03-26T23:30:00Z",
+                    }
+                ]
+            }
+        )
+        assert result is not None
+        assert result == datetime(2026, 3, 26, 23, 30, tzinfo=UTC)
+
+    def test_extract_game_start_date_only_defaults_to_utc(self) -> None:
+        result = _extract_game_start({"startDateIso": "2026-03-01"})
+        assert result is not None
+        assert result == datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
 
     def test_extract_game_start_none(self) -> None:
         assert _extract_game_start({}) is None
